@@ -7,7 +7,7 @@
 # in the Electron userData directory, and are written by src/main/session/store.ts:
 # tool activity appends to events.jsonl, each user/assistant message is one shard
 # under messages/ rewritten in place while it streams, and oversized text spills to
-# assets/. A transcript is those producers merged and ordered by `seq`.
+# assets/. A transcript is those producers merged and ordered by `origin ?? seq`.
 #
 # Tool rows print as headlines. For the exact arguments and result of one call, read
 # its record straight out of the log:
@@ -36,7 +36,7 @@ sessions:
 # Print a chat transcript; ID may be any substring, default is the newest chat
 transcript $id="":
     #!/usr/bin/env python3
-    import json, os, pathlib, sys
+    import json, os, pathlib, sys, time
 
     root = pathlib.Path("{{sessions_dir}}")
     want = os.environ["id"]
@@ -62,7 +62,16 @@ transcript $id="":
     legacy = session / "messages.json"
     if legacy.exists():
         rows += list(json.loads(legacy.read_text() or "{}").values())
-    rows.sort(key=lambda row: row.get("seq", 0))
+    def position(row):
+        # A message shard is rewritten in place as it streams, and a reloaded page reports
+        # old messages again, so `seq` is append order, not conversation order. `origin`
+        # holds the first position of a rewritten item; src/shared/chronology.ts orders by
+        # the same key. ponytail: tool rows still sit where seq put them, which draws a slow
+        # call after the turn it ran under; port chronology.ts grouping if that starts to bite.
+        origin = row.get("origin")
+        return (origin if isinstance(origin, int) else row.get("seq", 0), row.get("seq", 0))
+
+    rows.sort(key=position)
 
     def text(stored):
         spill = stored.get("assetId")
@@ -75,7 +84,8 @@ transcript $id="":
         for row in rows:
             kind = row["kind"]
             if kind.endswith("_message"):
-                print(f"\n## {kind.removesuffix('_message')}\n{text(row['message'])}")
+                clock = time.strftime("%H:%M:%S", time.localtime(row["time"] / 1000))
+                print(f"\n## {kind.removesuffix('_message')}  {clock}\n{text(row['message'])}")
             elif kind == "tool_call":
                 call = row["call"]
                 summary = call.get("summary") or {}
