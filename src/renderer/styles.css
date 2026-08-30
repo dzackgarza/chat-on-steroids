@@ -1630,6 +1630,14 @@ input[readonly] {
   border: 1px solid var(--blue-line);
 }
 
+.said-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
 .said b {
   display: block;
   font-size: 10px;
@@ -1637,6 +1645,11 @@ input[readonly] {
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--faint);
+}
+
+.message-copy {
+  flex: 0 0 auto;
+  margin: -3px -5px -3px 0;
 }
 
 .msg {
