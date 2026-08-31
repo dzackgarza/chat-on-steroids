@@ -5660,7 +5660,7 @@ describe('evidence from the page context', () => {
     ]);
   });
 
-  it('confirms an id-less request from the visible response that was mounted before generation began', async () => {
+  it('confirms an id-less request attached to the user message that opened the generation', async () => {
     const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const requestId = 'wfr_visible_response_without_conversation';
     live = await harness();
@@ -5669,9 +5669,10 @@ describe('evidence from the page context', () => {
       data: { conversationId, confirmed: [requestId], complete: true }
     }));
 
-    const section = assistantTurn(live.document, 'response-mounted-before-stop', []);
+    const section = userTurn(live.document, 'user-request-owner', 'Read the research repository.');
     live.hook.observe();
     await settle();
+    assistantTurn(live.document, 'response-after-request', []);
     startGenerating(live.document);
     live.hook.observe();
     await settle();
@@ -5679,7 +5680,7 @@ describe('evidence from the page context', () => {
     await bindFiberTurns([{
       section,
       turn: {
-        turnId: 'response-mounted-before-stop',
+        turnId: 'user-request-owner',
         conversationId: null,
         requests: [{ requestId, messageId: 'request-without-conversation', createTime: 1_700_000_001 }]
       }
