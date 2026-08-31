@@ -476,6 +476,15 @@ kernel.ts/recorder.ts did the call wait for, find and use the exact proof?
 
 Agent routing is *downstream* of this. Do not start there.
 
+ChatGPT can place `metadata.request_id` on the user-message branch that opened the active
+generation. That Fiber descriptor can have `conversationId: null`, even while the browser route
+has the concrete conversation id. Preserve the triggering user section when the local generation
+opens. Join its scan-qualified `data-clf-fiber-turn` stamp to the descriptor, then submit the exact
+request id through the app's correlation handshake. This path proves only the request owner. It
+does not give the user branch an assistant turn id or recorder ownership. Do not wait for an
+assistant tool row or a descriptor conversation id; either can arrive after the kernel's identity
+window closes.
+
 **Tests.** `correlation.test.ts`, `mcp-inbound.test.ts`, `fiber.test.ts`,
 `content-script.test.ts`, `swarm.test.ts`.
 
