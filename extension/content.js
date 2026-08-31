@@ -2744,6 +2744,22 @@
         }
       }
     }
+    // ChatGPT can mount the response section one observation before it mounts the Stop
+    // control. That section is then part of the generation baseline, so generationTurn()
+    // correctly refuses to adopt it from DOM age alone. The scan stamp still gives an exact
+    // descriptor for the visible response. Use that descriptor only for the app-confirmed
+    // request-id handshake; it does not acquire the local turn id or recorder ownership.
+    let requestOwnerTurn = ownedPageTurn;
+    if (!requestOwnerTurn && generating) {
+      const visibleResponse = currentAssistantTurn();
+      const visibleDescriptor = stampedFiberTurn(visibleResponse, answer.turns, answer.scanToken);
+      const visibleConversation = visibleDescriptor
+        ? concreteConversation(visibleDescriptor.conversationId)
+        : null;
+      if (visibleDescriptor && !visibleConversation && visibleDescriptor.conversationConflict !== true) {
+        requestOwnerTurn = visibleDescriptor;
+      }
+    }
     if (askedConversation) {
       // Validate ownership per Fiber object, not per scan.
       //
@@ -2834,7 +2850,7 @@
       for (const source of ['calls', 'requests']) {
         for (const turn of answer.turns) {
           const pageConversation = concreteConversation(turn.conversationId);
-          if (turn !== ownedPageTurn && pageConversation !== askedConversation) continue;
+          if (turn !== requestOwnerTurn && pageConversation !== askedConversation) continue;
           for (const call of turn[source] || []) {
             if (!call || !call.requestId || ownerSeen.has(call.requestId)) continue;
             ownerSeen.add(call.requestId);
