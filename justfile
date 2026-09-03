@@ -151,18 +151,22 @@ chats:
         print(f"{clock}\t{chat}\t{state}\t{title}")
 
 # Send a message to an open chat, by conversation id (see `just chats`)
-say chat text:
-    @just -f {{justfile()}} _post '{"conversationId": {{ quote(chat) }}, "text": {{ quote(text) }}}'
+say $chat $text:
+    @just -f {{justfile()}} _send "$chat" "$text"
 
 # Start a new chat with this opening message
-new text:
-    @just -f {{justfile()}} _post '{"text": {{ quote(text) }}}'
+new $text:
+    @just -f {{justfile()}} _send "" "$text"
 
-# POST one body to the running app's bridge
-_post body:
+# POST one message to the running app's bridge. Empty chat means a fresh one.
+_send $chat $text:
     #!/usr/bin/env bash
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
+    # Built by jq, never by string interpolation: a message is arbitrary prose and will
+    # contain the quotes, newlines and backslashes that hand-built JSON gets wrong.
+    body=$(jq -nc --arg c "$chat" --arg t "$text" \
+        'if $c == "" then { text: $t } else { conversationId: $c, text: $t } end')
     for port in 8765 8766 8767 8768 8769; do
         # /hello is unauthenticated and names the app, so it is how a local caller finds
         # which of the five candidate ports this app actually bound.
@@ -170,9 +174,84 @@ _post body:
             curl -fsS -m 10 "http://127.0.0.1:$port/send" \
                 -H "authorization: Bearer $token" \
                 -H 'content-type: application/json' \
-                -d {{ quote(body) }} | jq -r '.command | "opened \(.conversationId // "a fresh chat") as command \(.id)"'
+                --data-binary "$body" \
+                | jq -r '.command | "sent to \(.conversationId // "a fresh chat")"'
             exit 0
         fi
     done
     echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
     exit 1
+
+# ---------------------------------------------------------------------------
+# Running your own build.
+#
+# `npm run dist:*` writes an artifact into release/ and stops there, which leaves the
+# last step — putting that artifact where the launcher points and restarting — as
+# something a person does by hand and forgets. `just install` is that step.
+#
+# It follows the launcher on PATH to find what to replace, so it upgrades whatever
+# installation this machine actually has rather than a path written down in here.
+
+# Build this tree, install it over the installed app, and restart it
+[linux]
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    launcher=$(command -v chat-on-steroids || true)
+    if [[ -z "$launcher" ]]; then
+        echo "No chat-on-steroids on PATH: install a release once, then this recipe upgrades it." >&2
+        exit 1
+    fi
+    # The launcher is normally a symlink into the install directory. Replace what it
+    # resolves to, so the launcher, the .desktop entry and the tray icon all keep working.
+    target=$(readlink -f "$launcher")
+
+    case "$(uname -m)" in
+        x86_64) arch=x64 ;;
+        aarch64|arm64) arch=arm64 ;;
+        *) echo "Unsupported architecture $(uname -m)." >&2; exit 1 ;;
+    esac
+    npm run "dist:linux:$arch"
+    built="release/Chat-On-Steroids-Linux-$arch.AppImage"
+
+    # An AppImage runs from a mount of its own file, so it is stopped before the file
+    # underneath it changes. SIGTERM is the app's ordinary shutdown; it drains in-flight
+    # MCP work and writes its durable state.
+    #
+    # Matched on the process name rather than on any path: the running app's argv holds the
+    # /tmp mount it unpacked itself into, never the file being replaced here. Linux truncates
+    # a process name to 15 characters, which is where the missing final `s` comes from.
+    app=chat-on-steroid
+    if pkill -TERM -x "$app" 2>/dev/null; then
+        for _ in $(seq 1 40); do
+            pgrep -x "$app" >/dev/null || break
+            sleep 0.25
+        done
+        pgrep -x "$app" >/dev/null && { echo "The app is still running after SIGTERM; quit it and retry." >&2; exit 1; }
+        was_running=yes
+    else
+        was_running=no
+    fi
+
+    # Written beside the target and renamed, so a failed copy cannot leave a half-written
+    # AppImage where the launcher points.
+    install -m 755 "$built" "$target.incoming"
+    mv "$target.incoming" "$target"
+    echo "installed $(basename "$target")"
+
+    if [[ "$was_running" == yes ]]; then
+        setsid "$launcher" >/dev/null 2>&1 < /dev/null &
+        # The bridge answering is the proof it came back on the new build.
+        for _ in $(seq 1 60); do
+            for port in 8765 8766 8767 8768 8769; do
+                if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+                    echo "restarted, bridge listening on $port"
+                    exit 0
+                fi
+            done
+            sleep 0.5
+        done
+        echo "installed, but the bridge did not come back within 30s; start the app yourself." >&2
+        exit 1
+    fi
