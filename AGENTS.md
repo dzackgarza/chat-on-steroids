@@ -906,9 +906,7 @@ was closed mid-turn keeps a stale `busy`, so read the clock column with it.
 A chat that `new` opens is an ordinary chat: it is not a worker, it belongs to no run, and
 it appears in `just sessions` like any other.
 
-The app must be running and the browser paired — it opens the tab itself. `say` and `new`
-present the credential the bridge writes to `state/local-token` when it starts, so a build
-that has not been restarted since this landed has no token yet and both refuse.
+The app must be running and the browser paired — it opens the tab itself.
 
 ### What to send them
 
