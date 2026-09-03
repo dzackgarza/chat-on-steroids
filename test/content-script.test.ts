@@ -4482,6 +4482,76 @@ describe('a stop button that goes missing while the turn is still running', () =
   });
 
   /**
+   * Reporting the stall used to be all that happened, and it left the chat exactly as stuck
+   * as it was. Nothing else could reach it either: a queued message is never typed into a
+   * chat with a turn running, so the one state a caller most wants to recover was the one
+   * state nothing could recover. The page already proved this turn is dead; press Stop and
+   * restart it.
+   */
+  it('restarts a stalled turn instead of only reporting it', async () => {
+    let stopClicks = 0;
+    const submitted: string[] = [];
+    live = await harness(undefined, undefined, (document) => {
+      startGenerating(document);
+      document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+        stopClicks++;
+        stopGenerating(document);
+      });
+      document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+        const composer = document.querySelector('#prompt-textarea')!;
+        submitted.push((composer.textContent || '').trim());
+        composer.textContent = '';
+      });
+    });
+    assistantTurn(live.document, 'turn-stalled-restart', []);
+    live.hook.observe();
+    await settle();
+
+    live.advance(live.hook.STALL_MS + 1);
+    live.hook.observe();
+    await settle(300);
+
+    expect(emitted(live.sent, 'chat_error').map((entry) => entry.event.text)).toContain(
+      'No visible progress for ten minutes. The turn is still marked as generating.'
+    );
+    expect(stopClicks).toBe(1);
+    expect(submitted).toEqual(['Continue']);
+  });
+
+  /**
+   * The negative half, and the reason the draft is read before Stop rather than after:
+   * ending somebody's turn and then declining to send is worse than leaving the stall alone.
+   */
+  it('leaves a stalled chat alone while the user is writing in it', async () => {
+    let stopClicks = 0;
+    const submitted: string[] = [];
+    live = await harness(undefined, undefined, (document) => {
+      startGenerating(document);
+      document.querySelector('#prompt-textarea')!.textContent = 'half a thought I was still writing';
+      document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+        stopClicks++;
+        stopGenerating(document);
+      });
+      document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+        const composer = document.querySelector('#prompt-textarea')!;
+        submitted.push((composer.textContent || '').trim());
+        composer.textContent = '';
+      });
+    });
+    assistantTurn(live.document, 'turn-stalled-draft', []);
+    live.hook.observe();
+    await settle();
+
+    live.advance(live.hook.STALL_MS + 1);
+    live.hook.observe();
+    await settle(300);
+
+    expect(stopClicks).toBe(0);
+    expect(submitted).toEqual([]);
+    expect(live.document.querySelector('#prompt-textarea')!.textContent).toBe('half a thought I was still writing');
+  });
+
+  /**
    * The user pressing stop is not a signal that needs corroborating, and a composer that
    * stays disabled for four more seconds because the app is being careful is its own bug.
    */

@@ -108,6 +108,8 @@
   const STATUS_MS = 15_000;
   /** Longer than any honest tool call: past this a silent turn is called stalled. */
   const STALL_MS = 10 * 60 * 1000;
+  /** What a stalled chat is restarted with. It already holds everything it was doing. */
+  const STALL_RESTART_TEXT = 'Continue';
   /** How long the button says "Starting…" before believing something went wrong. */
   const PRESS_GRACE_MS = 12_000;
   /** Persistent popup preference. On by default as of 1.7.4; the popup can turn it off. */
@@ -1847,6 +1849,42 @@
       });
     }
 
+  /**
+   * Restarts a turn that has stopped producing output, once the stall check above proves it.
+   *
+   * Reporting the stall is what the user sees, and on its own it changes nothing: ChatGPT is
+   * still showing a running turn, so the composer stays refused and the chat cannot be reached
+   * by anything — not the user, and not a queued message from the app, which is never typed
+   * into a chat with a turn in flight. That makes the state a caller most wants to recover the
+   * one state nothing could recover. Pressing Stop is what a person does here, and the whole
+   * recovery is that press plus the shortest continuation there is.
+   *
+   * The draft is read before Stop rather than after. Ending somebody's turn and then declining
+   * to type is a worse outcome than leaving the stall alone, so a composer with anything in it
+   * means this does nothing at all.
+   */
+  async function restartStalledTurn() {
+    const chat = CLF_DOM.conversationId();
+    // Another part of the page is already mid-way through owning this composer. None of them
+    // leaves a turn wedged for ten minutes, so this is a collision rather than the stall case.
+    if (goalBusy || nativeBusy || compactCapture || (job && job.busy)) return;
+    const box = CLF_DOM.composer();
+    if (!box || (box.textContent || '').trim() !== '') return;
+    const stop = CLF_DOM.stopButton();
+    if (stop) stop.click();
+    // ChatGPT takes the turn down asynchronously; composerSubmitReady() refuses until the
+    // Stop control is gone and the editing host will accept text again.
+    for (let tries = 0; tries < 20; tries++) {
+      if (!alive || CLF_DOM.conversationId() !== chat) return;
+      if (CLF_DOM.composerSubmitReady && CLF_DOM.composerSubmitReady()) break;
+      await sleep(250);
+    }
+    if (!alive || CLF_DOM.conversationId() !== chat) return;
+    if (!CLF_DOM.composerSubmitReady || !CLF_DOM.composerSubmitReady()) return;
+    if (!CLF_DOM.insertPrompt(STALL_RESTART_TEXT)) return;
+    await CLF_DOM.send();
+  }
+
     if (generating && turn) {
       // Stay on the generation we opened. ChatGPT can reorder/replace assistant sections
       // while a turn is running; re-reading the newest DOM turn here has reproduced
@@ -1858,6 +1896,7 @@
       if (!stallReported && Date.now() - lastChangeAt > STALL_MS) {
         stallReported = true;
         emit({ kind: 'chat_error', text: 'No visible progress for ten minutes. The turn is still marked as generating.', turnId });
+        void restartStalledTurn();
       }
     }
 
