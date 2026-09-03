@@ -159,7 +159,9 @@ chats:
         # A message is rewritten in its own shard while it streams, so the newest one is not
         # in events.jsonl at all and is often the only thing that happened recently.
         messages = [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
-        newest = max(events + messages, key=lambda row: row.get("time", 0), default=None)
+        # Ordered by seq as well as time: a turn ending and the next one starting share a
+        # second, and the clock alone reports the chat as having just stopped when it started.
+        newest = max(events + messages, key=lambda row: (row.get("time", 0), row.get("seq", 0)), default=None)
 
         # The recorder writes turn_start when ChatGPT begins generating. Three things end that
         # turn: turn_end when it finishes, and chat_error or a wedged/closed tab when it does
