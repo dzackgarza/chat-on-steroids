@@ -179,12 +179,18 @@ chats:
             # so `wedged` only stands while the error really is the last thing that happened.
             if last["kind"] == "chat_error" and not any(order(row) > order(last) for row in events):
                 state = "wedged"
+        # The clock is the last action's own time, never meta.updatedAt: the recorder touches
+        # that on any observation of the chat, including its own polling, so a session whose
+        # page has produced nothing for twenty minutes still carries a timestamp from seconds
+        # ago — and a row whose clock and whose action disagree is worse than no clock.
+        when = newest.get("time", 0) if newest else meta["updatedAt"]
+
         # A turn nothing has added to for a while is not generating, whatever the last event
         # says. ChatGPT streams continuously, so a genuinely live turn is never this quiet.
-        if state == "busy" and time.time() - meta["updatedAt"] / 1000 > 300:
+        if state == "busy" and time.time() - when / 1000 > 300:
             state = "stalled"
 
-        rows.append((meta["updatedAt"], chat, state, describe(newest) if newest else "-"))
+        rows.append((when, chat, state, describe(newest) if newest else "-"))
 
     for updated, chat, state, action in sorted(rows, reverse=True):
         clock = time.strftime("%m-%d %H:%M:%S", time.localtime(updated / 1000))
