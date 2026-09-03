@@ -40,6 +40,11 @@ export function durableStoreReady(): boolean {
   return root !== '';
 }
 
+/** Where durable state lives. The bridge keeps its local-caller credential alongside it. */
+export function durableRoot(): string {
+  return root;
+}
+
 function fileFor(name: string): string {
   if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new Error(`Invalid durable state name: ${name}`);
   return path.join(root, `${name}.json`);

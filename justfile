@@ -104,3 +104,75 @@ search $term:
         | while read -r id; do
             printf '%s\t%s\n' "$id" "$(jq -r .title "{{sessions_dir}}/$id/meta.json")"
         done
+
+# ---------------------------------------------------------------------------
+# Driving chats from here.
+#
+# The app's bridge has one route for local callers: POST /send types a message into a
+# ChatGPT chat, or opens a fresh one. It is the same transport the app uses to open a
+# worker chat, with the agent half removed — what these recipes open is an ordinary chat
+# that shows up in `just sessions` like any other. Chat On Steroids must be running, and
+# the browser must be paired; the app opens the tab itself.
+#
+# The credential is minted at bridge startup and lives in state/local-token, mode 0600.
+
+state_dir := if os() == "macos" {
+    home_directory() / "Library/Application Support/chat-on-steroids/state"
+} else {
+    env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/state"
+}
+
+# Which chats are recorded, whether each is mid-turn, and the id `say` wants
+chats:
+    #!/usr/bin/env python3
+    import json, pathlib, time
+
+    root = pathlib.Path("{{sessions_dir}}")
+    rows = []
+    for meta_file in root.glob("*/meta.json"):
+        meta = json.loads(meta_file.read_text())
+        chat = meta.get("conversationId")
+        if not chat:
+            continue  # nothing to address a message to
+        # The recorder writes turn_start when ChatGPT begins generating and turn_end when it
+        # stops, so the newest of the two is what "is this chat busy right now" means here.
+        # A tab closed mid-turn never records its turn_end, so an old "busy" row is a chat
+        # nobody is watching rather than one still generating. Read the clock column too.
+        state = "idle"
+        for line in reversed((meta_file.parent / "events.jsonl").read_text().splitlines()):
+            kind = json.loads(line).get("kind") if line.strip() else None
+            if kind in ("turn_start", "turn_end"):
+                state = "busy" if kind == "turn_start" else "idle"
+                break
+        rows.append((meta["updatedAt"], chat, state, meta["title"]))
+
+    for updated, chat, state, title in sorted(rows, reverse=True):
+        clock = time.strftime("%m-%d %H:%M", time.localtime(updated / 1000))
+        print(f"{clock}\t{chat}\t{state}\t{title}")
+
+# Send a message to an open chat, by conversation id (see `just chats`)
+say chat text:
+    @just -f {{justfile()}} _post '{"conversationId": {{ quote(chat) }}, "text": {{ quote(text) }}}'
+
+# Start a new chat with this opening message
+new text:
+    @just -f {{justfile()}} _post '{"text": {{ quote(text) }}}'
+
+# POST one body to the running app's bridge
+_post body:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    token=$(cat "{{state_dir}}/local-token")
+    for port in 8765 8766 8767 8768 8769; do
+        # /hello is unauthenticated and names the app, so it is how a local caller finds
+        # which of the five candidate ports this app actually bound.
+        if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+            curl -fsS -m 10 "http://127.0.0.1:$port/send" \
+                -H "authorization: Bearer $token" \
+                -H 'content-type: application/json' \
+                -d {{ quote(body) }} | jq -r '.command | "opened \(.conversationId // "a fresh chat") as command \(.id)"'
+            exit 0
+        fi
+    done
+    echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
+    exit 1

@@ -571,11 +571,18 @@ routes: `/status`, `/events`, `/closed`, `/activity`, `/compact/claim-auto`, `/c
 `/commands/redeem`, `/commands/ack`. `/settings` is the only pair the page may write, and
 its GET exists for the one composer with no conversation to read `/activity` for: a New Chat.
 
-**Must hold.** The token never enters the ChatGPT page — the service worker holds it in
-extension-owned state and the app keeps its counterpart out of config and log surfaces. The
-bridge exposes **no** filesystem, command, or config-mutation route. Protocol mismatch
-against `BRIDGE_PROTOCOL` warns once rather than spamming. Concurrent startup must not race
-on listener ownership.
+`/send` is the one route that does not belong to the extension. A local program — the
+justfile recipes, a script, an agent on this computer — posts `{conversationId?, text}` and
+the app types that text into that chat, or into a fresh one when no conversation is named.
+It presents the separate credential in `<userData>/state/local-token` (mode `0600`, minted
+once at bridge startup), never the extension's bearer token, because `/pair` reissues that
+one whenever the browser reconnects.
+
+**Must hold.** The extension token never enters the ChatGPT page — the service worker holds
+it in extension-owned state and the app keeps its counterpart out of config and log surfaces.
+The two credentials stay separate. The bridge exposes **no** filesystem, command, or
+config-mutation route. Protocol mismatch against `BRIDGE_PROTOCOL` warns once rather than
+spamming. Concurrent startup must not race on listener ownership.
 
 Because this is where browser-observed lifecycle meets recorder, agents, continuation and
 workspace state, a `bridge.ts` bug presents as a session, extension, or agent bug depending
