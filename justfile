@@ -163,20 +163,22 @@ chats:
         # second, and the clock alone reports the chat as having just stopped when it started.
         newest = max(events + messages, key=lambda row: (row.get("time", 0), row.get("seq", 0)), default=None)
 
-        # The recorder writes turn_start when ChatGPT begins generating. Three things end that
-        # turn: turn_end when it finishes, and chat_error or a wedged/closed tab when it does
-        # not. Only the first is a clean ending, and a turn that died the other two ways still
-        # has turn_start as its newest turn event — so reading those alone reports a dead chat
-        # as busy forever, which is exactly the row nobody should be waiting on.
-        state = "idle"
-        for row in reversed(events):
-            kind = row.get("kind")
-            if kind == "chat_error":
+        # The recorder writes turn_start when ChatGPT begins generating and turn_end when it
+        # finishes. Only turn_end is a clean ending: a turn that dies to an error or a closed
+        # tab keeps turn_start as its newest turn event, so reading those two alone reports a
+        # dead chat as busy forever — the row nobody should be waiting on.
+        order = lambda row: (row.get("time", 0), row.get("seq", 0))
+        marks = [row for row in events if row.get("kind") in ("turn_start", "turn_end", "chat_error")]
+        last = max(marks, key=order, default=None)
+        if last is None or last["kind"] == "turn_end":
+            state = "idle"
+        else:
+            state = "busy"
+            # A stall report is not an ending — it says a turn stopped producing output, and
+            # the turn often resumes. Anything recorded after one is the chat working again,
+            # so `wedged` only stands while the error really is the last thing that happened.
+            if last["kind"] == "chat_error" and not any(order(row) > order(last) for row in events):
                 state = "wedged"
-                break
-            if kind in ("turn_start", "turn_end"):
-                state = "busy" if kind == "turn_start" else "idle"
-                break
         # A turn nothing has added to for a while is not generating, whatever the last event
         # says. ChatGPT streams continuously, so a genuinely live turn is never this quiet.
         if state == "busy" and time.time() - meta["updatedAt"] / 1000 > 300:
