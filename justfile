@@ -188,16 +188,20 @@ _send $chat $text:
             # find a composer it may type into, and send — and it fails outright if that chat
             # is mid-turn. Reporting "sent" at the queue is how a caller ends up believing a
             # message landed when nothing was typed, so wait for the real outcome instead.
+            # Wait for the receipt the browser writes once it has actually typed. Waiting for
+            # the command to leave the queue instead looks equivalent and is not: the queue is
+            # persisted a moment after the POST returns, so a command that has not been written
+            # yet is indistinguishable from one already finished, and every send reports failure.
+            # The app gives up on a command after 90s, so no receipt by then means it never sent.
             state="{{state_dir}}/bridge-commands.json"
             for _ in $(seq 1 120); do
-                jq -e --arg id "$id" 'any(.commands[]?; .id == $id)' "$state" >/dev/null 2>&1 || break
+                landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null || true)
+                if [[ -n "$landed" ]]; then
+                    echo "typed into $landed"
+                    exit 0
+                fi
                 sleep 1
             done
-            landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null)
-            if [[ -n "$landed" ]]; then
-                echo "typed into $landed"
-                exit 0
-            fi
             echo "queued but never typed: the browser did not send it (chat mid-turn, or no tab)" >&2
             exit 1
         fi
