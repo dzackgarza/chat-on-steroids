@@ -4519,6 +4519,47 @@ describe('a stop button that goes missing while the turn is still running', () =
   });
 
   /**
+   * ChatGPT does not always let go of a wedged turn on the first press, and the stall is only
+   * reported once per turn — so a single attempt that quietly failed left the chat unreachable
+   * by the user and by the app for as long as the tab stayed open. Keep pressing.
+   */
+  it('presses again when the first attempt to restart a stalled turn does not take', async () => {
+    let stopClicks = 0;
+    const submitted: string[] = [];
+    live = await harness(undefined, undefined, (document) => {
+      startGenerating(document);
+      // ChatGPT ignores the first press and lets go on the second, which is the case a
+      // one-shot restart could never recover from.
+      document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+        stopClicks++;
+        if (stopClicks > 1) stopGenerating(document);
+      });
+      document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+        const composer = document.querySelector('#prompt-textarea')!;
+        submitted.push((composer.textContent || '').trim());
+        composer.textContent = '';
+      });
+    });
+    assistantTurn(live.document, 'turn-stalled-retry', []);
+    live.hook.observe();
+    await settle();
+
+    live.advance(live.hook.STALL_MS + 1);
+    live.hook.observe();
+    await settle(300);
+    expect(stopClicks).toBe(1);
+    expect(submitted).toEqual([]);
+
+    // Still stalled two minutes later, so it tries again — and this time the turn lets go.
+    live.advance(2 * 60 * 1000 + 1);
+    live.hook.observe();
+    await settle(300);
+
+    expect(stopClicks).toBe(2);
+    expect(submitted).toEqual(['Continue']);
+  });
+
+  /**
    * The negative half, and the reason the draft is read before Stop rather than after:
    * ending somebody's turn and then declining to send is worse than leaving the stall alone.
    */

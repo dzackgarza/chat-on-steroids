@@ -111,6 +111,16 @@
   /** What a stalled chat is restarted with. It already holds everything it was doing. */
   const STALL_RESTART_TEXT = 'Continue';
   /**
+   * How often a stalled turn is restarted again when the first press did not take.
+   *
+   * ChatGPT does not always drop a wedged turn when Stop is clicked, and one attempt that
+   * quietly failed left the chat unreachable for as long as the tab stayed open — the stall is
+   * reported once per turn, so nothing ever came back to try again.
+   */
+  const STALL_RESTART_RETRY_MS = 2 * 60 * 1000;
+  /** How long to wait for the composer after pressing Stop, before giving up on this attempt. */
+  const STALL_RESTART_READY_MS = 30 * 1000;
+  /**
    * How long a tab the app opened for a command defers to a tab that already holds that chat.
    *
    * Comfortably inside the app's own ninety-second command deadline, so handing the job back
@@ -534,6 +544,8 @@
   let turnStartedAt = 0;
   let lastChangeAt = 0;
   let stallReported = false;
+  /** When this document last tried to restart a stalled turn. Reset with the turn itself. */
+  let stallRestartAt = 0;
   let userStopped = false;
   /**
    * Final public ChatGPT message that already terminalised the local turn while the page's
@@ -1004,6 +1016,7 @@
     quietOutcome = null;
     userStopped = false;
     stallReported = false;
+    stallRestartAt = 0;
     fiberTerminalMessageId = null;
     bindResumeGoalTurn(open);
     return true;
@@ -1159,6 +1172,7 @@
     baselineCompletionSections = [];
     userStopped = false;
     stallReported = false;
+    stallRestartAt = 0;
     fiberTerminalMessageId = null;
     // The settle window names a turn in the conversation being left behind. Carrying it
     // across would re-read chat B's tree and attribute what it finds to chat A's turn.
@@ -1743,6 +1757,8 @@
       quietOutcome = null;
       userStopped = false;
       stallReported = false;
+      stallRestartAt = 0;
+    stallRestartAt = 0;
       // Same previous-observation boundary as priorSections: by the time Stop first appears the
       // new response may already have mounted its section and its final action. Snapshotting the
       // current DOM here would call that genuine new evidence stale. Conversely, every section
@@ -1881,7 +1897,8 @@
     if (stop) stop.click();
     // ChatGPT takes the turn down asynchronously; composerSubmitReady() refuses until the
     // Stop control is gone and the editing host will accept text again.
-    for (let tries = 0; tries < 20; tries++) {
+    const readyBy = Date.now() + STALL_RESTART_READY_MS;
+    while (Date.now() < readyBy) {
       if (!alive || CLF_DOM.conversationId() !== chat) return;
       if (CLF_DOM.composerSubmitReady && CLF_DOM.composerSubmitReady()) break;
       await sleep(250);
@@ -1900,10 +1917,18 @@
       // messages keyed by ChatGPT's own message id. Do not emit a second progress stream.
       // Native activity is emitted by refreshFiber() from ChatGPT's stable thought-message
       // identity. DOM rows alone are presentation and never mint durable page_tool ids.
-      if (!stallReported && Date.now() - lastChangeAt > STALL_MS) {
-        stallReported = true;
-        emit({ kind: 'chat_error', text: 'No visible progress for ten minutes. The turn is still marked as generating.', turnId });
-        void restartStalledTurn();
+      if (Date.now() - lastChangeAt > STALL_MS) {
+        if (!stallReported) {
+          stallReported = true;
+          emit({ kind: 'chat_error', text: 'No visible progress for ten minutes. The turn is still marked as generating.', turnId });
+        }
+        // Reported once, restarted until it works. A press ChatGPT ignores is the ordinary case
+        // for a genuinely wedged turn, and giving up after the first one left the chat
+        // unreachable — by the user and by the app alike — for as long as the tab stayed open.
+        if (Date.now() - stallRestartAt > STALL_RESTART_RETRY_MS) {
+          stallRestartAt = Date.now();
+          void restartStalledTurn();
+        }
       }
     }
 
