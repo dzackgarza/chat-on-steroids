@@ -810,7 +810,8 @@ describe('extension command delivery', () => {
     expect(worker.tabsReload).not.toHaveBeenCalled();
 
     // The waiting document polls about once a second and is told the same thing every time.
-    for (let poll = 1; poll < 20; poll++) await defer();
+    // Fewer polls than its own hand-back window, or it stops asking before this can act.
+    for (let poll = 1; poll < 8; poll++) await defer();
 
     expect(worker.tabsReload).toHaveBeenCalledWith(41);
     // Once only: a chat that is merely slow must not be reloaded over and over.
