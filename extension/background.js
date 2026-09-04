@@ -2170,6 +2170,7 @@ const HANDLERS = {
   async forget_revival(message, _sender, source) {
     await load();
     if (!ownsDocument(source)) return { ok: false, error: 'stale_document' };
+    forgetCommandTab(message.id);
     await forgetDeferredRevival(message.id);
     return { ok: true };
   },
@@ -2186,6 +2187,7 @@ const HANDLERS = {
     // ackCommand first made this irreversible page result durable in the browser-owned outbox.
     // From that point recovery must never reopen the pre-send marker, even if the bridge HTTP
     // response itself was lost; the outbox is now the sole retry path.
+    forgetCommandTab(message.id);
     await forgetDeferredRevival(message.id);
     return result;
   }
@@ -2357,6 +2359,60 @@ function conversationForTab(tab) {
 const revivalReuseAttempted = new Map();
 
 /**
+ * Tabs the app opened for a command, and when.
+ *
+ * The app opens one tab per command and nothing closes it unless the command completes. A
+ * command that is refused or expires therefore leaves its tab behind, and a caller pushing
+ * every twenty minutes accumulates them until the browser is full of identical chats. The app
+ * cannot close a tab; only this worker can, so a tab is closed here once the command that
+ * justified opening it can no longer be alive.
+ */
+const commandTabs = new Map();
+/**
+ * How long a command tab may live unacknowledged.
+ *
+ * The app gives a command ninety seconds, after which it is dropped and the tab is holding
+ * nothing. The sweep runs on the existing one-minute alarm, so the margin keeps a tab that is
+ * seconds away from acknowledging from being closed underneath it.
+ */
+const COMMAND_TAB_TTL_MS = 150_000;
+/**
+ * How long a deferred revival marker can still name a live command.
+ *
+ * Recovery opens a tab for every marker it cannot find a tab for, and it runs on every service
+ * worker start. Nothing aged these entries out, so a marker left by a command that died hours
+ * ago was still recovered — and a browser restart after a long day opened one tab per dead
+ * marker, dozens at once. The app never keeps a queued command beyond thirty minutes, so a
+ * marker older than that names nothing and must not open anything.
+ */
+const DEFERRED_REVIVAL_TTL_MS = 30 * 60 * 1000;
+
+function noteCommandTab(tabId, commandId) {
+  if (typeof tabId !== 'number' || !commandId) return;
+  if (!commandTabs.has(tabId)) commandTabs.set(tabId, { commandId, openedAt: Date.now() });
+}
+
+function forgetCommandTab(commandId) {
+  for (const [tabId, entry] of commandTabs) {
+    if (entry.commandId === commandId) commandTabs.delete(tabId);
+  }
+}
+
+/** Closes the tabs of commands that can no longer complete. */
+async function sweepCommandTabs(now = Date.now()) {
+  for (const [tabId, entry] of [...commandTabs]) {
+    if (now - entry.openedAt < COMMAND_TAB_TTL_MS) continue;
+    commandTabs.delete(tabId);
+    if (!chrome.tabs || typeof chrome.tabs.remove !== 'function') continue;
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {
+      // Already gone, which is the same outcome.
+    }
+  }
+}
+
+/**
  * How many times a tab the app opened defers to a tab that already holds the chat before that
  * other tab is reloaded. The waiting document polls about once a second.
  *
@@ -2402,6 +2458,8 @@ function maybeReuseRevivalTab(tabId, url) {
   if (typeof tabId !== 'number') return false;
   const conversation = conversationFromUrl(url);
   const commandId = markerFromUrl(url);
+  // Every marked tab is one the app opened for a command, whether or not it names a chat.
+  if (commandId) noteCommandTab(tabId, commandId);
   // Only ever a marked URL naming a concrete conversation, which is only ever a revival.
   if (!conversation || !commandId) return false;
   if (revivalReuseAttempted.get(tabId) === commandId) return false;
@@ -2603,8 +2661,26 @@ function recoverDeferredRevivals() {
     // browser restart between ChatGPT accepting the message and the app accepting the ACK.
     const ackIds = new Set(commandAckOutbox.map((entry) => deferredRevivalId(entry?.id)).filter(Boolean));
     const before = deferredRevivals.length;
+    const freshEnough = (entry) => {
+      const queuedAt = Number(entry?.queuedAt);
+      // An entry with no usable timestamp predates this rule; treat it as expired rather than
+      // immortal, since that is the state that opened tabs for commands nobody remembers.
+      if (!Number.isFinite(queuedAt)) return false;
+      return Date.now() - queuedAt < DEFERRED_REVIVAL_TTL_MS;
+    };
+    const expired = deferredRevivals.filter((entry) => !freshEnough(entry));
+    for (const entry of expired) {
+      const id = deferredRevivalId(entry?.id);
+      if (!id) continue;
+      deferredRevivalOffers.delete(id);
+      delete revivalPreferences[id];
+    }
     deferredRevivals = deferredRevivals.filter(
-      (entry) => deferredRevivalId(entry?.id) && cleanConversationId(entry?.conversationId) && !ackIds.has(entry.id)
+      (entry) =>
+        deferredRevivalId(entry?.id) &&
+        cleanConversationId(entry?.conversationId) &&
+        !ackIds.has(entry.id) &&
+        freshEnough(entry)
     );
     if (deferredRevivals.length !== before) await persistLive();
     if (deferredRevivals.length === 0) return;
@@ -2743,6 +2819,7 @@ if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addLi
     void drainCommandAcks()
       .then(() => drain())
       .then(() => drainCloses())
+      .then(() => sweepCommandTabs())
       .catch(() => undefined);
   });
 }
