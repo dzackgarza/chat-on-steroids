@@ -956,12 +956,14 @@ flight, so a chat that is merely busy refuses exactly like a wedged one. Compare
 timestamp before and after the attempt: the push takes up to two minutes and a live chat emits
 rows throughout, so a clock that moved means alive and a clock that did not means dead.
 
-**The stall bar is measured, not guessed.** Across 100 hours of recorded live turns the gap
-between rows runs 8.5s at the median, 27s at p90, 85s at p99 and 248s at p99.9. `just chats`
-calls a turn stalled at five minutes. Anything tighter sits inside ordinary working behaviour:
-at a one-minute bar a live chat is past it during 8% of its working time. The asymmetry sets
-the number — a missed stall costs one polling interval, a false one ends a chat that was
-working and hands its context to a summary.
+**The stall bar is eager, and the timestamp re-check is what makes that safe.** Recorded gaps
+between rows inside a live turn run 8.2s at the median and 26s at p90; separating turns that
+never stalled from turns that did barely changes the tail, so a multi-minute gap in the
+recording is not evidence of slow work — it is the recording being coarser than the agent's
+real contact with the app. `just chats` calls a turn stalled at ninety seconds. Being early
+costs one refused push, since the re-check above leaves a chat alone when its clock moved.
+Being late costs a whole polling interval of a chat doing nothing, which is the expensive
+side.
 
 **A stalled chat cannot be rescued from outside.** The composer refuses while a turn is in
 flight, which is exactly the state worth rescuing, so only the page can break it. That is why
