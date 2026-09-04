@@ -1240,6 +1240,8 @@ async function forgetDeferredRevival(idValue) {
   deferredRevivals = deferredRevivals.filter((entry) => entry && entry.id !== id);
   deferredRevivalOffers.delete(id);
   delete revivalPreferences[id];
+  revivalDeferrals.delete(id);
+  revivalTabReloaded.delete(id);
   if (deferredRevivals.length !== before) await persistLive();
   return deferredRevivals.length !== before;
 }
@@ -2151,9 +2153,11 @@ const HANDLERS = {
       );
       if (preferred) {
         await rememberPreferredRevival(id, conversationId, senderTabId, preferred.id);
+        await reloadHeldTab(id, preferred.id);
         return { ok: true, deferred: true, preferredElsewhere: true };
       }
       if (knownPreference?.preferredTabId && knownPreference.preferredTabId !== senderTabId) {
+        await reloadHeldTab(id, knownPreference.preferredTabId);
         // The preferred tab may be between query visibility and document registration. Keep the
         // fallback fenced until a concrete lifecycle event proves that tab really left.
         return { ok: true, deferred: true, preferredElsewhere: true };
@@ -2351,6 +2355,43 @@ function conversationForTab(tab) {
 // existing document twice, while keying this only by tab id makes a long-lived worker tab's
 // *previous* revival look like fallback authority for every later wake.
 const revivalReuseAttempted = new Map();
+
+/**
+ * How many times a tab the app opened defers to a tab that already holds the chat before that
+ * other tab is reloaded. The waiting document polls about once a second.
+ */
+const DEFERRALS_BEFORE_RELOAD = 20;
+/** Deferrals seen per command, and the commands whose held tab has already been reloaded. */
+const revivalDeferrals = new Map();
+const revivalTabReloaded = new Set();
+
+/**
+ * Reloads a tab that holds a chat and will not act on the command for it.
+ *
+ * Preferring the tab that already has the conversation is right while that tab is a live,
+ * current document. It can also be one left over from before an extension reload, or one whose
+ * page is stuck behind a turn ChatGPT never finished. Such a tab holds the chat and never
+ * redeems, and until now the only thing that fixed it was a person pressing reload — which is
+ * not a thing the app can ask for every time a chat wedges.
+ *
+ * A reload is the one action available from here that fixes both causes at once: it clears the
+ * stuck turn and injects the current content script. Once per command, so a chat that is merely
+ * slow is never reloaded repeatedly, and never a tab the user is typing into — a document with a
+ * draft refuses the command itself, before any of this.
+ */
+async function reloadHeldTab(id, tabId) {
+  if (typeof tabId !== 'number' || revivalTabReloaded.has(id)) return;
+  const seen = (revivalDeferrals.get(id) ?? 0) + 1;
+  revivalDeferrals.set(id, seen);
+  if (seen < DEFERRALS_BEFORE_RELOAD) return;
+  revivalTabReloaded.add(id);
+  if (!chrome.tabs || typeof chrome.tabs.reload !== 'function') return;
+  try {
+    await chrome.tabs.reload(tabId);
+  } catch {
+    // The tab went away, which is the other way this resolves.
+  }
+}
 
 function maybeReuseRevivalTab(tabId, url) {
   if (typeof tabId !== 'number') return false;
