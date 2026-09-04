@@ -186,11 +186,12 @@ chats:
         when = newest.get("time", 0) if newest else meta["updatedAt"]
 
         # A turn nothing has added to for a while is not generating, whatever the last event
-        # says. A working chat writes prose, runs a command or reports a tool result every few
-        # seconds; ninety seconds of nothing is already unusual and several minutes is not a
-        # slow turn, it is a turn that stopped. Reading those as `busy` is how a wedge sits
-        # unnoticed while every row insists work is happening.
-        if state == "busy" and time.time() - when / 1000 > 90:
+        # says. A working agent is in continuous contact with this app: it writes prose, runs a
+        # command, reports a tool result, and even its waiting on a long command arrives here as
+        # rows of its own. So a gap is not a slow turn, it is a turn that stopped, and the gap
+        # that proves it is a minute rather than several. Reading a longer silence as `busy` is
+        # how a wedge sits unnoticed while every row insists work is happening.
+        if state == "busy" and time.time() - when / 1000 > 60:
             state = "stalled"
 
         rows.append((when, chat, state, describe(newest) if newest else "-"))
