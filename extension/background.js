@@ -1138,6 +1138,16 @@ function deferredRevivalId(value) {
   return id && id.length <= 128 ? id : null;
 }
 
+// A marker's age is the age of the wake it stands for, not of the last time a tab restated its
+// preference. Re-queuing the same id carries the original stamp forward; stamping Date.now() again
+// holds the entry permanently under the TTL in recoverDeferredRevivals(), which then reopens that
+// conversation's tab on every service-worker start for the life of the profile.
+function carriedQueuedAt(id) {
+  const existing = deferredRevivals.find((entry) => entry && deferredRevivalId(entry.id) === id);
+  const queuedAt = Number(existing?.queuedAt);
+  return Number.isFinite(queuedAt) ? queuedAt : Date.now();
+}
+
 async function rememberDeferredRevival(idValue, conversationValue) {
   await load();
   const id = deferredRevivalId(idValue);
@@ -1162,7 +1172,7 @@ async function rememberDeferredRevival(idValue, conversationValue) {
         entry.id !== id &&
         cleanConversationId(entry.conversationId) !== conversationId
     ),
-    { id, conversationId, queuedAt: Date.now() }
+    { id, conversationId, queuedAt: carriedQueuedAt(id) }
   ].slice(-100);
   await persistLive();
   return true;
@@ -1204,7 +1214,7 @@ async function rememberPreferredRevival(idValue, conversationValue, fallbackTabI
         entry.id !== id &&
         cleanConversationId(entry.conversationId) !== conversationId
     ),
-    { id, conversationId, queuedAt: Date.now() }
+    { id, conversationId, queuedAt: carriedQueuedAt(id) }
   ].slice(-100);
   revivalPreferences[id] = { conversationId, fallbackTabId, preferredTabId };
   await persistLive();
@@ -1230,6 +1240,30 @@ function clearRevivalPreferencesForTab(tabId) {
     }
   }
   return changed;
+}
+
+// Closing a conversation's tab retires its wake. Dropping only the preference leaves the marker,
+// and recoverDeferredRevivals() then reopens that conversation on the next service-worker start,
+// so a closed tab reappears no matter how often it is closed.
+function forgetDeferredRevivalsForConversation(conversationValue) {
+  const conversationId = cleanConversationId(conversationValue);
+  if (!conversationId) return false;
+  const doomed = deferredRevivals.filter(
+    (entry) => entry && cleanConversationId(entry.conversationId) === conversationId
+  );
+  if (doomed.length === 0) return false;
+  for (const entry of doomed) {
+    const id = deferredRevivalId(entry.id);
+    if (!id) continue;
+    deferredRevivalOffers.delete(id);
+    delete revivalPreferences[id];
+    revivalDeferrals.delete(id);
+    revivalTabReloaded.delete(id);
+  }
+  deferredRevivals = deferredRevivals.filter(
+    (entry) => entry && cleanConversationId(entry.conversationId) !== conversationId
+  );
+  return true;
 }
 
 async function forgetDeferredRevival(idValue) {
@@ -2483,7 +2517,19 @@ chrome.tabs.onRemoved.addListener((id) => {
   revivalReuseAttempted.delete(id);
   clearDeferredRevivalOffersForTab(id);
   void serializeTab(id, async () => {
-    if (clearRevivalPreferencesForTab(id)) await persistLive();
+    await load();
+    const conversationId = cleanConversationId(tabConversations[String(id)]);
+    let changed = clearRevivalPreferencesForTab(id);
+    // Only the last tab showing a conversation retires its wake; a duplicate closing leaves the
+    // original tab's marker alone. The closing tab's own entry still stands here, so it must be
+    // excluded or the conversation always looks open and no marker is ever retired.
+    const openElsewhere = Object.entries(tabConversations).some(
+      ([key, value]) => key !== String(id) && cleanConversationId(value) === conversationId
+    );
+    if (conversationId && !openElsewhere) {
+      changed = forgetDeferredRevivalsForConversation(conversationId) || changed;
+    }
+    if (changed) await persistLive();
     const documentId = await markTerminal(id);
     return releaseTab(id, null, documentId);
   }).catch(() => undefined);
