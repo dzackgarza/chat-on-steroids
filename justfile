@@ -412,20 +412,18 @@ tidy quiet="30" keep="":
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
 
-    # One healthy tab runs every archive call. Executing in the target's own tab is what made
-    # this fail: a page wedged enough to be worth archiving is exactly the page that cannot run
-    # the request, and the conversation is named explicitly so any tab serves.
-    healthy = None
-    for target in targets:
-        if target.get("type") == "page" and "chatgpt.com" in (target.get("url") or ""):
-            probe = subprocess.run(
-                ["timeout", "10", "websocat", "-n1", "-B", "16777216", target["webSocketDebuggerUrl"]],
-                input=json.dumps({"id": 1, "method": "Runtime.evaluate",
-                                  "params": {"expression": "1+1", "returnByValue": True}}),
-                capture_output=True, text=True).stdout
-            if '"value":2' in probe:
-                healthy = target["webSocketDebuggerUrl"]
-                break
+    # Archive calls run in a tab opened for the purpose, not in an existing one. Two reasons:
+    # a page wedged enough to be worth archiving cannot run the request, and Chromium freezes
+    # the renderer of a tab left in the background long enough, so an idle tab stops answering
+    # CDP entirely — which is every tab, by the time a sweep is worth running.
+    scratch = subprocess.run(
+        ["curl", "-s", "-m", "10", "-X", "PUT", "{{devtools}}/json/new?https://chatgpt.com/"],
+        capture_output=True, text=True).stdout
+    healthy = scratch_id = None
+    if scratch.strip().startswith("{"):
+        opened = json.loads(scratch)
+        scratch_id, healthy = opened.get("id"), opened.get("webSocketDebuggerUrl")
+        time.sleep(6)  # the page has to reach a state where it can run a request at all
     keep = {c.strip() for c in "{{keep}}".split(",") if c.strip()}
 
     def archive(chat, ws):
@@ -485,6 +483,9 @@ tidy quiet="30" keep="":
             print(f"archived and closed    {chat}  ({idle/60:.0f}m idle)")
         else:
             print(f"COULD NOT ARCHIVE      {chat}  (status {status}) — tab left open")
+
+    if scratch_id:
+        dt("/json/close/" + scratch_id)
 
 # What a chat is: driven prime, swarm worker, or nothing the app is still using
 #
