@@ -211,6 +211,146 @@ chats hours="24":
         clock = time.strftime("%m-%d %H:%M:%S", time.localtime(updated / 1000))
         print(f"{clock}\t{chat}\t{state}\t{action}")
 
+# ---------------------------------------------------------------------------
+# The browser's actual tabs.
+#
+# `chats` reports what this app recorded; it cannot see a tab. Chromium's DevTools endpoint
+# can, and it is the only thing that knows a conversation is open twice. Every tab the app
+# opens carries a `clf` marker and nothing closes it when the command ends, so tabs pile up:
+# duplicates of live chats, and chats whose work finished hours ago.
+#
+# Needs Chromium started with --remote-debugging-port=9222.
+
+devtools := "http://127.0.0.1:9222"
+
+# Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
+tabs quiet="30":
+    #!/usr/bin/env python3
+    import json, subprocess, pathlib, time, glob
+
+    def dt(path):
+        out = subprocess.run(["curl", "-s", "-m", "5", "{{devtools}}" + path],
+                             capture_output=True, text=True).stdout
+        return json.loads(out) if out.strip().startswith(("[", "{")) else None
+
+    targets = dt("/json")
+    if targets is None:
+        raise SystemExit("DevTools is not answering on {{devtools}} — start Chromium with --remote-debugging-port=9222")
+
+    sessions = pathlib.Path("{{sessions_dir}}")
+    last, titles = {}, {}
+    for meta_file in sessions.glob("*/meta.json"):
+        meta = json.loads(meta_file.read_text())
+        chat = meta.get("conversationId")
+        if not chat:
+            continue
+        titles[chat] = " ".join((meta.get("title") or "").split())[:38]
+        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
+        if rows:
+            last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
+
+    quiet = float("{{quiet}}") * 60
+    now = time.time()
+    seen = set()
+    for target in targets:
+        if target.get("type") != "page" or "chatgpt.com/c/" not in (target.get("url") or ""):
+            continue
+        chat = target["url"].split("/c/")[1].split("?")[0].split("#")[0]
+        idle = now - last[chat] if chat in last else None
+        # One conversation, two tabs: the second is a tab a later command opened rather than
+        # reusing the one already showing that chat. Only the first is worth keeping.
+        if chat in seen:
+            verdict = "duplicate"
+        elif idle is None:
+            verdict = "unrecorded"
+        elif idle > quiet:
+            verdict = "stale"
+        else:
+            verdict = "live"
+        seen.add(chat)
+        age = f"{idle/60:5.0f}m" if idle is not None else "    ?"
+        print(f"{verdict:<10} {age}  {chat}  {titles.get(chat, '')}")
+
+# Archive the finished chats in ChatGPT and close their tabs, plus any duplicate tabs
+tidy quiet="30":
+    #!/usr/bin/env python3
+    import json, subprocess, pathlib, time, glob
+
+    def dt(path):
+        out = subprocess.run(["curl", "-s", "-m", "5", "{{devtools}}" + path],
+                             capture_output=True, text=True).stdout
+        return json.loads(out) if out.strip().startswith(("[", "{")) else out
+
+    targets = dt("/json")
+    if not isinstance(targets, list):
+        raise SystemExit("DevTools is not answering on {{devtools}}")
+
+    sessions = pathlib.Path("{{sessions_dir}}")
+    last = {}
+    for meta_file in sessions.glob("*/meta.json"):
+        meta = json.loads(meta_file.read_text())
+        chat = meta.get("conversationId")
+        if not chat:
+            continue
+        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
+        if rows:
+            last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
+
+    def archive(chat, ws):
+        """Archive through the page's own session, which is the only thing holding the
+        credentials. The conversation and the operation are both named explicitly, so this
+        cannot land on delete the way driving the chat's menu could."""
+        # Built by concatenation rather than an f-string: a literal doubled brace is how just
+        # opens an interpolation, and this recipe is read by just before Python ever sees it.
+        expr = (
+            "(async () => {"
+            ' const s = await (await fetch("/api/auth/session", {credentials:"include"})).json();'
+            ' const r = await fetch("/backend-api/conversation/' + chat + '", {'
+            '   method: "PATCH",'
+            '   headers: {"Content-Type":"application/json", "Authorization":"Bearer " + s.accessToken},'
+            '   credentials: "include",'
+            '   body: JSON.stringify({is_archived: true})'
+            " });"
+            " return r.status;"
+            "})()"
+        )
+        payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
+                              "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
+        got = subprocess.run(["websocat", "-n1", ws], input=payload, capture_output=True, text=True).stdout
+        try:
+            return json.loads(got)["result"]["result"]["value"]
+        except Exception:
+            return None
+
+    quiet = float("{{quiet}}") * 60
+    now = time.time()
+    seen = set()
+    for target in targets:
+        if target.get("type") != "page" or "chatgpt.com/c/" not in (target.get("url") or ""):
+            continue
+        chat = target["url"].split("/c/")[1].split("?")[0].split("#")[0]
+        idle = now - last[chat] if chat in last else None
+
+        if chat in seen:
+            # A second tab on a conversation that is still live: close the tab, keep the chat.
+            dt("/json/close/" + target["id"])
+            print(f"closed duplicate tab   {chat}")
+            continue
+        seen.add(chat)
+
+        if idle is None or idle <= quiet:
+            print(f"kept                   {chat}  ({'unrecorded' if idle is None else f'{idle/60:.0f}m idle'})")
+            continue
+
+        status = archive(chat, target["webSocketDebuggerUrl"])
+        if status == 200:
+            dt("/json/close/" + target["id"])
+            print(f"archived and closed    {chat}  ({idle/60:.0f}m idle)")
+        else:
+            print(f"COULD NOT ARCHIVE      {chat}  (status {status}) — tab left open")
+
 # What a chat is: driven prime, swarm worker, or nothing the app is still using
 #
 # Paste the id from a tab's URL. Answers the only question a pile of open tabs raises —
