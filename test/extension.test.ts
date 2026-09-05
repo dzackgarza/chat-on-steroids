@@ -409,6 +409,8 @@ interface WorkerHarness {
   send(message: Record<string, unknown>, tabId?: number, documentId?: string): Promise<any>;
   /** Fires Chrome's real tab-close lifecycle event. */
   closeTab(tabId: number): Promise<void>;
+  /** Fires the periodic retry/sweep alarm. */
+  fireAlarm(): Promise<void>;
   /** Fires only Chrome's navigation-start signal, without inventing a replacement document. */
   startTabNavigation(tabId: number, url?: string): Promise<void>;
   /** Fires Chrome's tab URL-change lifecycle event. */
@@ -482,6 +484,7 @@ function loadWorker(options: {
     return created;
   };
   const event = () => ({ addListener: () => undefined });
+  const alarmListeners: ((alarm: { name: string }) => void)[] = [];
   const chrome = {
     storage: { local: options.local, session: options.session },
     runtime: {
@@ -506,7 +509,11 @@ function loadWorker(options: {
     alarms: {
       create: alarmCreate,
       clear: alarmClear,
-      onAlarm: event()
+      onAlarm: {
+        addListener(fn: (alarm: { name: string }) => void) {
+          alarmListeners.push(fn);
+        }
+      }
     },
     tabs: {
       create: tabsCreate,
@@ -568,6 +575,10 @@ function loadWorker(options: {
     async createTab(tab: { id: number; url?: string; pendingUrl?: string }) {
       for (const fn of tabCreatedListeners) fn(tab);
       for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+    async fireAlarm() {
+      for (const fn of alarmListeners) fn({ name: 'clf-bridge-drain' });
+      for (let turn = 0; turn < 8; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     },
     async closeTab(tabId: number) {
       for (const fn of tabRemovedListeners) fn(tabId);
@@ -808,6 +819,31 @@ describe('extension command delivery', () => {
     const opened = worker.tabsCreate.mock.calls.map((call) => String((call[0] as any)?.url ?? ''));
     expect(opened.some((url) => url.includes(fresh))).toBe(true);
     expect(opened.some((url) => url.includes(ancient))).toBe(false);
+  });
+
+  /**
+   * The app opens a tab per command, and the extension is the only thing that ever closes one
+   * whose command never acknowledged. Custody lived in a plain Map, and the service worker is
+   * torn down every few idle seconds, so the sweep woke with nothing to sweep: every such tab
+   * stayed open for the life of the browser, and they accumulated one per unacknowledged command
+   * until the window held well over a hundred.
+   */
+  it('closes an unacknowledged command tab after the service worker restarts', async () => {
+    const session = new FakeStorageArea();
+    const first = loadWorker({ local: new FakeStorageArea(), session, tabsQuery: async () => [] });
+    await first.createTab({ id: 77, url: 'https://chatgpt.com/?clf=cmd-orphan' });
+    // Custody is persisted after the storage read that fills the snapshot, so let that settle.
+    for (let turn = 0; turn < 12; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((session.data.commandTabs ?? []) as unknown[]).toHaveLength(1);
+
+    // A fresh worker over the same session storage is what an MV3 teardown looks like. The tab
+    // was opened long enough ago that its command can no longer complete.
+    const custody = session.data.commandTabs as { openedAt: number }[];
+    custody[0]!.openedAt = Date.now() - 10 * 60 * 1000;
+    const second = loadWorker({ local: new FakeStorageArea(), session, tabsQuery: async () => [] });
+    await second.fireAlarm();
+
+    expect(second.tabsRemove).toHaveBeenCalledWith(77);
   });
 
   /**
