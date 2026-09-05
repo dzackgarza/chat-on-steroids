@@ -261,7 +261,7 @@ gpt limit="100" match="" archived="false":
     )
     payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
+    raw = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
     value = json.loads(raw)["result"]["result"].get("value")
     if not value:
         raise SystemExit("ChatGPT did not answer: " + raw[:300])
@@ -307,7 +307,7 @@ archive chat:
     )
     payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
+    raw = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
     status = json.loads(raw)["result"]["result"].get("value")
     print("archived {{chat}}" if status == 200 else f"could not archive: status {status}")
 
@@ -361,7 +361,10 @@ tabs quiet="30":
         print(f"{verdict:<10} {age}  {chat}  {titles.get(chat, '')}")
 
 # Archive the finished chats in ChatGPT and close their tabs, plus any duplicate tabs
-tidy quiet="30":
+#
+# `keep` is a comma-separated list of conversation ids never to archive, whatever their idle
+# time — a chat under active management is quiet between pushes, and quiet is not finished.
+tidy quiet="30" keep="":
     #!/usr/bin/env python3
     import json, subprocess, pathlib, time, glob
 
@@ -386,6 +389,22 @@ tidy quiet="30":
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
 
+    # One healthy tab runs every archive call. Executing in the target's own tab is what made
+    # this fail: a page wedged enough to be worth archiving is exactly the page that cannot run
+    # the request, and the conversation is named explicitly so any tab serves.
+    healthy = None
+    for target in targets:
+        if target.get("type") == "page" and "chatgpt.com" in (target.get("url") or ""):
+            probe = subprocess.run(
+                ["timeout", "10", "websocat", "-n1", "-B", "16777216", target["webSocketDebuggerUrl"]],
+                input=json.dumps({"id": 1, "method": "Runtime.evaluate",
+                                  "params": {"expression": "1+1", "returnByValue": True}}),
+                capture_output=True, text=True).stdout
+            if '"value":2' in probe:
+                healthy = target["webSocketDebuggerUrl"]
+                break
+    keep = {c.strip() for c in "{{keep}}".split(",") if c.strip()}
+
     def archive(chat, ws):
         """Archive through the page's own session, which is the only thing holding the
         credentials. The conversation and the operation are both named explicitly, so this
@@ -406,7 +425,8 @@ tidy quiet="30":
         )
         payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                               "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-        got = subprocess.run(["websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
+        got = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws],
+                             input=payload, capture_output=True, text=True).stdout
         try:
             return json.loads(got)["result"]["result"]["value"]
         except Exception:
@@ -428,11 +448,15 @@ tidy quiet="30":
             continue
         seen.add(chat)
 
-        if idle is None or idle <= quiet:
-            print(f"kept                   {chat}  ({'unrecorded' if idle is None else f'{idle/60:.0f}m idle'})")
+        if idle is None or idle <= quiet or chat in keep:
+            why = "under management" if chat in keep else ("unrecorded" if idle is None else f"{idle/60:.0f}m idle")
+            print(f"kept                   {chat}  ({why})")
             continue
 
-        status = archive(chat, target["webSocketDebuggerUrl"])
+        if not healthy:
+            print(f"no healthy tab to archive through — {chat} left open")
+            continue
+        status = archive(chat, healthy)
         if status == 200:
             dt("/json/close/" + target["id"])
             print(f"archived and closed    {chat}  ({idle/60:.0f}m idle)")
