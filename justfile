@@ -223,6 +223,90 @@ chats hours="24":
 
 devtools := "http://127.0.0.1:9222"
 
+# Your ChatGPT conversations themselves, newest first — not just the ones this app recorded
+#
+# Read from ChatGPT through a tab's own session, so it sees every conversation on the account
+# rather than the subset this app happens to have observed. `match` filters on the title.
+# Pass archived="true" to list what has already been archived instead.
+gpt limit="100" match="" archived="false":
+    #!/usr/bin/env python3
+    import json, subprocess, time, calendar
+
+    targets = json.loads(subprocess.run(
+        ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
+    ws = next((t["webSocketDebuggerUrl"] for t in targets
+               if t.get("type") == "page" and "chatgpt.com" in (t.get("url") or "")), None)
+    if not ws:
+        raise SystemExit("no ChatGPT tab is open — the account's own session is what lists these")
+
+    expr = (
+        "(async () => {"
+        ' const s = await (await fetch("/api/auth/session", {credentials:"include"})).json();'
+        ' const out = []; let offset = 0;'
+        " while (out.length < " + "{{limit}}" + ") {"
+        '   const r = await fetch("/backend-api/conversations?order=updated&is_archived={{archived}}&offset=" + offset + "&limit=100",'
+        '     {headers: {"Authorization": "Bearer " + s.accessToken}, credentials: "include"});'
+        "   if (r.status !== 200) return JSON.stringify({error: r.status});"
+        "   const j = await r.json();"
+        "   const items = j.items || [];"
+        "   if (!items.length) break;"
+        "   for (const i of items) out.push([i.id, i.update_time, i.title]);"
+        "   offset += items.length;"
+        "   if (offset >= j.total) break;"
+        " }"
+        " return JSON.stringify({items: out});"
+        "})()"
+    )
+    payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
+                          "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
+    raw = subprocess.run(["websocat", "-n1", ws], input=payload, capture_output=True, text=True).stdout
+    value = json.loads(raw)["result"]["result"].get("value")
+    if not value:
+        raise SystemExit("ChatGPT did not answer: " + raw[:300])
+    body = json.loads(value)
+    if "error" in body:
+        raise SystemExit(f"ChatGPT refused the listing with status {body['error']}")
+
+    match = "{{match}}".lower()
+    for chat, updated, title in body["items"]:
+        title = " ".join((title or "").split())
+        if match and match not in title.lower():
+            continue
+        stamp = calendar.timegm(time.strptime(updated.split(".")[0], "%Y-%m-%dT%H:%M:%S"))
+        print(f"{time.strftime('%m-%d %H:%M', time.localtime(stamp))}\t{chat}\t{title[:60]}")
+
+# Archive one conversation in ChatGPT, whether or not it has a tab open
+archive chat:
+    #!/usr/bin/env python3
+    import json, subprocess
+
+    targets = json.loads(subprocess.run(
+        ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
+    # Any ChatGPT tab will do: it is only the execution context that holds the credentials,
+    # and the conversation being archived is named explicitly rather than by what is on screen.
+    ws = next((t["webSocketDebuggerUrl"] for t in targets
+               if t.get("type") == "page" and "chatgpt.com" in (t.get("url") or "")), None)
+    if not ws:
+        raise SystemExit("no ChatGPT tab is open — the account's own session is what archives these")
+
+    expr = (
+        "(async () => {"
+        ' const s = await (await fetch("/api/auth/session", {credentials:"include"})).json();'
+        ' const r = await fetch("/backend-api/conversation/' + "{{chat}}" + '", {'
+        '   method: "PATCH",'
+        '   headers: {"Content-Type":"application/json", "Authorization":"Bearer " + s.accessToken},'
+        '   credentials: "include",'
+        '   body: JSON.stringify({is_archived: true})'
+        " });"
+        " return r.status;"
+        "})()"
+    )
+    payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
+                          "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
+    raw = subprocess.run(["websocat", "-n1", ws], input=payload, capture_output=True, text=True).stdout
+    status = json.loads(raw)["result"]["result"].get("value")
+    print("archived {{chat}}" if status == 200 else f"could not archive: status {status}")
+
 # Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
 tabs quiet="30":
     #!/usr/bin/env python3
