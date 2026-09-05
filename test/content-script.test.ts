@@ -4496,21 +4496,30 @@ describe('a stop button that goes missing while the turn is still running', () =
    * it brought the same banner back, and the app read the silence as death and replaced a chat
    * that was only waiting out a limit.
    */
-  it('clears a chat wedged behind a rate-limit banner and continues it', async () => {
+  it('clears a chat wedged behind a rate-limit dialog and continues it', async () => {
     let dismissed = 0;
+    let stopClicks = 0;
     const submitted: string[] = [];
     live = await harness(undefined, undefined, (document) => {
-      const alert = document.createElement('div');
-      alert.setAttribute('role', 'alert');
-      alert.textContent = 'Too many requests';
-      const close = document.createElement('button');
-      close.setAttribute('aria-label', 'Dismiss');
-      close.addEventListener('click', () => {
+      // ChatGPT's real rate limit: a modal dialog, not the alert banner other failures use, and
+      // its only control reads "Got it". The Stop button stays put, so the page still looks like
+      // it is generating.
+      startGenerating(document);
+      const dialog = document.createElement('div');
+      dialog.setAttribute('role', 'dialog');
+      dialog.textContent = 'Too many requests You are making requests too quickly.';
+      const got = document.createElement('button');
+      got.textContent = 'Got it';
+      got.addEventListener('click', () => {
         dismissed++;
-        alert.remove();
+        dialog.remove();
       });
-      alert.appendChild(close);
-      document.body.appendChild(alert);
+      dialog.appendChild(got);
+      document.body.appendChild(dialog);
+      document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+        stopClicks++;
+        stopGenerating(document);
+      });
       document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
         const composer = document.querySelector('#prompt-textarea')!;
         submitted.push((composer.textContent || '').trim());
@@ -4525,6 +4534,7 @@ describe('a stop button that goes missing while the turn is still running', () =
     await settle(300);
 
     expect(dismissed).toBe(1);
+    expect(stopClicks).toBe(1);
     expect(submitted).toEqual(['Continue']);
   });
 

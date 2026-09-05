@@ -1949,15 +1949,29 @@
     await restartStalledTurn();
   }
 
-  /** Whether a visible banner names a failure a continuation can get past. */
+  /** Whether a visible banner or modal names a failure a continuation can get past. */
   function recoverableError() {
-    const found = CLF_DOM.errors ? CLF_DOM.errors() : [];
-    return found.some((entry) => {
-      const text = String((entry && entry.text) || '').toLowerCase();
+    const matches = (value) => {
+      const text = String(value || '').toLowerCase();
       return RECOVERABLE_ERRORS.some((fragment) => text.includes(fragment));
-    });
+    };
+    const found = CLF_DOM.errors ? CLF_DOM.errors() : [];
+    if (found.some((entry) => matches(entry && entry.text))) return true;
+    // The rate limit is a modal dialog rather than an alert banner, and it is the case that
+    // matters most: while it stands the composer accepts nothing.
+    return CLF_DOM.blockingDialogText ? matches(CLF_DOM.blockingDialogText()) : false;
   }
 
+    // Checked ahead of the generating branch and independently of it. A rate limit leaves the
+    // Stop control in place, so the page still reads as generating and a check that only ran on
+    // the idle side never fired; waiting for the ten-minute stall instead would leave the chat
+    // blocked behind a modal that already told us exactly what is wrong.
+    if (recoverableError()) {
+      if (Date.now() - errorRecoveryAt > ERROR_RECOVERY_RETRY_MS) {
+        errorRecoveryAt = Date.now();
+        void recoverErroredChat();
+      }
+    }
     if (generating && turn) {
       // Stay on the generation we opened. ChatGPT can reorder/replace assistant sections
       // while a turn is running; re-reading the newest DOM turn here has reproduced
@@ -1978,13 +1992,6 @@
           stallRestartAt = Date.now();
           void restartStalledTurn();
         }
-      }
-    } else if (recoverableError()) {
-      // No turn is running and a banner is standing: the chat is wedged rather than idle, and
-      // only clearing the banner and continuing gets it back.
-      if (Date.now() - errorRecoveryAt > ERROR_RECOVERY_RETRY_MS) {
-        errorRecoveryAt = Date.now();
-        void recoverErroredChat();
       }
     }
 
