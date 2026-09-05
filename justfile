@@ -211,6 +211,62 @@ chats hours="24":
         clock = time.strftime("%m-%d %H:%M:%S", time.localtime(updated / 1000))
         print(f"{clock}\t{chat}\t{state}\t{action}")
 
+# What a chat is: driven prime, swarm worker, or nothing the app is still using
+#
+# Paste the id from a tab's URL. Answers the only question a pile of open tabs raises —
+# whether this one is still someone's live work, or a leftover the app has finished with.
+who chat:
+    #!/usr/bin/env python3
+    import json, pathlib, time, glob
+
+    home = pathlib.Path.home()
+    want = "{{chat}}"
+    state = home / ".config/chat-on-steroids/state"
+    sessions = pathlib.Path("{{sessions_dir}}")
+
+    def info_of(entry):
+        if isinstance(entry, list) and len(entry) == 2:
+            entry = entry[1]
+        return entry.get("info") if isinstance(entry, dict) else None
+
+    # When it last actually did something, from its own recording.
+    when, title = None, ""
+    for meta_file in sessions.glob("*/meta.json"):
+        meta = json.loads(meta_file.read_text())
+        if meta.get("conversationId") != want:
+            continue
+        title = " ".join((meta.get("title") or "").split())[:60]
+        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
+        if rows:
+            when = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
+
+    swarm = json.loads((state / "swarm.json").read_text()) if (state / "swarm.json").exists() else {}
+    role = "not part of any run — an ordinary chat"
+    if swarm.get("primeConversationId") == want:
+        role = "prime of the app's CURRENT run"
+    for entry in swarm.get("agents", []):
+        got = info_of(entry)
+        if got and got.get("conversationId") == want:
+            role = f"{got['id']} ({got['state']}) in the CURRENT run — {got.get('label', '')}"
+    for run in swarm.get("dormantRuns") or []:
+        owner = run[0] if isinstance(run, list) else None
+        body = run[1] if isinstance(run, list) and len(run) == 2 else run
+        if owner == want:
+            role = "prime of a DORMANT run — that run is finished"
+        for entry in (body or {}).get("agents", []):
+            got = info_of(entry)
+            if got and got.get("conversationId") == want:
+                role = f"{got['id']} ({got['state']}) of a DORMANT run — that run is finished"
+
+    print(f"chat    {want}")
+    print(f"title   {title or '(not recorded)'}")
+    print(f"role    {role}")
+    if when:
+        print(f"active  {time.strftime('%m-%d %H:%M:%S', time.localtime(when))}  ({(time.time()-when)/60:.0f} min ago)")
+    else:
+        print("active  never recorded by this app")
+
 # Send a message to an open chat, by conversation id (see `just chats`)
 say $chat $text:
     @just -f {{justfile()}} _send "$chat" "$text"
