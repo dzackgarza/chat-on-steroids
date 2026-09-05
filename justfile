@@ -252,14 +252,16 @@ gpt limit="100" match="" archived="false":
         "   if (!items.length) break;"
         "   for (const i of items) out.push([i.id, i.update_time, i.title]);"
         "   offset += items.length;"
-        "   if (offset >= j.total) break;"
+        # The response carries a `total` and it does not agree with what paging returns: it
+        # reported 2 for an account whose pages yield hundreds. An empty page is the only
+        # honest end of the list.
         " }"
         " return JSON.stringify({items: out});"
         "})()"
     )
     payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["websocat", "-n1", ws], input=payload, capture_output=True, text=True).stdout
+    raw = subprocess.run(["websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
     value = json.loads(raw)["result"]["result"].get("value")
     if not value:
         raise SystemExit("ChatGPT did not answer: " + raw[:300])
@@ -272,7 +274,9 @@ gpt limit="100" match="" archived="false":
         title = " ".join((title or "").split())
         if match and match not in title.lower():
             continue
-        stamp = calendar.timegm(time.strptime(updated.split(".")[0], "%Y-%m-%dT%H:%M:%S"))
+        # Some rows carry fractional seconds and some do not, so both the fraction and the
+        # trailing zone marker have to go before this is a fixed-width timestamp.
+        stamp = calendar.timegm(time.strptime(updated.split(".")[0].rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
         print(f"{time.strftime('%m-%d %H:%M', time.localtime(stamp))}\t{chat}\t{title[:60]}")
 
 # Archive one conversation in ChatGPT, whether or not it has a tab open
@@ -303,7 +307,7 @@ archive chat:
     )
     payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["websocat", "-n1", ws], input=payload, capture_output=True, text=True).stdout
+    raw = subprocess.run(["websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
     status = json.loads(raw)["result"]["result"].get("value")
     print("archived {{chat}}" if status == 200 else f"could not archive: status {status}")
 
@@ -402,7 +406,7 @@ tidy quiet="30":
         )
         payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                               "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-        got = subprocess.run(["websocat", "-n1", ws], input=payload, capture_output=True, text=True).stdout
+        got = subprocess.run(["websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
         try:
             return json.loads(got)["result"]["result"]["value"]
         except Exception:
