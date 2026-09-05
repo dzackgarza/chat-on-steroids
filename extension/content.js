@@ -121,6 +121,22 @@
   /** How long to wait for the composer after pressing Stop, before giving up on this attempt. */
   const STALL_RESTART_READY_MS = 30 * 1000;
   /**
+   * Error banners a chat can be brought back from, as lowercase fragments.
+   *
+   * A rate limit ends the turn and leaves a banner standing, and while it stands the
+   * conversation refuses new messages. Reopening the tab does not clear it: the banner belongs
+   * to the conversation, so a chat wedged this way stayed wedged, and the app read it as dead
+   * and replaced a chat that was only waiting out a limit.
+   */
+  const RECOVERABLE_ERRORS = ['too many requests', 'rate limit', 'message delivery timed out'];
+  /**
+   * How long to leave a rate limit alone before trying to clear it.
+   *
+   * Long enough that the limit has plausibly lapsed; retrying inside it just re-earns the same
+   * banner and spends more of the account's capacity.
+   */
+  const ERROR_RECOVERY_RETRY_MS = 5 * 60 * 1000;
+  /**
    * How long a tab the app opened for a command defers to a tab that already holds that chat.
    *
    * Comfortably inside the app's own ninety-second command deadline, so handing the job back
@@ -546,6 +562,13 @@
   let stallReported = false;
   /** When this document last tried to restart a stalled turn. Reset with the turn itself. */
   let stallRestartAt = 0;
+  /**
+   * When this document last tried to clear a recoverable error banner.
+   *
+   * Deliberately not reset with the turn: a rate limit outlives the turn that earned it, and
+   * retrying inside the limit only re-earns the same banner.
+   */
+  let errorRecoveryAt = 0;
   let userStopped = false;
   /**
    * Final public ChatGPT message that already terminalised the local turn while the page's
@@ -1909,6 +1932,32 @@
     await CLF_DOM.send();
   }
 
+  /**
+   * Clears a chat wedged behind a recoverable error banner.
+   *
+   * The stall recovery above only runs while a turn is generating. A rate limit ends the turn,
+   * so nothing there ever fired, and the chat sat behind its banner indefinitely — unreachable
+   * by the user and by the app, which then read the silence as death and replaced it.
+   *
+   * Recovery is the three things a person does, in order: close the notification, stop whatever
+   * the page still thinks is running, then send the shortest continuation there is. Dismissing
+   * alone is not enough, and neither is reopening the tab.
+   */
+  async function recoverErroredChat() {
+    if (!CLF_DOM.dismissErrors) return;
+    CLF_DOM.dismissErrors();
+    await restartStalledTurn();
+  }
+
+  /** Whether a visible banner names a failure a continuation can get past. */
+  function recoverableError() {
+    const found = CLF_DOM.errors ? CLF_DOM.errors() : [];
+    return found.some((entry) => {
+      const text = String((entry && entry.text) || '').toLowerCase();
+      return RECOVERABLE_ERRORS.some((fragment) => text.includes(fragment));
+    });
+  }
+
     if (generating && turn) {
       // Stay on the generation we opened. ChatGPT can reorder/replace assistant sections
       // while a turn is running; re-reading the newest DOM turn here has reproduced
@@ -1929,6 +1978,13 @@
           stallRestartAt = Date.now();
           void restartStalledTurn();
         }
+      }
+    } else if (recoverableError()) {
+      // No turn is running and a banner is standing: the chat is wedged rather than idle, and
+      // only clearing the banner and continuing gets it back.
+      if (Date.now() - errorRecoveryAt > ERROR_RECOVERY_RETRY_MS) {
+        errorRecoveryAt = Date.now();
+        void recoverErroredChat();
       }
     }
 
@@ -8773,6 +8829,7 @@
       /** So a test settles a turn by the real window rather than a copy of the number. */
       TURN_SETTLE_MS,
       STALL_MS,
+      ERROR_RECOVERY_RETRY_MS,
       PRESENTATION_SCROLL_IDLE_MS,
       /** Test-only: production defaults ON; tests opt into renderer cases explicitly. */
       setRenderStream: (on) => {

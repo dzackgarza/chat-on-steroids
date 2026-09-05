@@ -131,6 +131,7 @@ interface Hook {
   TURN_SETTLE_MS: number;
   /** Test seam for the no-visible-progress fallback. */
   STALL_MS: number;
+  ERROR_RECOVERY_RETRY_MS: number;
   /** Test-only gate; production defaults ON while the harness starts presentation OFF. */
   setRenderStream(on: boolean): void;
   renderStreamEnabled(): boolean;
@@ -4488,6 +4489,45 @@ describe('a stop button that goes missing while the turn is still running', () =
    * state nothing could recover. The page already proved this turn is dead; press Stop and
    * restart it.
    */
+  /**
+   * A rate limit ends the turn and leaves its banner standing, and while it stands the
+   * conversation refuses new messages. The stall recovery only runs while a turn is generating,
+   * so nothing cleared this: the chat stayed wedged for as long as the tab was open, reopening
+   * it brought the same banner back, and the app read the silence as death and replaced a chat
+   * that was only waiting out a limit.
+   */
+  it('clears a chat wedged behind a rate-limit banner and continues it', async () => {
+    let dismissed = 0;
+    const submitted: string[] = [];
+    live = await harness(undefined, undefined, (document) => {
+      const alert = document.createElement('div');
+      alert.setAttribute('role', 'alert');
+      alert.textContent = 'Too many requests';
+      const close = document.createElement('button');
+      close.setAttribute('aria-label', 'Dismiss');
+      close.addEventListener('click', () => {
+        dismissed++;
+        alert.remove();
+      });
+      alert.appendChild(close);
+      document.body.appendChild(alert);
+      document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+        const composer = document.querySelector('#prompt-textarea')!;
+        submitted.push((composer.textContent || '').trim());
+        composer.textContent = '';
+      });
+    });
+    live.hook.observe();
+    await settle();
+
+    live.advance(live.hook.ERROR_RECOVERY_RETRY_MS + 1);
+    live.hook.observe();
+    await settle(300);
+
+    expect(dismissed).toBe(1);
+    expect(submitted).toEqual(['Continue']);
+  });
+
   it('restarts a stalled turn instead of only reporting it', async () => {
     let stopClicks = 0;
     const submitted: string[] = [];
