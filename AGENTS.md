@@ -1017,6 +1017,18 @@ permanently unreachable. The chat is alive: its page has a live composer, an ena
 and the chat has real in-flight work. Dismissing the app's own error notice does not help, and
 neither does reloading the tab. Wait for the busy neighbours to go quiet, and push then.
 
+**Most chat deaths are ChatGPT's, not this app's.** A steward watching several chats will see
+them go cold one after another and reach for a local cause. Check who wrote the error string
+first. "A network error occurred. Please check your connection and try again." and "Message
+delivery timed out." appear nowhere in this repository — the extension read them out of
+chatgpt.com's own DOM. Only "No visible progress for ten minutes. The turn is still marked as
+generating." is ours, at `extension/content.js`, and it is a watchdog for a turn that stays
+marked generating while nothing renders. A turn that never completes cannot emit a tool call
+either, so a chat whose `tool_call` events stop is showing the same upstream stall, not a
+separate broken connector. Replacement is still the remedy — a wedged conversation stays
+wedged and a fresh one gets a clean turn — but do not go looking for a local defect to fix,
+and do not read a run of these as this app degrading.
+
 **A chat sitting on a rate limit is not dead, and reopening its tab will not free it.** The
 limit arrives as a modal dialog whose only control reads "Got it", it leaves the Stop button in
 place so the page still looks like it is generating, and it belongs to the conversation rather
