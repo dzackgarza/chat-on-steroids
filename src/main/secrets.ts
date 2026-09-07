@@ -63,6 +63,12 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
  */
 export type SecretKey = 'openaiApiKey' | 'bridgeToken' | 'openRouterApiKey';
 
+let headlessSecretStore = false;
+
+export function enableHeadlessSecretStore(): void {
+  headlessSecretStore = true;
+}
+
 export function initSecretsPath(userDataDir: string): void {
   secretsPath = path.join(userDataDir, FILE_NAME);
 }
@@ -83,8 +89,11 @@ export function secureStorageCiphertextIsProtected(
 }
 
 export async function secureStorageStatus(platform: NodeJS.Platform = process.platform): Promise<SecureStorageInfo> {
+  if (headlessSecretStore) {
+    return { available: true, detail: null };
+  }
   try {
-    if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+    if (!safeStorage || !(await safeStorage.isAsyncEncryptionAvailable())) {
       return {
         available: false,
         detail:
@@ -139,6 +148,19 @@ function parseSecretStore(json: string): Record<string, string> {
 
 async function loadAll(): Promise<Record<string, string>> {
   const generation = loadGeneration;
+  if (headlessSecretStore) {
+    try {
+      const filePath = secretsPath.endsWith('.json') ? secretsPath : `${secretsPath}.json`;
+      const raw = await fs.readFile(filePath, 'utf8');
+      cache = parseSecretStore(raw);
+    } catch (err) {
+      cache = {};
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logWarn(`Headless secret file read failed: ${(err as Error).message}`);
+      }
+    }
+    return cache;
+  }
   // Keychain / Secret Service availability can be transient on macOS/Linux (for example while
   // the login keychain is locked or no desktop keyring has been unlocked yet). Do not attempt
   // decryption in that state and, crucially, do not cache an empty object: once secure storage
@@ -204,6 +226,16 @@ async function readAll(): Promise<Record<string, string>> {
 }
 
 async function writeAll(values: Record<string, string>): Promise<void> {
+  if (headlessSecretStore) {
+    const filePath = secretsPath.endsWith('.json') ? secretsPath : `${secretsPath}.json`;
+    const tmp = `${filePath}.tmp`;
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(tmp, JSON.stringify(values, null, 2), { mode: 0o600 });
+    await fs.rename(tmp, filePath);
+    cache = values;
+    rotationPending = false;
+    return;
+  }
   if (!(await isEncryptionAvailable())) {
     throw new Error('Secure OS credential storage is unavailable, so the key was not saved');
   }
@@ -297,7 +329,12 @@ export function deleteAllSecrets(): Promise<void> {
     rotationPending = false;
     cache = null;
     try {
-      await fs.rm(secretsPath, { force: true });
+      if (headlessSecretStore) {
+        const filePath = secretsPath.endsWith('.json') ? secretsPath : `${secretsPath}.json`;
+        await fs.rm(filePath, { force: true });
+      } else {
+        await fs.rm(secretsPath, { force: true });
+      }
       cache = {};
     } catch (err) {
       logError(`Could not remove stored credentials: ${(err as Error).message}`);
