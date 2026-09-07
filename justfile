@@ -43,12 +43,14 @@ transcript $id="":
 
     found = []
     for entry in root.iterdir():
-        if not entry.is_dir() or want not in entry.name:
+        if not entry.is_dir():
             continue
         try:
-            found.append((json.loads((entry / "meta.json").read_text()), entry))
+            meta = json.loads((entry / "meta.json").read_text())
         except OSError:
             continue
+        if want in entry.name or want in meta.get("id", "") or want in meta.get("conversationId", ""):
+            found.append((meta, entry))
     if not found:
         sys.exit(f"No recording matches {want!r} under {root}")
     meta, session = max(found, key=lambda pair: pair[0]["updatedAt"])

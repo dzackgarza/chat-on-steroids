@@ -19,7 +19,7 @@ function makeRepository(): string {
 }
 
 function commit(repository: string, message: string, email: string): void {
-  execFileSync('git', ['commit', '--allow-empty', '-m', message], {
+  execFileSync('git', ['commit', '--no-verify', '--allow-empty', '-m', message], {
     cwd: repository,
     env: {
       ...process.env,
