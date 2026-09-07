@@ -49,7 +49,7 @@ transcript $id="":
             meta = json.loads((entry / "meta.json").read_text())
         except OSError:
             continue
-        if want in entry.name or want in meta.get("id", "") or want in meta.get("conversationId", ""):
+        if want in entry.name or want in (meta.get("id") or "") or want in (meta.get("conversationId") or ""):
             found.append((meta, entry))
     if not found:
         sys.exit(f"No recording matches {want!r} under {root}")
