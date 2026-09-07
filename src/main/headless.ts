@@ -20,6 +20,7 @@ import { startTunnel, type TunnelHandle } from './tunnel/index.js';
 import { initSessionStore } from './session/store.js';
 import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
+import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
 
 async function main(): Promise<void> {
   console.log(`Starting Chat On Steroids v${APP_VERSION} (Headless Daemon)...`);
@@ -114,8 +115,29 @@ async function main(): Promise<void> {
     }
   }
 
+  // Configure browser opener for headless environments via Chrome DevTools Protocol
+  setBrowserOpener(async (url: string) => {
+    const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
+    try {
+      const res = await fetch(`http://127.0.0.1:${devtoolsPort}/json/new?${encodeURIComponent(url)}`, {
+        method: 'PUT'
+      });
+      if (!res.ok) {
+        console.warn(`Failed to open URL in headless browser via CDP: ${res.statusText}`);
+      }
+    } catch (err) {
+      console.warn(`CDP opener failed on port ${devtoolsPort}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  const bridgePort = await startBridge();
+  if (bridgePort) {
+    console.log(`Local bridge listening on port ${bridgePort}`);
+  }
+
   async function shutdown(): Promise<void> {
     console.log('\nShutting down headless daemon...');
+    await shutdownBridge().catch(() => {});
     if (tunnelHandle) {
       await tunnelHandle.stop().catch(() => {});
     }
