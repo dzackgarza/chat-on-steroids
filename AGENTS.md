@@ -1016,6 +1016,12 @@ expensive way in one such run, and none of it is guessable from the code.
 - **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): Quality audit and card-by-card solution remediation on problem collections.
 - **`research`** (`/home/dzack/research`): Preamble construction workstreams: C (category foundations) and A0 (categorical group actions).
 
+**Check-in reporting.** At each check-in (every 20 minutes), report in chat for each managed workstream:
+- Status of the workstream.
+- A 1-line summary of the last activity.
+- How long ago that activity occurred.
+- The decision on what to do with it (allow it to continue, inject continuation prompt, determination if wedged, orchestrating manual handoff, tidying, etc.).
+
 
 **Count tabs from the browser, never from `just tabs`.** Both `tabs` and `tidy` match only URLs
 containing `/c/<id>`. A tab sitting on bare `chatgpt.com` is invisible to them: it is never
@@ -1134,19 +1140,20 @@ replacement to check what has already landed and to reuse recorded audits; and w
 transcript shows that a unit another was told to start is already done, send that correction to
 the chat holding the stale instruction rather than letting it find out.
 
-### A tick reports nothing
+### Check-in reports
 
-Standing watch produces no status report. Which chats were busy, which were pushed, what `tidy`
-closed, how many tabs there were, which handoff was written — all of it is legible in the
-recordings, the repositories and the loop's own prompt, and repeating it every twenty minutes
-costs the reader more than it tells them. The watch is working when nothing is said.
+At each check-in (every twenty minutes), report the status of each managed repository workstream
+directly in chat:
+- Workstream status.
+- A 1-line summary of its last activity.
+- How long ago that activity occurred.
+- The decision on what to do with it (allow it to continue, inject continuation prompt, determine
+  if wedged, orchestrate manual handoff, tidy tabs, etc.).
 
-Four things are worth a sentence, and only these: a decision the user alone can make; a fault in
-this app or another repository that the watch cannot fix; a policy breach, such as a commit made
-with `--no-verify`; and an error of the watcher's own that changed what happened, such as
-replacing a chat that was alive. Everything else that seems worth saying belongs in a durable
-place instead — a trap in this file, a paragraph in the repository the chats work in, a line in
-the loop's prompt — and once it is written there it is not also said in the reply.
+Keep the report concise. Additionally, escalate immediately if there is: a decision the user alone
+can make; a fault in this app or another repository that the watch cannot fix; a policy breach, such
+as a commit made with `--no-verify`; or an error of the watcher's own that changed what happened.
+
 
 ### The job here is delegation and continuation
 
