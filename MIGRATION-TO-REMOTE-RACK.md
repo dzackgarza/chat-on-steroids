@@ -165,3 +165,66 @@ curl -i -X POST \
   - `exec_command`: Run commands in bash/zsh with persistent session support.
   - `write_stdin`: Interactive stdin for long-running processes.
   - `view_image`: Image inspection.
+
+---
+
+## 6. Headless Shepherding & Browser Service
+
+For autonomous shepherding (`just say`, `just new`, worker agent management) without a desktop client, `rack` runs a headless Chromium instance with the extension under `xvfb-run`.
+
+### Architecture
+
+```text
+ [ CLI: just say / just new ]
+              │
+              │ HTTP POST /send
+              ▼
+   [ bridge.ts (port 8765) ]
+              │
+              │ PUT /json/new?https://chatgpt.com/?clf=<id>
+              ▼
+ [ Headless Chrome (CDP port 9222) ]
+   (chat-on-steroids-browser.service)
+              │
+              │ Extension content.js injects into DOM
+              ▼
+     [ #prompt-textarea ] ──(Click Send)──► [ ChatGPT Backend ]
+```
+
+### Browser Service (`chat-on-steroids-browser.service`)
+
+Located at `~/.config/systemd/user/chat-on-steroids-browser.service`:
+
+```ini
+[Unit]
+Description=Chat On Steroids Headless Chrome Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dzack
+Environment=HOME=/home/dzack
+ExecStart=/usr/bin/xvfb-run -a /home/dzack/.local/share/browsers/chrome/linux-152.0.7977.82/chrome-linux64/chrome --no-sandbox --disable-setuid-sandbox --remote-debugging-port=9222 --user-data-dir=/home/dzack/.config/chrome-cos --load-extension=/home/dzack/gitclones/chat-on-steroids/extension --disable-gpu --no-first-run https://chatgpt.com/
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+### Shepherding Operations on Rack
+
+```bash
+# List recent chats
+just chats 24
+
+# Send a follow-up message to an existing conversation
+just say <conversationId> "<prompt>"
+
+# Start a fresh conversation
+just new "<opening prompt>"
+
+# Inspect browser service
+systemctl --user status chat-on-steroids-browser.service
+```
