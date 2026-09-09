@@ -1088,6 +1088,34 @@ var CLF_DOM = (() => {
     }, []);
   }
 
+  /**
+   * Dismisses ChatGPT's visible error banners and reports how many were closed.
+   *
+   * A rate-limit banner is modal in effect rather than decorative: while it stands, the
+   * conversation refuses a new message, and reopening the tab brings the same banner back
+   * because it belongs to the conversation rather than to the tab. Closing it is the first of
+   * the three things a person does to recover such a chat, ahead of stopping the turn and
+   * sending a continuation.
+   *
+   * Only controls inside a visible alert are clicked, and never one of this extension's own.
+   */
+  function dismissErrors() {
+    return safe(() => {
+      let closed = 0;
+      for (const node of document.querySelectorAll('[role="alert"]')) {
+        if (node.closest && node.closest(OWN_SURFACES)) continue;
+        if (!displayed(node)) continue;
+        const control = node.querySelector(
+          'button[aria-label*="ismiss" i], button[aria-label*="lose" i], button[data-testid*="close" i]'
+        );
+        if (!control) continue;
+        control.click();
+        closed += 1;
+      }
+      return closed;
+    }, 0);
+  }
+
   function composer() {
     return safe(() => document.querySelector('#prompt-textarea'), null);
   }
@@ -1441,6 +1469,7 @@ var CLF_DOM = (() => {
     fiberRef,
     toolLabel,
     errors,
+    dismissErrors,
     composer,
     composerSubmitReady,
     composerBox,
