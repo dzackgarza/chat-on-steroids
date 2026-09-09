@@ -191,6 +191,31 @@ const MAX_COMMANDS = 20;
  * bounded to. This is one user turn in a ChatGPT composer, not a document.
  */
 const MAX_SEND_CHARS = 4_000;
+/**
+ * How long after a send is acknowledged as typed the app keeps expecting the recording to
+ * show a fresh `turn_start` before calling the delivery unverified.
+ *
+ * A click receipt is not delivery. The one proof a message actually reached ChatGPT is the
+ * recorder observing the turn it started, and field recovery work measured wedged chats
+ * coming back to `turn_start` within 90 seconds — so that is the default horizon, and a
+ * caller who knows better may widen or narrow it per send within the clamp below.
+ */
+const SEND_VERIFY_HORIZON_MS = 90_000;
+const MIN_SEND_VERIFY_HORIZON_MS = 5_000;
+const MAX_SEND_VERIFY_HORIZON_MS = 10 * 60_000;
+/**
+ * Durable ledger of texts this app itself asked the browser to type, per conversation.
+ *
+ * This exists for one field-proven wedge: in a background tab ChatGPT's send button reports
+ * enabled and the click silently no-ops, leaving the just-inserted text as an *unsent draft*
+ * that then blocks every later push into that chat ("the composer already holds something").
+ * A draft that exactly matches a text this app previously asked to type is the app's own
+ * manufactured wedge, not user work, and the page is allowed to clear or send it. A draft
+ * matching nothing here stays untouchable — it is somebody's writing.
+ */
+const SEND_LEDGER_STATE = 'bridge-send-ledger';
+const MAX_LEDGER_DRAFTS_PER_CHAT = 8;
+const SEND_LEDGER_TTL_MS = 24 * 60 * 60_000;
 /** The file a local program reads to find the credential for POST /send. */
 const LOCAL_TOKEN_FILE = 'local-token';
 const MAX_COMMAND_RECEIPTS = 64;
@@ -401,6 +426,15 @@ export interface BridgeCommand {
    * the opposite precondition — a chat with no conversation of its own yet.
    */
   conversationId: string | null;
+  /**
+   * Whitespace-squeezed texts this app previously asked to be typed into this exact chat.
+   *
+   * The page compares a pre-existing composer draft against these before refusing: a match
+   * is the app's own wedge (a background-tab click that silently no-opped) and may be
+   * cleared or sent; anything else is user writing and stays untouchable. Empty for the
+   * commands that open a chat which does not exist yet.
+   */
+  staleDrafts: string[];
 }
 
 let server: http.Server | null = null;
@@ -1061,10 +1095,146 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (text.trim().length > MAX_SEND_CHARS) return tooLarge(res, origin);
     const command = queueSend(target, text);
     if (!command) return json(res, 400, { error: 'no_text' }, origin);
+    // The caller may bound how long "typed" is allowed to remain unverified before the
+    // outcome route calls it undelivered. Clamped: a sub-second horizon can only produce
+    // false negatives, and an unbounded one is a caller that never learns the truth.
+    const rawHorizon = body['verifyHorizonMs'];
+    const horizon =
+      typeof rawHorizon === 'number' && Number.isFinite(rawHorizon)
+        ? Math.min(MAX_SEND_VERIFY_HORIZON_MS, Math.max(MIN_SEND_VERIFY_HORIZON_MS, Math.floor(rawHorizon)))
+        : SEND_VERIFY_HORIZON_MS;
+    sendVerifyHorizons.set(command.id, horizon);
+    pruneSendVerifyHorizons();
     // The page refuses to type while this is above zero, and an unattributed call is charged
     // to every chat until its owner is proven — so a caller whose message is never typed needs
     // this number to tell "that chat is busy" from "some other chat's call is blocking it".
-    return json(res, 200, { command, pendingTools: runningToolCalls(target) }, origin);
+    return json(
+      res,
+      200,
+      {
+        command,
+        pendingTools: runningToolCalls(target),
+        verifyHorizonMs: horizon,
+        // Queueing is not delivery. This is where the caller learns what actually happened.
+        outcome: `/send/outcome?id=${encodeURIComponent(command.id)}`
+      },
+      origin
+    );
+  }
+
+  /**
+   * The typed outcome of one queued send, for the local program that posted it.
+   *
+   * A click receipt is never success here. The states, in the order a healthy send moves
+   * through them: `queued` → `delivering` → `typed` (page ACKed, verification pending) →
+   * `sent_verified` (a fresh `turn_start` reached the recording within the horizon). The
+   * terminal alternatives each carry the concrete next action: `typed_unverified`,
+   * `refused` (in-flight tool-call charge rule), `draft_left_in_composer`,
+   * `no_live_composer_tab`, `expired`, `failed`, `unknown_command`.
+   */
+  if (route === '/send/outcome' && req.method === 'GET') {
+    if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
+    const id = url.searchParams.get('id') ?? '';
+    if (!id) return json(res, 400, { error: 'bad_request' }, origin);
+    const receipt = receiptFor(id);
+    if (receipt) {
+      if (receipt.committed && receipt.conversationId) {
+        const horizon = sendVerifyHorizon(id);
+        const turnStartTs = await turnStartAfter(receipt.conversationId, receipt.completedAt);
+        if (turnStartTs !== null) {
+          return json(
+            res,
+            200,
+            {
+              state: 'sent_verified',
+              commandId: id,
+              conversationId: receipt.conversationId,
+              typedAt: receipt.completedAt,
+              turnStartTs,
+              message: 'Delivered: the recording shows the turn starting.'
+            },
+            origin
+          );
+        }
+        const waitedMs = Date.now() - receipt.completedAt;
+        if (waitedMs < horizon) {
+          return json(
+            res,
+            200,
+            {
+              state: 'typed',
+              commandId: id,
+              conversationId: receipt.conversationId,
+              typedAt: receipt.completedAt,
+              waitedMs,
+              horizonMs: horizon,
+              message: 'The page typed and ChatGPT accepted the message; waiting for the recording to show the turn starting.'
+            },
+            origin
+          );
+        }
+        return json(
+          res,
+          200,
+          {
+            state: 'typed_unverified',
+            commandId: id,
+            conversationId: receipt.conversationId,
+            typedAt: receipt.completedAt,
+            waitedMs,
+            horizonMs: horizon,
+            message:
+              'The page reported the text typed and accepted, but no turn_start reached the recording within the horizon. Treat this as NOT delivered: check the tab for a wedged draft or a frozen page, then retry.'
+          },
+          origin
+        );
+      }
+      const reason = receipt.error ?? 'the command failed without a reason';
+      const classified = classifySendFailure(reason);
+      return json(
+        res,
+        200,
+        {
+          state: classified.state,
+          commandId: id,
+          conversationId: receipt.conversationId,
+          reason,
+          message: classified.hint
+        },
+        origin
+      );
+    }
+    const pending = commands.find((command) => command.id === id) ?? null;
+    if (pending) {
+      const conversation = pending.spec.type === 'send' || pending.spec.type === 'revive' ? pending.spec.conversationId : null;
+      const inFlight = runningToolCalls(conversation);
+      return json(
+        res,
+        200,
+        {
+          state: pending.claimedAt === null ? 'queued' : 'delivering',
+          commandId: id,
+          conversationId: conversation,
+          pendingTools: inFlight,
+          message:
+            inFlight > 0
+              ? `${inFlight} local tool call(s) are in flight; the page refuses to type while any are running, and an unattributed call counts against every chat. The send waits — poll again once they settle.`
+              : 'The browser has not acknowledged this command yet; poll again.'
+        },
+        origin
+      );
+    }
+    return json(
+      res,
+      200,
+      {
+        state: 'unknown_command',
+        commandId: id,
+        message:
+          'No queued command or receipt carries this id. Receipts live 30 minutes; past that, or for an id from a previous run, re-send instead of polling.'
+      },
+      origin
+    );
   }
 
   // A deliberate revocation is different from a stale credential. The extension repairs a
@@ -2946,6 +3116,159 @@ export function shutdownBridge(): Promise<void> {
 
 // ------------------------------------------------------------------ commands
 
+// ----------------------------------------------------- app-typed draft ledger
+
+interface AppDraftRecord {
+  text: string;
+  at: number;
+}
+
+/** conversationId → squeezed texts the app asked to type there, newest last. */
+let appDraftLedger = new Map<string, AppDraftRecord[]>();
+
+/** The composer is a rich-text editor: paragraph breaks vanish under textContent, so drafts compare with all whitespace squeezed out. */
+function squeezeDraft(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+function pruneAppDraftLedger(now = Date.now()): void {
+  for (const [conversation, records] of appDraftLedger) {
+    const kept = records.filter((record) => now - record.at <= SEND_LEDGER_TTL_MS).slice(-MAX_LEDGER_DRAFTS_PER_CHAT);
+    if (kept.length === 0) appDraftLedger.delete(conversation);
+    else appDraftLedger.set(conversation, kept);
+  }
+}
+
+function persistAppDraftLedger(): void {
+  pruneAppDraftLedger();
+  writeDurableSoon(SEND_LEDGER_STATE, {
+    version: 1,
+    drafts: [...appDraftLedger.entries()].map(([conversationId, records]) => ({ conversationId, records }))
+  });
+}
+
+function rememberAppDraft(conversation: string, text: string): void {
+  const squeezed = squeezeDraft(text);
+  if (!squeezed) return;
+  const records = appDraftLedger.get(conversation) ?? [];
+  const kept = records.filter((record) => record.text !== squeezed);
+  kept.push({ text: squeezed, at: Date.now() });
+  appDraftLedger.set(conversation, kept);
+  persistAppDraftLedger();
+}
+
+function appDraftsFor(conversation: string): string[] {
+  pruneAppDraftLedger();
+  return (appDraftLedger.get(conversation) ?? []).map((record) => record.text);
+}
+
+/** The ledger survives restarts: the wedge it names outlives the process that manufactured it. */
+async function restoreAppDraftLedger(): Promise<void> {
+  try {
+    const saved = await readDurable<{ version?: number; drafts?: unknown }>(SEND_LEDGER_STATE);
+    if (!saved || saved.version !== 1 || !Array.isArray(saved.drafts)) return;
+    const restored = new Map<string, AppDraftRecord[]>();
+    const now = Date.now();
+    for (const raw of saved.drafts as Array<{ conversationId?: unknown; records?: unknown }>) {
+      if (typeof raw?.conversationId !== 'string' || !raw.conversationId || !Array.isArray(raw.records)) continue;
+      const records = (raw.records as Array<Partial<AppDraftRecord>>)
+        .filter(
+          (record): record is AppDraftRecord =>
+            typeof record?.text === 'string' &&
+            record.text.length > 0 &&
+            record.text.length <= MAX_SEND_CHARS &&
+            Number.isFinite(record.at) &&
+            now - Number(record.at) <= SEND_LEDGER_TTL_MS
+        )
+        .slice(-MAX_LEDGER_DRAFTS_PER_CHAT);
+      if (records.length > 0) restored.set(raw.conversationId, records);
+    }
+    // Live entries are newer authority than disk; disk only contributes missing conversations.
+    for (const [conversation, records] of restored) {
+      if (!appDraftLedger.has(conversation)) appDraftLedger.set(conversation, records);
+    }
+  } catch (err) {
+    logWarn(`bridge: could not restore the send-draft ledger — ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// -------------------------------------------------- send outcome verification
+
+/** Per-command verification horizon, chosen by the caller at POST /send. */
+const sendVerifyHorizons = new Map<string, number>();
+
+function sendVerifyHorizon(id: string): number {
+  return sendVerifyHorizons.get(id) ?? SEND_VERIFY_HORIZON_MS;
+}
+
+/** Horizons for commands the bridge no longer knows are dead weight. */
+function pruneSendVerifyHorizons(): void {
+  if (sendVerifyHorizons.size <= 256) return;
+  for (const id of sendVerifyHorizons.keys()) {
+    if (!commands.some((command) => command.id === id) && !commandReceipts.some((receipt) => receipt.id === id)) {
+      sendVerifyHorizons.delete(id);
+    }
+  }
+}
+
+/**
+ * The recorder-observed `turn_start` that proves a typed send actually landed, or null.
+ *
+ * Read-only against the session store: the recording is the one witness that is not the
+ * push path grading its own homework. A small backward skew tolerates the page stamping
+ * the observation just before the ACK's HTTP round-trip completed.
+ */
+async function turnStartAfter(conversation: string, since: number): Promise<number | null> {
+  const live = liveConversations().find((entry) => entry.conversationId === conversation);
+  const sessionId = live?.sessionId ?? (await findSessionByConversation(conversation))?.id ?? null;
+  if (!sessionId) return null;
+  try {
+    const recent = await readRecentEvents(sessionId, 256, { kinds: ['turn_start'] });
+    for (let at = recent.length - 1; at >= 0; at--) {
+      const event = recent[at];
+      if (!event || event.kind !== 'turn_start') continue;
+      const time = Number(event.time);
+      if (Number.isFinite(time) && time >= since - 2_000) return time;
+    }
+  } catch (err) {
+    logWarn(`bridge: could not read events to verify a send — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return null;
+}
+
+/** A typed state name plus the concrete next action, from a terminal receipt's error text. */
+function classifySendFailure(reason: string): { state: string; hint: string } {
+  if (reason.includes('draft_left_in_composer') || reason.includes('composer already holds')) {
+    return {
+      state: 'draft_left_in_composer',
+      hint:
+        "An unsent draft is sitting in that chat's composer and it does not match anything this app typed, so it was preserved as user work. Clear or send it in the browser, then retry."
+    };
+  }
+  if (reason.includes('never exposed a usable composer')) {
+    return {
+      state: 'no_live_composer_tab',
+      hint:
+        'No tab produced a usable composer for this chat — a frozen duplicate tab is the usual cause. Retrying reopens the conversation in a fresh tab; stale duplicates are closed by the extension when a live tab claims.'
+    };
+  }
+  if (reason.includes('tool call(s) in flight')) {
+    return {
+      state: 'refused',
+      hint:
+        'The page refuses to type while local tool calls are running, and an unattributed call counts against every chat. Wait for the in-flight calls to settle (watch pendingTools on POST /send), then retry.'
+    };
+  }
+  if (reason.includes('did not report back in time')) {
+    return {
+      state: 'expired',
+      hint:
+        'No page redeemed and acknowledged the command within its deadline — a frozen tab or a closed browser is the usual cause. Retry once; the app opens the chat in a fresh tab.'
+    };
+  }
+  return { state: 'failed', hint: 'Retry once; if this repeats, read the reason — it names the page-side cause.' };
+}
+
 function specKey(spec: CommandSpec): string {
   if (spec.type === 'worker') return `worker:${spec.agent}`;
   if (spec.type === 'revive') return `revive:${spec.agent}`;
@@ -3775,6 +4098,13 @@ function describe(command: Command, client: string | null, claimedSummary?: stri
       ? bootstrapText(spec, claimedSummary)
       : ''
     : bootstrapText(spec, '');
+  const conversation = spec.type === 'revive' || spec.type === 'send' ? spec.conversationId : null;
+  // Earlier app-typed texts for this exact chat, so the page can tell the app's own wedged
+  // draft (clear or send it) from user writing (refuse, typed). The command's own text is
+  // excluded — the page compares that case directly and treats it as "already typed".
+  const squeezedOwn = squeezeDraft(text);
+  const staleDrafts = conversation ? appDraftsFor(conversation).filter((draft) => draft !== squeezedOwn) : [];
+  if (conversation && text) rememberAppDraft(conversation, text);
   return {
     id: command.id,
     kind: 'open-chat',
@@ -3784,7 +4114,8 @@ function describe(command: Command, client: string | null, claimedSummary?: stri
     // The fence the page enforces before it types. A revival always names its chat and a
     // send may; the two bootstraps open a chat that does not exist yet, so there is nothing
     // for them to compare against.
-    conversationId: spec.type === 'revive' || spec.type === 'send' ? spec.conversationId : null
+    conversationId: conversation,
+    staleDrafts
   };
 }
 
@@ -3817,6 +4148,26 @@ function drop(command: Command, why: string): boolean {
   // chat, so it goes back to sleeping with its inbox intact and its slot released, and the
   // prime is told the message it sent is still waiting to be delivered.
   if (command.spec.type === 'revive') failWorkerRevival(command.spec.agent, why);
+  // A dropped local send must leave a receipt, or its caller polls /send/outcome into
+  // `unknown_command` and learns nothing. Fold in the one cause the caller cannot see from
+  // outside: the in-flight tool-call charge rule, which is the ordinary reason a page
+  // refused to type for the whole deadline.
+  if (command.spec.type === 'send') {
+    const inFlight = runningToolCalls(command.spec.conversationId);
+    const cause = inFlight > 0 ? `${why}; ${inFlight} tool call(s) in flight` : why;
+    const dropReceipt: CommandReceipt = {
+      id: command.id,
+      client: command.owner,
+      conversationId: command.spec.conversationId,
+      outcome: 'terminal-failure',
+      committed: false,
+      error: cause.slice(0, 200),
+      completedAt: Date.now()
+    };
+    commandReceipts = [...commandReceipts.filter((receipt) => receipt.id !== command.id), dropReceipt].slice(
+      -MAX_COMMAND_RECEIPTS
+    );
+  }
   logWarn(`bridge: gave up on ${specKey(command.spec)} — ${why}`);
   changed();
   persistCommands();
@@ -4245,6 +4596,9 @@ function planCommandRestore(
  * version 1 is migrated conservatively, including resume commands whose continuation WAL survived.
  */
 export async function restoreCommands(): Promise<void> {
+  // The wedge a silent no-op manufactured survives the process that typed it, so the ledger
+  // of app-typed drafts is restored alongside the commands whose texts fed it.
+  await restoreAppDraftLedger();
   const saved = await readDurable<{ version?: number; commands?: unknown; receipts?: unknown }>(COMMANDS_STATE);
   if (!saved) return;
   const now = Date.now();
@@ -4329,6 +4683,8 @@ export function resetBridgeForTests(): void {
   commandRetirementsAwaitingBroker.clear();
   commandLeaseWrites.clear();
   commandRedeems.clear();
+  appDraftLedger = new Map();
+  sendVerifyHorizons.clear();
   bridgeRecovering = false;
   bridgeShutdownRequested = false;
   resetContinuationsForTests();
