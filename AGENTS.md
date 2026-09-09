@@ -1005,6 +1005,18 @@ Blank tabs should stay near zero, since the service worker closes a command tab 
 never acknowledged. Dozens of them means that has regressed. Close a tab directly through
 `http://127.0.0.1:9222/json/close/<target id>`.
 
+**An idle chat can be unpushable while its neighbours work, and no amount of retrying frees
+it.** `just say` queues the message, the browser opens a command tab, nothing is ever typed, and
+after ninety seconds `say` reports "queued but never typed. 0 local tool call(s) were running".
+The reported count is the app's, sampled once at the POST; the gate that actually refuses is the
+content script's own `pendingTools`, refreshed on its activity loop. `countFor` in
+`src/main/mcp/call-context.ts` charges a call whose `caller.conversationId` is `null` against
+**every** conversation, so two chats running `exec_command` back to back can hold a third
+permanently unreachable. The chat is alive: its page has a live composer, an enabled
+`send-button` and no stop button. Do not replace it — a replacement needs the same send path,
+and the chat has real in-flight work. Dismissing the app's own error notice does not help, and
+neither does reloading the tab. Wait for the busy neighbours to go quiet, and push then.
+
 **A chat sitting on a rate limit is not dead, and reopening its tab will not free it.** The
 limit arrives as a modal dialog whose only control reads "Got it", it leaves the Stop button in
 place so the page still looks like it is generating, and it belongs to the conversation rather
