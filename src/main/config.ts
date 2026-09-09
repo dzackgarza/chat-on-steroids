@@ -20,7 +20,8 @@ import {
   type GoalSettings,
   type MultiAgentSettings,
   type Root,
-  type SessionSettings
+  type SessionSettings,
+  type SleepWakeSettings
 } from '../shared/types.js';
 import {
   DEFAULT_GOAL_OBJECTIVE_SYSTEM_PROMPT,
@@ -133,6 +134,22 @@ const DEFAULT_GOAL: GoalSettings = {
 // Two workers, not three: three concurrent workers reproducibly trips ChatGPT's rate limit
 // ("too many requests"), which strands the run rather than making it faster.
 const DEFAULT_MULTI_AGENT: MultiAgentSettings = { enabled: false, maxWorkers: 2 };
+/**
+ * Sleep/wake tab architecture. Off by default — it closes browser tabs on its own, which
+ * is only wanted on a steward-driven headless fleet, never as an upgrade surprise.
+ *
+ * The numbers come from docs/tabless-generation-experiment-2026-09-09.md: legitimate
+ * mid-turn call gaps reached ~80s, so the quiet threshold sits at four minutes; the
+ * keyless fallback is deliberately far slower because without a bound session key the
+ * app cannot see the call stream at all.
+ */
+export const DEFAULT_SLEEP_WAKE: SleepWakeSettings = {
+  enabled: false,
+  graceMs: 5_000,
+  quietMs: 4 * 60_000,
+  fallbackWakeMs: 15 * 60_000,
+  correlationWindowMs: 30_000
+};
 /** Fresh-install exposure. Kept separate from migration defaults on purpose. */
 const ALL_FIRST_LAUNCH_CAPABILITIES: Capabilities = Object.fromEntries(
   CAPABILITIES.map((capability) => [capability, true])
@@ -272,6 +289,30 @@ const configSchema = z.object({
     })
     .optional()
     .default({ ...DEFAULT_MULTI_AGENT }),
+  sleepWake: z
+    .object({
+      enabled: z.boolean().optional().default(DEFAULT_SLEEP_WAKE.enabled),
+      graceMs: z.number().int().min(1_000).max(60_000).optional().default(DEFAULT_SLEEP_WAKE.graceMs),
+      // The floor sits above the longest legitimate mid-turn call gap measured live (~80s);
+      // anything lower is a config that wakes generating conversations on every pause.
+      quietMs: z.number().int().min(90_000).max(60 * 60_000).optional().default(DEFAULT_SLEEP_WAKE.quietMs),
+      fallbackWakeMs: z
+        .number()
+        .int()
+        .min(60_000)
+        .max(24 * 60 * 60_000)
+        .optional()
+        .default(DEFAULT_SLEEP_WAKE.fallbackWakeMs),
+      correlationWindowMs: z
+        .number()
+        .int()
+        .min(5_000)
+        .max(120_000)
+        .optional()
+        .default(DEFAULT_SLEEP_WAKE.correlationWindowMs)
+    })
+    .optional()
+    .default({ ...DEFAULT_SLEEP_WAKE }),
   // An empty model id is repaired rather than rejected: the id is free text from a
   // provider listing that changes weekly, and a config that lost it must still load with
   // every root and permission in it intact.
@@ -333,7 +374,8 @@ export function defaultConfig(platform: NodeJS.Platform = process.platform): Con
     sessions: { ...DEFAULT_SESSIONS },
     compaction: { ...DEFAULT_COMPACTION },
     multiAgent: { ...FIRST_LAUNCH_MULTI_AGENT },
-    goal: { ...DEFAULT_GOAL }
+    goal: { ...DEFAULT_GOAL },
+    sleepWake: { ...DEFAULT_SLEEP_WAKE }
   };
 }
 
@@ -352,8 +394,10 @@ function conservativeRecoveryConfig(): Config {
     readOnly: true,
     multiAgent: { ...DEFAULT_MULTI_AGENT },
     // A config file that could not be trusted is not consent to have a second model typing
-    // into the user's chat, whatever the unreadable file said.
-    goal: { ...DEFAULT_GOAL }
+    // into the user's chat, whatever the unreadable file said — nor to have the app closing
+    // browser tabs on its own.
+    goal: { ...DEFAULT_GOAL },
+    sleepWake: { ...DEFAULT_SLEEP_WAKE }
   };
 }
 
