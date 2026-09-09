@@ -64,32 +64,44 @@ async function main(): Promise<void> {
 
   console.log(`Local MCP endpoint listening on port ${endpoint.port}`);
 
-  console.log('Starting Cloudflare tunnel...');
   let tunnelHandle: TunnelHandle | null = null;
-  try {
-    tunnelHandle = await startTunnel({
-      localUrl: endpoint.url,
-      settings: liveConfig.tunnel,
-      apiKey: null,
-      discoveryHeaders: tunnelProbeHeaders(),
-      label: 'core',
-      report: (report) => {
-        if (report.publicUrl) {
-          console.log('\n======================================================');
-          console.log('Chat On Steroids Headless MCP Server is LIVE!');
-          console.log('Public MCP URL for ChatGPT:');
-          console.log(report.publicUrl);
-          console.log('======================================================\n');
+  const externalBaseUrl = process.env.COS_EXTERNAL_URL?.replace(/\/+$/, '');
+
+  if (externalBaseUrl) {
+    const local = new URL(endpoint.url);
+    const publicUrl = `${externalBaseUrl}${local.pathname}`;
+    console.log('\n======================================================');
+    console.log('Chat On Steroids Headless MCP Server is LIVE!');
+    console.log('Public MCP URL for ChatGPT:');
+    console.log(publicUrl);
+    console.log('======================================================\n');
+  } else {
+    console.log('Starting Cloudflare tunnel...');
+    try {
+      tunnelHandle = await startTunnel({
+        localUrl: endpoint.url,
+        settings: liveConfig.tunnel,
+        apiKey: null,
+        discoveryHeaders: tunnelProbeHeaders(),
+        label: 'core',
+        report: (report) => {
+          if (report.publicUrl) {
+            console.log('\n======================================================');
+            console.log('Chat On Steroids Headless MCP Server is LIVE!');
+            console.log('Public MCP URL for ChatGPT:');
+            console.log(report.publicUrl);
+            console.log('======================================================\n');
+          }
+          if (report.detail) {
+            console.log(`[Tunnel] ${report.state}: ${report.detail}`);
+          }
         }
-        if (report.detail) {
-          console.log(`[Tunnel] ${report.state}: ${report.detail}`);
-        }
-      }
-    });
-  } catch (err) {
-    console.error('Failed to start tunnel:', err);
-    await endpoint.stop();
-    process.exit(1);
+      });
+    } catch (err) {
+      console.error('Failed to start tunnel:', err);
+      await endpoint.stop();
+      process.exit(1);
+    }
   }
 
   async function shutdown(): Promise<void> {

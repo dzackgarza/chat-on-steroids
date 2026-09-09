@@ -269,7 +269,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
   // Desktop" and "give me everything" the same act.
   const surfacePaths = SURFACE_IDS.map((id) => ({
     id,
-    basePath: `/mcp/${id}/${randomBytes(32).toString('base64url')}`
+    basePath: `/mcp/${id}/${process.env.COS_TOKEN || randomBytes(32).toString('base64url')}`
   }));
 
   // ChatGPT can keep a cached tools/list snapshot for the lifetime of a connector
@@ -423,7 +423,8 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    const listenPort = process.env.COS_PORT ? parseInt(process.env.COS_PORT, 10) : 0;
+    server.listen(listenPort, '127.0.0.1', () => {
       server.removeListener('error', reject);
       resolve();
     });
