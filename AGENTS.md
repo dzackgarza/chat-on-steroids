@@ -1176,6 +1176,8 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Do not fire a continuation and wait for the next reporting tick.** Pushing `Continue` is an unverified recovery attempt, not confirmed execution. The 20-minute check-in is purely a reporting cadence to the user, not an operational sleep timer. Because live turn gaps run 8.2s median and 26s p90, any inactivity past 90 seconds is a stall. The steward must verify recovery on a tight 30–90s horizon: confirm whether the clock advanced and whether real `tool_call` events resumed. If a push fails to produce active execution or if the tab is wedged, act immediately—probe the browser, kill frozen tabs, and launch a fresh replacement with `just new` and a clean handoff rather than abandoning the workstream to dead time.
 
+**Track task DAGs and saturate parallel workflows.** Track the basic DAG of tasks in each managed repository (identifying decoupled workstreams, independent chapters, isolated problem collections, or non-overlapping module targets). When a repository's task structure permits parallel work without coordination deadlocks or merge collisions, increase the number of active managed worker chats under that repository to saturate throughput rather than running independent branches serially.
+
 
 ### Where a regression belongs
 
