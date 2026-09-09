@@ -5660,6 +5660,39 @@ describe('evidence from the page context', () => {
     ]);
   });
 
+  it('confirms an id-less request from the visible response that was mounted before generation began', async () => {
+    const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const requestId = 'wfr_visible_response_without_conversation';
+    live = await harness();
+    live.reply.set('correlate', () => ({
+      ok: true,
+      data: { conversationId, confirmed: [requestId], complete: true }
+    }));
+
+    const section = assistantTurn(live.document, 'response-mounted-before-stop', []);
+    live.hook.observe();
+    await settle();
+    startGenerating(live.document);
+    live.hook.observe();
+    await settle();
+
+    await bindFiberTurns([{
+      section,
+      turn: {
+        turnId: 'response-mounted-before-stop',
+        conversationId: null,
+        requests: [{ requestId, messageId: 'request-without-conversation', createTime: 1_700_000_001 }]
+      }
+    }]);
+
+    expect(live.sent.filter((message) => message.type === 'correlate')).toEqual([
+      expect.objectContaining({
+        conversationId,
+        calls: [expect.objectContaining({ requestId, messageId: 'request-without-conversation' })]
+      })
+    ]);
+  });
+
   it('keeps a per-id confirmation the app could not call complete', async () => {
     const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const confirmedId = 'wfr_partial_ok/0';
