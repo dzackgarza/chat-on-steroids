@@ -311,8 +311,8 @@ let sweepInFlight = false;
  * Starts the reaper: one startup sweep now, then the periodic sweep on its interval.
  *
  * Idempotent; the timer is unref'd so it never keeps the process alive, and its shutdown
- * owner is `stopExecReaper` (wired into the desktop teardown's process-cleanup phase; the
- * headless daemon exits the process outright, which is teardown enough for an unref'd timer).
+ * owner is `stopExecReaper` (wired into the process-cleanup phase of both teardown paths,
+ * desktop index.ts and headless.ts, right before `terminateAllProcesses` empties its subject).
  */
 export function startExecReaper(manager: UnifiedExecProcessManager): void {
   if (reaperTimer) return;

@@ -22,6 +22,8 @@ import { restoreRequestCorrelations } from './session/correlation.js';
 import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
 import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
+import { stopExecReaper } from './exec-reaper.js';
+import { unifiedExecManager } from './codex/manager.js';
 import { enableHeadlessSecretStore, initSecretsPath } from './secrets.js';
 import { enableConsoleFailureEcho } from './logger.js';
 
@@ -158,6 +160,17 @@ async function main(): Promise<void> {
       await tunnelHandle.stop().catch(() => {});
     }
     await endpoint.stop().catch(() => {});
+    // Same phase order as the desktop teardown (index.ts): only after the listeners have
+    // stopped admitting work may the request handlers' owned child processes go. Exiting
+    // without this left every live exec session — shells, servers, watchers — running
+    // until cgroup teardown happened to clear them, the exact accumulation recorded in
+    // docs/exec-orphan-audit-2026-09-09.md.
+    stopExecReaper();
+    await unifiedExecManager.terminateAllProcesses().catch((err) => {
+      console.warn(
+        `Failed to terminate exec sessions during shutdown: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
     console.log('Shutdown complete.');
     process.exit(0);
   }
