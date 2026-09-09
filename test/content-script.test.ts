@@ -7929,6 +7929,58 @@ describe('the fresh chat the app opened', () => {
     ]);
   });
 
+  /**
+   * Deferring is not a promise that the other tab will act.
+   *
+   * The service worker prefers a tab that already holds the chat, which is right when that tab
+   * is a live document. It can just as easily be one from before an extension reload, or one
+   * whose page is wedged: it holds the chat, it never redeems, and the tab the app opened for
+   * this exact command — fresh, on the right chat, holding the marker — waited behind it until
+   * the command expired. Every send into that conversation then failed, and each failure left
+   * another tab that made the next one likelier.
+   */
+  it('takes the command back when the tab that already holds the chat never redeems it', async () => {
+    const chat = '33333333-4444-5555-6666-888888888888';
+    const submitted: string[] = [];
+    let deferrals = 0;
+    live = await harness(
+      `https://chatgpt.com/c/${chat}?clf=cmd-custody-handback`,
+      {
+        // The chat is held by another document for as long as anyone asks. Nothing is coming.
+        defer_revival: () => {
+          deferrals++;
+          return { ok: true, deferred: true, preferredElsewhere: true };
+        },
+        redeem: () => ({
+          ok: true,
+          command: {
+            id: 'cmd-custody-handback',
+            type: 'send',
+            text: 'Continue',
+            agent: null,
+            conversationId: chat
+          }
+        }),
+        ack: () => ({ ok: true })
+      },
+      (document) => {
+        document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+          const composer = document.querySelector('#prompt-textarea')!;
+          submitted.push((composer.textContent || '').trim());
+          composer.textContent = '';
+        });
+      }
+    );
+
+    await settle(2000);
+
+    expect(deferrals).toBeGreaterThan(1);
+    expect(submitted).toEqual(['Continue']);
+    expect(live.sent.filter((message) => message.type === 'ack')).toContainEqual(
+      expect.objectContaining({ id: 'cmd-custody-handback', status: 'sent', conversationId: chat })
+    );
+  });
+
   it('does not redeem until deferred-revival custody survives a transient persistence failure', async () => {
     const chat = '24242424-3535-4646-8787-808080808080';
     let custodyCalls = 0;

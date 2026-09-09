@@ -110,6 +110,13 @@
   const STALL_MS = 10 * 60 * 1000;
   /** What a stalled chat is restarted with. It already holds everything it was doing. */
   const STALL_RESTART_TEXT = 'Continue';
+  /**
+   * How long a tab the app opened for a command defers to a tab that already holds that chat.
+   *
+   * Comfortably inside the app's own ninety-second command deadline, so handing the job back
+   * still leaves time to redeem, type and acknowledge it.
+   */
+  const CUSTODY_HANDBACK_MS = 20_000;
   /** How long the button says "Starting…" before believing something went wrong. */
   const PRESS_GRACE_MS = 12_000;
   /** Persistent popup preference. On by default as of 1.7.4; the popup can turn it off. */
@@ -8060,11 +8067,20 @@
    * no command text has been fetched and the composer is still untouched, so retry is safe.
    */
   async function waitForDeferredRevivalCustody(id, target, attempt) {
+    const handBackAt = Date.now() + CUSTODY_HANDBACK_MS;
     while (!attempt?.cancelled && alive && CLF_DOM.conversationId() === target) {
       const reply = await ask({ type: 'defer_revival', id, conversationId: target });
       if (attempt?.cancelled) return false;
       if (reply && reply.ok === true && reply.deferred === true && reply.preferredElsewhere !== true) return true;
       if (attempt?.cancelled || !alive || CLF_DOM.conversationId() !== target) return false;
+      // Deferring is not a promise that the other tab will act. The service worker prefers a
+      // document that already holds this chat, which is right while that document is live — and
+      // just as easily names one from before an extension reload, or one whose page is wedged.
+      // That tab holds the chat and never redeems, and this tab, opened by the app for this
+      // exact command and holding its marker, waits behind it until the command expires. Take
+      // the job back instead. Racing the other tab is safe by construction: the bridge hands one
+      // command to one document and answers the second with command_taken.
+      if (reply && reply.preferredElsewhere === true && Date.now() >= handBackAt) return true;
       await sleep(1000);
     }
     return false;
