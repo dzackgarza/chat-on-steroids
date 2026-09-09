@@ -1170,6 +1170,8 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Never leave a worker asleep or idle.** A sleeping or stalled chat produces zero progress; nothing restarts on its own. The steward does not wait for work to begin spontaneously. When a worker finishes a turn, stalls, or dies to an error (such as a delivery timeout), the steward must act immediately: push `Continue` if viable, or launch a replacement with `just new` and a brief handoff.
 
+**Do not invent phantom constraints or delay dispatch on hypothetical risks.** Never delay replacing or continuing an idle worker out of speculative worry about rate limits, bursts, or unobserved barriers. Act on observable state: if a worker is asleep, dispatch its continuation or replacement immediately. Address limits only when an actual error or throttle arrives.
+
 **Do not dig into a managed repository's specifics to perform its orchestration.** Inspecting source files, internal status ledgers, git history, or memory vaults to decide domain-level work violates delegation. The managed chat owns the work and the traversal in its repository; the steward only provides the ambient pointer and maintains momentum.
 
 
