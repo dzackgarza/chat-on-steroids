@@ -1050,12 +1050,59 @@ tabs it opens; a steward should space its own pushes the same way.
 right after a push is alive. A chat that answers one push and refuses the next with an unmoved
 clock is dead.
 
+**The recording is the only evidence that a chat is still working.** A chat that has lost the
+connector can still talk: it answers every push, reports progress, and describes work it never
+did, because reasoning and writing fail separately. Its `tool_call` events are the proof, so
+sample the newest one per chat each tick and compare them against each other — a chat at
+forty-five minutes beside siblings at seconds is cold, whatever it says:
+
+```bash
+dir=$(grep -rl "<conversation id>" ~/.config/chat-on-steroids/sessions/*/meta.json | head -1 | xargs dirname)
+grep '"kind":"tool_call"' "$dir/events.jsonl" | tail -1 | sed -n 's/^{"time":\([0-9]\+\).*/\1/p'
+```
+
+Never scan a recording with `jq`. Some contain an invalid surrogate-pair escape that makes it
+abort mid-file, and with stderr hidden it then reports the newest call among only the lines
+before the bad one — a healthy chat looks frozen for hours. Line-wise `grep` and `sed` read the
+whole file. The confirming signature of a cold chat is consecutive `turn_start`/`turn_end` pairs
+with outcome `unknown` or `failed` and no `tool_call` between them. A brand-new chat with no
+calls yet is not stale, and neither is asking a chat to run a shell command to prove itself: it
+answers from its own sandbox, and only the recording settles it.
+
+**`say`'s verdict is not evidence; the chat's clock is.** It reports failure whenever no receipt
+arrives inside its window, and under the send gate above most pushes report refused and land
+anyway. Always re-read `just chats` afterwards and judge by whether the clock moved. When a push
+is genuinely refused, push a different chat in the same window: if that one moves into real work,
+the bridge is fine and the gate is transient rather than the first chat being dead.
+
 **Carry findings into the handoff, not just the task.** A replacement that has to rediscover
 which corpus block is already promoted, or that a repository's commit gate reports a known
 baseline of pre-existing errors, spends its first hour re-deriving what the dead chat already
 knew. Read the transcript tail for what it established and put that in the message. Check
 `git status` too: uncommitted work belongs to the previous owner and must be built on, and
 untracked files it left are its work rather than debris.
+
+Three things belong in every handoff and are cheap to establish. Name the timestamp of the
+predecessor's last `tool_call` and say plainly that anything it claimed after that point is
+unverified reasoning rather than landed work. List its scratch files in `/tmp` by name, since
+they hold search work a replacement will otherwise repeat — and when two chats share a subject,
+ownership of a file is decidable rather than guessable:
+
+```bash
+grep -l "<filename>" ~/.config/chat-on-steroids/sessions/*/events.jsonl
+```
+
+Name its long-running `exec_command` session ids as well. Those sessions outlive the
+conversation, and `write_stdin` against one from a different chat is refused by the ownership
+rule, so a replacement that inherits an id without being warned reads that refusal as a broken
+tool instead of starting its own session.
+
+**Two small traps in the surrounding tools.** `ps` on this machine is aliased to `exa`, which
+rejects the flags a parent-process check needs — use `/usr/bin/ps -o pid,ppid,etime,args -p <pid>`
+before deciding whether a CPU-heavy process is a chat's orphan or another session's test run
+already wrapped in its own `timeout`. And `agent-memory sync status` carries a `last_failure`
+whose vault path is under `/tmp/pytest-of-dzack`; that is a test fixture, not this vault, and it
+does not mean a sync is broken.
 
 **Two chats on one body of work will duplicate it.** When they share a task, tell each
 replacement to check what has already landed and to reuse recorded audits; and when one chat's
