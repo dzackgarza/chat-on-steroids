@@ -1182,6 +1182,12 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Instruct fresh agents to read AGENTS.md / CONTRIBUTING.md and log to COMPLAINTS.md.** Any new or fresh agent launched across any managed repository must always be instructed to read `AGENTS.md` and `CONTRIBUTING.md` before writing any code, and to file any issues, deficiencies, papercuts, tool friction, or setup blockers in a `COMPLAINTS.md` file in that repository before or during their work.
 
+**Red gate means stop.** Across every managed repository: the first time a commit gate, hook, or QC stage goes red, the worker's current task becomes diagnosing that failure. Workers must not keep authoring behind a red gate or accumulate uncommitted work around it — root-cause and fix, or report the blocker. A steward who observes a worker committing nothing while its tree grows must treat that as a wedged worker and intervene with a pointer to this rule, exactly as it would a stalled chat.
+
+**One front at a time, closed to acceptance.** In repositories organized around a dependency DAG or ordered queue, workers take exactly one node in plan order and drive it to its acceptance criteria before opening another. Shared-substrate edits are in scope only when the current node's spec requires them. A steward who observes multi-front breadth with no closures dispatches a corrective continuation naming the nearest-to-acceptance node.
+
+**Claim state stays fresh; no off-ledger work.** In repositories with shared queues or claim ledgers, workers reconcile the queue against actual repository state (all branches) at every claim and record every release before moving on; work without a live claim, and batch-committing work authored off-ledger, are prohibited. A steward who observes duplicate solving or unclaimed diffs points the worker at the repository's claim protocol rather than resolving the duplication itself.
+
 
 ### Where a regression belongs
 
