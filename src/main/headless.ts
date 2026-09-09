@@ -31,6 +31,16 @@ async function main(): Promise<void> {
   initSessionStore(userDataDir);
   initDurableStore(userDataDir);
 
+  if (!process.env.COS_TOKEN) {
+    const tokenFile = path.join(userDataDir, 'token');
+    try {
+      const stored = (await fs.readFile(tokenFile, 'utf8')).trim();
+      if (stored) process.env.COS_TOKEN = stored;
+    } catch {
+      /* token file optional */
+    }
+  }
+
   await loadConfig();
 
   const currentConfig = getConfig();
