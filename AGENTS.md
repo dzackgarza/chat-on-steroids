@@ -987,6 +987,57 @@ Three things break every chat at once and none of them is the chat:
   app has no way to leave that mode, and every send into it fails. Replacing the chat does not
   help; the slider has to be changed.
 
+### Standing watch over several chats
+
+A steward keeps a handful of chats working across a whole day. Everything below was learned the
+expensive way in one such run, and none of it is guessable from the code.
+
+**Count tabs from the browser, never from `just tabs`.** Both `tabs` and `tidy` match only URLs
+containing `/c/<id>`. A tab sitting on bare `chatgpt.com` is invisible to them: it is never
+counted and never closed. A run once reported "14 tabs → 4" every twenty minutes while the
+window actually held 144, because 139 of them were blank. Count what the browser reports:
+
+```bash
+curl -s -m 5 http://127.0.0.1:9222/json | python3 -c "import json,sys; p=[t for t in json.load(sys.stdin) if t.get('type')=='page' and 'chatgpt.com' in t.get('url','')]; print(len(p), 'tabs,', len([t for t in p if '/c/' not in t['url']]), 'blank')"
+```
+
+Blank tabs should stay near zero, since the service worker closes a command tab whose command
+never acknowledged. Dozens of them means that has regressed. Close a tab directly through
+`http://127.0.0.1:9222/json/close/<target id>`.
+
+**A chat sitting on a rate limit is not dead, and reopening its tab will not free it.** The
+limit arrives as a modal dialog whose only control reads "Got it", it leaves the Stop button in
+place so the page still looks like it is generating, and it belongs to the conversation rather
+than the tab — so a reopened tab shows the same dialog. The content script clears this itself:
+dismiss, Stop, `Continue`, on a five-minute floor. Leave such a chat for a tick and push it on
+the next. A chat still showing that dialog after two ticks means the recovery has regressed.
+
+**Two chats showing that error in one tick is the account, not the chats.** Stop pushing for
+that tick and open no replacements: a replacement cannot run either, and opening it spends
+capacity the working chats need. One chat can be limited while the others run normally, so the
+distinguishing evidence is whether any chat accepts a push in the same window.
+
+**Do not open several chats at once.** That is a burst of requests from one account and it earns
+the limit described above, which then lands on the chats themselves. Recovery already spaces the
+tabs it opens; a steward should space its own pushes the same way.
+
+**Judge a wedge by the *kind* of row the clock moved to.** A push that moves the clock only to a
+`page_tool`, a `chat_error`, or a turn ending without work has not woken anything. A `turn_start`
+right after a push is alive. A chat that answers one push and refuses the next with an unmoved
+clock is dead.
+
+**Carry findings into the handoff, not just the task.** A replacement that has to rediscover
+which corpus block is already promoted, or that a repository's commit gate reports a known
+baseline of pre-existing errors, spends its first hour re-deriving what the dead chat already
+knew. Read the transcript tail for what it established and put that in the message. Check
+`git status` too: uncommitted work belongs to the previous owner and must be built on, and
+untracked files it left are its work rather than debris.
+
+**Two chats on one body of work will duplicate it.** When they share a task, tell each
+replacement to check what has already landed and to reuse recorded audits; and when one chat's
+transcript shows that a unit another was told to start is already done, send that correction to
+the chat holding the stale instruction rather than letting it find out.
+
 ### The job here is delegation and continuation
 
 That is the whole role, and its boundaries are hard:
