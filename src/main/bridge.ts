@@ -119,6 +119,7 @@ import {
   resetContinuationsForTests
 } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
+import { notePushTyped, sendRefusalFor, sleepWakeStatus } from './session/sleep-wake.js';
 import { durableRoot, readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
 import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
 import { requestCorrelation } from './session/correlation.js';
@@ -1096,6 +1097,33 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (body['conversationId'] !== undefined && body['conversationId'] !== null && !target) {
       return json(res, 400, { error: 'bad_conversation_id' }, origin);
     }
+    // The single-driver invariant of the sleep/wake architecture: while a conversation is
+    // slept or waking, exactly one serialized wake->record->push-next sequence owns it, and
+    // an external push would race that sequence (two drivers collided during the validation
+    // experiment). Refused with a typed reason and a concrete next-check hint rather than
+    // queued into a tab that does not exist. Inert while sleepWake is disabled and nothing
+    // is slept.
+    if (target) {
+      const refusal = sendRefusalFor(target);
+      if (refusal) {
+        return json(
+          res,
+          409,
+          {
+            state: 'refused',
+            error: refusal.reason === 'waking' ? 'conversation_waking' : 'conversation_sleeping',
+            reason: refusal.reason,
+            conversationId: target,
+            nextCheckHintMs: refusal.nextCheckHintMs,
+            message:
+              refusal.reason === 'waking'
+                ? 'This conversation is being woken to record its finished turn. Poll GET /sleep/status and push again once its woke_ready event appears.'
+                : 'This conversation is sleeping: its tab was discarded after a verified push and its turn is running server-side. The app will wake it to record the finished turn; poll GET /sleep/status for the woke_ready event before pushing again.'
+          },
+          origin
+        );
+      }
+    }
     const text = typeof body['text'] === 'string' ? body['text'] : '';
     if (!text.trim()) return json(res, 400, { error: 'no_text' }, origin);
     if (text.trim().length > MAX_SEND_CHARS) return tooLarge(res, origin);
@@ -1241,6 +1269,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       },
       origin
     );
+  }
+
+  /**
+   * The sleep/wake fleet projection, for the local program driving pushed conversations.
+   *
+   * The third and last local-credential route, read-only like /send/outcome: per-slept-
+   * conversation state (slept/waking, key bound or keyless, next check time) plus the
+   * typed event ring — `woke_ready` is the signal that a conversation has its finished
+   * turn recorded and accepts the next push. Adds nothing to what the bridge can do: it
+   * reports on tabs, and still cannot read a file, run a command, or change a permission.
+   */
+  if (route === '/sleep/status' && req.method === 'GET') {
+    if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
+    return json(res, 200, sleepWakeStatus(), origin);
   }
 
   // A deliberate revocation is different from a stale credential. The extension repairs a
@@ -2453,6 +2495,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           error: null,
           completedAt: Date.now()
         };
+        // Sleep/wake: the typed ACK is a click receipt, so this only registers the pending
+        // send — the recorder observing the fresh turn_start is what verifies it and starts
+        // the sleep sequence. Inert while sleepWake is disabled.
+        notePushTyped(conversation, receipt.completedAt, sendVerifyHorizon(id));
       } else if (command.spec.type === 'resume') {
         // Narrowed above.
         if (!conversation) return json(res, 503, { error: 'conversation_required', retryable: true }, origin);

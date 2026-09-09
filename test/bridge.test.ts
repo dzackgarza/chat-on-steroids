@@ -10,7 +10,7 @@
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
 import type { ContinuationSnapshot } from '../src/main/session/continuation.js';
 import type { SwarmSnapshot } from '../src/main/agents.js';
@@ -29,7 +29,8 @@ vi.mock('electron', () => ({
 }));
 const { safeStorage } = await import('electron');
 
-const { defaultConfig, getConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
+const { DEFAULT_SLEEP_WAKE, defaultConfig, getConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
+const { resetSleepWakeForTests, setSleepWakeDriver } = await import('../src/main/session/sleep-wake.js');
 const { initSecretsPath, resetSecretsCacheForTests, setSecret } = await import('../src/main/secrets.js');
 const {
   bridgePort,
@@ -4564,5 +4565,122 @@ describe('local send', () => {
     ).body;
     expect(out.state).toBe('draft_left_in_composer');
     expect(out.message).toContain('retry');
+  });
+});
+
+/**
+ * The sleep/wake surface of the push path (docs/tabless-generation-experiment-2026-09-09.md).
+ *
+ * Config-gated and off by default: the first test is the gate itself — with sleepWake
+ * disabled the verified-send flow must be bit-identical to the suite above. With it on,
+ * a verified send discards the tab after the grace period, and the single-driver
+ * invariant turns further pushes into typed refusals until the wake cycle completes.
+ * The recorder/attribution half of the architecture lives in sleep-wake.test.ts.
+ */
+describe('sleep/wake over the push path', () => {
+  const closedTabs: string[] = [];
+
+  async function localToken(): Promise<string> {
+    return (await fs.readFile(path.join(dir, 'state', 'local-token'), 'utf8')).trim();
+  }
+
+  async function send(body: unknown): Promise<Reply> {
+    return request('POST', '/send', { origin: null, auth: await localToken(), body });
+  }
+
+  /** POST /send -> app opens the chat -> page redeems, types, ACKs. A click receipt so far. */
+  async function typedSend(chat: string, text: string): Promise<string> {
+    const reply = await send({ conversationId: chat, text });
+    expect(reply.status).toBe(200);
+    const id = reply.body.command.id as string;
+    await vi.waitFor(() => expect(opened.length).toBeGreaterThan(0));
+    await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+    const ack = await request('POST', '/commands/ack', {
+      body: { id, status: 'sent', conversationId: chat, client: 'tab-1' }
+    });
+    expect(ack.status).toBe(200);
+    return id;
+  }
+
+  /** The recorder observing the fresh turn_start — the one thing that verifies a send. */
+  async function verifyTurnStart(chat: string, turnId: string): Promise<void> {
+    const events = await request('POST', '/events', {
+      body: { conversationId: chat, events: [{ kind: 'turn_start', time: Date.now(), turnId }] }
+    });
+    expect(events.status).toBe(200);
+  }
+
+  beforeEach(async () => {
+    closedTabs.length = 0;
+    resetSleepWakeForTests();
+    setSleepWakeDriver({
+      openConversationTab: async () => {},
+      closeConversationTab: async (conversationId: string) => {
+        closedTabs.push(conversationId);
+      }
+    });
+    await pair();
+  });
+
+  async function enableSleepWake(): Promise<void> {
+    const base = getConfig();
+    await saveConfig({
+      ...base,
+      // graceMs at the schema floor so the real timer the sleep arms stays test-sized.
+      sleepWake: { ...DEFAULT_SLEEP_WAKE, enabled: true, graceMs: 1_000 }
+    });
+  }
+
+  afterEach(async () => {
+    resetSleepWakeForTests();
+    const base = getConfig();
+    await saveConfig({ ...base, sleepWake: { ...DEFAULT_SLEEP_WAKE } });
+  });
+
+  it('with sleepWake off, a verified send changes nothing: no tab discarded, next push accepted', async () => {
+    const chat = '9d7a8b9c-0d1e-4f2a-8b3c-5d6e7f8a9b0c';
+    await typedSend(chat, 'push with the feature off');
+    await verifyTurnStart(chat, 'turn-off-verified');
+
+    // The same flow the local-send suite proves ends in sent_verified — and nothing more.
+    expect(closedTabs).toEqual([]);
+    const status = await request('GET', '/sleep/status', { origin: null, auth: await localToken() });
+    expect(status.body).toMatchObject({ enabled: false, conversations: [] });
+    const second = await send({ conversationId: chat, text: 'a second push is not refused' });
+    expect(second.status).toBe(200);
+  });
+
+  it('discards the tab after a verified send and refuses further pushes with a typed reason', async () => {
+    await enableSleepWake();
+    const chat = 'ae8b9c0d-1e2f-4a3b-9c4d-6e7f8a9b0c1d';
+    await typedSend(chat, 'push, verify, then sleep');
+    expect(closedTabs).toEqual([]); // the ACK alone is a click receipt, never the trigger
+    await verifyTurnStart(chat, 'turn-sleep-verified');
+
+    await vi.waitFor(() => expect(closedTabs).toEqual([chat]), { timeout: 5_000 });
+    const status = await request('GET', '/sleep/status', { origin: null, auth: await localToken() });
+    expect(status.body.enabled).toBe(true);
+    expect(status.body.conversations).toMatchObject([{ conversationId: chat, state: 'slept' }]);
+    expect(status.body.events.map((event: { kind: string }) => event.kind)).toContain('slept');
+
+    // The single-driver invariant: the wake cycle owns this conversation now.
+    const refused = await send({ conversationId: chat, text: 'racing the wake' });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ state: 'refused', reason: 'sleeping', conversationId: chat });
+    expect(refused.body.nextCheckHintMs).toBeGreaterThan(0);
+    expect(refused.body.message).toContain('/sleep/status');
+
+    // Unrelated chats are untouched.
+    const other = await send({ conversationId: 'bf9c0d1e-2f3a-4b4c-8d5e-7f8a9b0c1d2e', text: 'different chat' });
+    expect(other.status).toBe(200);
+  });
+
+  it('requires the local credential on /sleep/status exactly as on /send', async () => {
+    const withExtensionToken = await request('GET', '/sleep/status', { origin: null, auth: token! });
+    expect(withExtensionToken.status).toBe(401);
+    const withNothing = await request('GET', '/sleep/status', { origin: null, auth: null });
+    expect(withNothing.status).toBe(401);
+    const withLocal = await request('GET', '/sleep/status', { origin: null, auth: await localToken() });
+    expect(withLocal.status).toBe(200);
   });
 });
