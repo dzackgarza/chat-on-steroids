@@ -467,7 +467,7 @@ function loadWorker(options: {
   const tabsUpdate = vi.fn(async (id: number) => ({ id, windowId: 7 }));
   const tabsSendMessage = vi.fn(options.tabsSendMessage ?? (async () => ({ ok: true })));
   const tabsRemove = vi.fn(async () => undefined);
-  const tabsReload = options.tabsReload ?? vi.fn(async () => undefined);
+  const tabsReload = vi.fn(options.tabsReload ?? (async () => undefined));
   const scriptingExecuteScript = vi.fn(async () => []);
   const scriptingInsertCSS = vi.fn(async () => undefined);
   const alarmCreate = vi.fn(() => undefined);
