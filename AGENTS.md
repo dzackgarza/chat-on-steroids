@@ -1068,10 +1068,7 @@ than the tab — so a reopened tab shows the same dialog. The content script cle
 dismiss, Stop, `Continue`, on a five-minute floor. Leave such a chat for a tick and push it on
 the next. A chat still showing that dialog after two ticks means the recovery has regressed.
 
-**Two chats showing that error in one tick is the account, not the chats.** Stop pushing for
-that tick and open no replacements: a replacement cannot run either, and opening it spends
-capacity the working chats need. One chat can be limited while the others run normally, so the
-distinguishing evidence is whether any chat accepts a push in the same window.
+**Two chats showing that error in one tick is the account, not the chats.** Retry dispatch or pushes at stepped intervals: 30s, 1m, 2m, and 5m. Defer pushing or replacements to the next tick only when repeated rate limits persist across those retries. One chat can be limited while others run normally, so test whether any chat accepts a push before declaring an account-level block.
 
 **Do not open several chats at once.** That is a burst of requests from one account and it earns
 the limit described above, which then lands on the chats themselves. Recovery already spaces the
@@ -1170,7 +1167,7 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Never leave a worker asleep or idle.** A sleeping or stalled chat produces zero progress; nothing restarts on its own. The steward does not wait for work to begin spontaneously. When a worker finishes a turn, stalls, or dies to an error (such as a delivery timeout), the steward must act immediately: push `Continue` if viable, or launch a replacement with `just new` and a brief handoff.
 
-**Do not invent phantom constraints or delay dispatch on hypothetical risks.** Never delay replacing or continuing an idle worker out of speculative worry about rate limits, bursts, or unobserved barriers. Act on observable state: if a worker is asleep, dispatch its continuation or replacement immediately. Address limits only when an actual error or throttle arrives.
+**Do not invent phantom constraints or delay dispatch on hypothetical risks.** Never delay replacing or continuing an idle worker out of speculative worry about rate limits, bursts, or unobserved barriers. Act on observable state: if a worker is asleep, dispatch its continuation or replacement immediately. Address limits only when an actual error or throttle arrives. If rate limits are hit, retry dispatch at stepped intervals: 30s, 1m, 2m, and 5m. Defer until the next tick only when repeated limits persist across those retries.
 
 **Do not dig into a managed repository's specifics to perform its orchestration.** Inspecting source files, internal status ledgers, git history, or memory vaults to decide domain-level work violates delegation. The managed chat owns the work and the traversal in its repository; the steward only provides the ambient pointer and maintains momentum.
 
