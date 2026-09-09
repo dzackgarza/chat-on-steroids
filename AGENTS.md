@@ -878,7 +878,13 @@ npm run build                            # electron-vite bundles
 npm run dist                             # this host OS, x64 + arm64 artifacts → release/
 npm run dist:mac / dist:linux            # explicit platform families on matching hosts
 npm run dist:dir:<platform>:<arch>        # one unpacked package for smoke/debug
+
+just install                             # build, replace the installed app, restart it
 ```
+
+`npm run dist:*` leaves its artifact in `release/`. `just install` is the step after it:
+it follows the launcher on PATH to whatever this machine installed, replaces that file,
+and restarts the app. Without it a rebuild changes nothing about what is running.
 
 Vitest uses real filesystem, real processes and real HTTP in many suites; default
 test/hook timeout is 30 seconds.
