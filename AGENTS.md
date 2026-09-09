@@ -883,6 +883,33 @@ npm run dist:dir:<platform>:<arch>        # one unpacked package for smoke/debug
 Vitest uses real filesystem, real processes and real HTTP in many suites; default
 test/hook timeout is 30 seconds.
 
+### Reading and driving ChatGPT chats from here
+
+The app records every chat it bridges, and it can type into one for you. Both are `just`
+recipes in this repository, so an agent on this computer can watch a ChatGPT conversation
+and keep it moving without a browser.
+
+```sh
+just sessions                    # recorded chats, newest first
+just transcript <part-of-an-id>  # print one chat; defaults to the newest
+just search <term>               # which chats mention a term
+
+just chats                       # conversation ids, and whether each chat is mid-turn
+just say <conversation-id> "..."  # send that message to that chat
+just new "..."                    # open a new chat with that opening message
+```
+
+`just chats` is the one that gives you the id `say` needs. `busy` means that chat's newest
+turn event was a start, so ChatGPT is generating — send when it is `idle`. A chat whose tab
+was closed mid-turn keeps a stale `busy`, so read the clock column with it.
+
+A chat that `new` opens is an ordinary chat: it is not a worker, it belongs to no run, and
+it appears in `just sessions` like any other.
+
+The app must be running and the browser paired — it opens the tab itself. `say` and `new`
+present the credential the bridge writes to `state/local-token` when it starts, so a build
+that has not been restarted since this landed has no token yet and both refuse.
+
 ### Where a regression belongs
 
 49 suites, named for the subsystem they cover. Vitest uses real filesystem, real processes
