@@ -21,6 +21,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectiveCapabilities, defaultConfig } from '../src/main/config.js';
+import { getLog } from '../src/main/logger.js';
 import { lastRequestAt, selfTestHeaders, startMcpServer, tunnelProbeHeaders, type McpEndpoint } from '../src/main/mcp/server.js';
 import { lastToolCallAt, type ToolContext } from '../src/main/mcp/tools.js';
 import { friendlyError } from '../src/main/mcp/kernel.js';
@@ -277,6 +278,30 @@ beforeEach(async () => {
 });
 
 // ------------------------------------------------------------------- tests
+
+/**
+ * Deliberately the first describe in this file: the alarm below is once-per-process, so
+ * these assertions are deterministic only while no earlier test has made a tools/call.
+ */
+describe('transport attribution alarm', () => {
+  /**
+   * Live 2026-09 rack incident: the migrated connector transport delivered every
+   * tools/call with no x-request-id header. Attribution is impossible without that join
+   * key — 20,613 calls were filed under Unattributed and charged against every chat,
+   * freezing the fleet composer — and the daemon never logged a word about it. The
+   * kernel must raise one loud error naming the transport condition the first time a
+   * headerless tool call arrives, without spamming one line per call at error level.
+   */
+  it('raises one loud error the first time a tool call arrives with no x-request-id', async () => {
+    const alarms = (): number =>
+      getLog().filter((entry) => entry.level === 'error' && entry.message.includes('x-request-id')).length;
+    expect(alarms()).toBe(0);
+    await modern('tools/call', { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } });
+    expect(alarms()).toBe(1);
+    await modern('tools/call', { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } });
+    expect(alarms()).toBe(1);
+  });
+});
 
 describe('endpoint hardening', () => {
   it('does not expose native paths from uncommon filesystem errors', () => {

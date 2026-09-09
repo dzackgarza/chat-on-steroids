@@ -1529,6 +1529,37 @@ describe('canonical recorder 1.8', () => {
       requestId
     });
 
+  /**
+   * The live 2026-09 rack outage: every connector call arrived with no x-request-id at
+   * all, 20k+ calls silently accumulated in Unattributed activity, and the composer's
+   * charge-against-every-chat rule froze the fleet — without a single log line naming
+   * the transport condition. A missing join key must stay unattributed (guessing an
+   * owner is worse), but the recorder has to say out loud that the key never arrived,
+   * exactly as it already does when the key arrived and the page never confirmed it.
+   */
+  it('names the missing x-request-id join key when filing a headerless call under Unattributed', async () => {
+    const warnings = (): string[] =>
+      getLog()
+        .filter((entry) => entry.level === 'warn' && entry.message.includes('no x-request-id'))
+        .map((entry) => entry.message);
+    const before = warnings().length;
+    const call = await recordToolCall({
+      tool: 'exec_command',
+      args: { cmd: 'true' },
+      content: [{ type: 'text', text: 'ok' }],
+      outcome: 'ok',
+      durationMs: 1,
+      startedAt: Date.now(),
+      requestId: null
+    });
+    // The safe state is unchanged: a call that cannot be placed gets no guessed owner.
+    expect(call?.attributionMethod).toBe('unattributed');
+    expect(call?.conversationId).toBeNull();
+    const after = warnings();
+    expect(after.length).toBe(before + 1);
+    expect(after.at(-1)).toContain('exec_command');
+  });
+
   it('creates exactly one session when the same conversation is first observed concurrently', async () => {
     const conversationId = 'conv-concurrent-first-sight';
     const [first, second] = await Promise.all([
