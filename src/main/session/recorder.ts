@@ -1121,7 +1121,17 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
           turnId: conversationId ? conversations.get(conversationId)?.turnId ?? null : null
         };
       })
-    : Promise.resolve<Target>({ conversationId: null, sessionId: null, attribution: 'unattributed', turnId: null });
+    : (() => {
+        // The other half of the loud-failure contract: when the key arrived but the page
+        // never confirmed it, the branch above names the request id that gave up. When no
+        // key arrived at all there is no id to name, but the silence was worse — the live
+        // 2026-09 headerless-transport outage filed 20k+ calls here without a word.
+        logWarn(
+          `request attribution: call arrived with no x-request-id; filing ${input.tool} under ` +
+            'Unattributed activity — the transport did not supply the correlation join key'
+        );
+        return Promise.resolve<Target>({ conversationId: null, sessionId: null, attribution: 'unattributed', turnId: null });
+      })();
   const filed = recordChain.then(async () => fileToolCall(input, await attributing));
   recordChain = filed.then(
     () => undefined,

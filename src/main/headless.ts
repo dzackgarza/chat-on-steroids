@@ -18,6 +18,7 @@ import {
 import { startMcpServer, tunnelProbeHeaders, type McpEndpoint } from './mcp/server.js';
 import { startTunnel, type TunnelHandle } from './tunnel/index.js';
 import { initSessionStore } from './session/store.js';
+import { restoreRequestCorrelations } from './session/correlation.js';
 import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
 import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
@@ -46,6 +47,13 @@ async function main(): Promise<void> {
   }
 
   await loadConfig();
+
+  // Request ownership must exist before either the MCP server or the bridge can race in —
+  // the same startup contract the desktop entrypoint honors (see index.ts). Skipping this
+  // left the in-memory registry empty after every daemon restart, and because the durable
+  // snapshot is overwritten wholesale on the next live observation, it also destroyed every
+  // previously proven owner on disk.
+  await restoreRequestCorrelations();
 
   const currentConfig = getConfig();
   if (currentConfig.roots.length === 0) {

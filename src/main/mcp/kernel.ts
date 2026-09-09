@@ -25,7 +25,7 @@ import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { Capabilities, Root } from '../../shared/types.js';
 import { FsOpError, formatBytes, type FileInfo } from '../fsops.js';
-import { logInfo, logWarn } from '../logger.js';
+import { logError, logInfo, logWarn } from '../logger.js';
 import {
   SandboxError,
   isAbsoluteVirtualPath,
@@ -304,6 +304,33 @@ function noteTransportIdentity(transportKey: string | null): void {
 }
 
 /**
+ * Whether each attribution-header state has been reported yet.
+ *
+ * The x-request-id join key is the only thing that can ever place a call in a
+ * conversation, so a transport that stops carrying it silently degrades every call to
+ * Unattributed — where the composer's charge-against-every-chat rule blocks pushes
+ * fleet-wide. That condition was live for 20k+ calls in 2026-09 without one log line.
+ * Report it loudly the first time it is observed. Once per state, not per call: the
+ * per-call forensic line lives in the recorder, and repeating a process-level fact at
+ * error level would only drown the bounded log.
+ */
+let attributionNoted: { present: boolean; absent: boolean } = { present: false, absent: false };
+
+function noteTransportAttribution(requestId: string | null): void {
+  if (requestId === null && !attributionNoted.absent) {
+    attributionNoted.absent = true;
+    logError(
+      'MCP tool call arrived with no x-request-id header — attribution is impossible for such calls: ' +
+        'they are filed under Unattributed activity and charged against every chat, which blocks composer ' +
+        'pushes while any call is running. Check that the connector/tunnel path propagates x-request-id.'
+    );
+  } else if (requestId !== null && !attributionNoted.present) {
+    attributionNoted.present = true;
+    logInfo('MCP transport supplied x-request-id — tool calls can be attributed to their conversations');
+  }
+}
+
+/**
  * Appends the messages waiting for this agent to the tool result.
  *
  * This is the push-like delivery: an agent gets whatever has been said to it since its last
@@ -392,6 +419,7 @@ async function dispatchTracked(
   run: () => Promise<ToolResult>
 ): Promise<ToolResult> {
   noteTransportIdentity(transportKey);
+  noteTransportAttribution(requestId);
   // Recorded here rather than in `guard` because only this layer knows which server
   // answered, and "was this connector ever actually used from ChatGPT" is a per-connector
   // question the setup screen has to answer honestly.
