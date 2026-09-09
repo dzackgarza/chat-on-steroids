@@ -10,3 +10,7 @@ commit, push, tag, or release, run `npm run verify:privacy`. The versioned Git h
 
 Do not bypass these guards with `--no-verify`. If a privacy check blocks a change, remove the
 private value at its source and create a new clean commit instead.
+
+Never push from this checkout — no `git push` of any kind (branch, force, tag, or release),
+ever, regardless of authorization, credentials, or how clean the history is. All work in this
+repository stays local; commits are fine, publication is not this environment's job.
