@@ -222,7 +222,8 @@ async function loadOnce() {
     'closeOutbox',
     'commandAckOutbox',
     'revivalPreferences',
-    'delivery'
+    'delivery',
+    'commandTabs'
   ]);
   settled = Array.isArray(live.settled) ? live.settled : [];
   journal = Array.isArray(live.journal) ? live.journal : [];
@@ -251,6 +252,20 @@ async function loadOnce() {
       : {};
   if (live.delivery && typeof live.delivery === 'object' && !Array.isArray(live.delivery)) {
     delivery = { ...delivery, ...live.delivery };
+  }
+  // Custody of a tab the app opened for a command has to outlive this worker. The service
+  // worker is torn down every few idle seconds, and holding this in memory alone meant the
+  // sweep woke with an empty map: a command that never acknowledged left its tab open for the
+  // life of the browser, and those tabs accumulated one per unacknowledged command.
+  commandTabs.clear();
+  if (Array.isArray(live.commandTabs)) {
+    for (const entry of live.commandTabs) {
+      const tabId = Number(entry?.tabId);
+      const openedAt = Number(entry?.openedAt);
+      const commandId = typeof entry?.commandId === 'string' ? entry.commandId : '';
+      if (!Number.isInteger(tabId) || !Number.isFinite(openedAt) || !commandId) continue;
+      commandTabs.set(tabId, { commandId, openedAt });
+    }
   }
   loaded = true;
 }
@@ -773,8 +788,19 @@ async function fetchBounded(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   }
 }
 
+// A tab held for a command is work, exactly like an unsent outbox entry: it is the only thing
+// that will ever close that tab. Leaving it out of these two predicates cleared the alarm as soon
+// as the outboxes drained, so the sweep stopped running and every unacknowledged command left its
+// tab open for the life of the browser.
 function scheduleRetry() {
-  if (journal.length === 0 && closeOutbox.length === 0 && commandAckOutbox.length === 0) return;
+  if (
+    journal.length === 0 &&
+    closeOutbox.length === 0 &&
+    commandAckOutbox.length === 0 &&
+    commandTabs.size === 0
+  ) {
+    return;
+  }
   if (retryAlarmScheduled) return;
   try {
     if (chrome.alarms && typeof chrome.alarms.create === 'function') {
@@ -787,7 +813,14 @@ function scheduleRetry() {
 }
 
 function clearRetryIfIdle() {
-  if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0) return;
+  if (
+    journal.length > 0 ||
+    closeOutbox.length > 0 ||
+    commandAckOutbox.length > 0 ||
+    commandTabs.size > 0
+  ) {
+    return;
+  }
   try {
     if (chrome.alarms && typeof chrome.alarms.clear === 'function') void chrome.alarms.clear(RETRY_ALARM);
     retryAlarmScheduled = false;
@@ -2421,22 +2454,47 @@ const COMMAND_TAB_TTL_MS = 150_000;
  */
 const DEFERRED_REVIVAL_TTL_MS = 30 * 60 * 1000;
 
+// Custody has its own storage key and its own writer rather than riding persistLive(). That
+// snapshot write covers every live field at once, so calling it from a tab lifecycle event that
+// can run before load() would write this worker's empty memory over a previous worker's state.
+function persistCommandTabs() {
+  try {
+    return Promise.resolve(
+      chrome.storage.session.set({
+        commandTabs: [...commandTabs].map(([tabId, entry]) => ({ ...entry, tabId }))
+      })
+    ).catch(() => undefined);
+  } catch {
+    return Promise.resolve();
+  }
+}
+
 function noteCommandTab(tabId, commandId) {
   if (typeof tabId !== 'number' || !commandId) return;
-  if (!commandTabs.has(tabId)) commandTabs.set(tabId, { commandId, openedAt: Date.now() });
+  if (commandTabs.has(tabId)) return;
+  commandTabs.set(tabId, { commandId, openedAt: Date.now() });
+  void persistCommandTabs();
+  scheduleRetry();
 }
 
 function forgetCommandTab(commandId) {
+  let changed = false;
   for (const [tabId, entry] of commandTabs) {
-    if (entry.commandId === commandId) commandTabs.delete(tabId);
+    if (entry.commandId === commandId) {
+      commandTabs.delete(tabId);
+      changed = true;
+    }
   }
+  if (changed) void persistCommandTabs();
 }
 
 /** Closes the tabs of commands that can no longer complete. */
 async function sweepCommandTabs(now = Date.now()) {
+  let changed = false;
   for (const [tabId, entry] of [...commandTabs]) {
     if (now - entry.openedAt < COMMAND_TAB_TTL_MS) continue;
     commandTabs.delete(tabId);
+    changed = true;
     if (!chrome.tabs || typeof chrome.tabs.remove !== 'function') continue;
     try {
       await chrome.tabs.remove(tabId);
@@ -2444,6 +2502,7 @@ async function sweepCommandTabs(now = Date.now()) {
       // Already gone, which is the same outcome.
     }
   }
+  if (changed) await persistCommandTabs();
 }
 
 /**
@@ -2516,16 +2575,29 @@ if (chrome.tabs && chrome.tabs.onCreated && typeof chrome.tabs.onCreated.addList
 chrome.tabs.onRemoved.addListener((id) => {
   revivalReuseAttempted.delete(id);
   clearDeferredRevivalOffersForTab(id);
+  // A tab closed by hand or by the sweep is no longer ours to close.
+  if (commandTabs.delete(id)) void persistCommandTabs();
   void serializeTab(id, async () => {
     await load();
     const conversationId = cleanConversationId(tabConversations[String(id)]);
     let changed = clearRevivalPreferencesForTab(id);
-    // Only the last tab showing a conversation retires its wake; a duplicate closing leaves the
-    // original tab's marker alone. The closing tab's own entry still stands here, so it must be
-    // excluded or the conversation always looks open and no marker is ever retired.
-    const openElsewhere = Object.entries(tabConversations).some(
-      ([key, value]) => key !== String(id) && cleanConversationId(value) === conversationId
-    );
+    // Only the last tab showing a conversation retires its wake; closing a duplicate or an
+    // app-opened fallback leaves the original tab's marker alone. The browser is the authority
+    // here rather than tabConversations, which only knows the tabs that bound a conversation
+    // through this worker's lifetime.
+    let openElsewhere = false;
+    if (conversationId) {
+      try {
+        const tabs = await chrome.tabs.query({ url: CHATGPT_TAB_URLS });
+        openElsewhere = tabs.some(
+          (tab) => tab && tab.id !== id && conversationForTab(tab) === conversationId
+        );
+      } catch {
+        // Without an answer from the browser, keep the marker: a wake that survives is
+        // recoverable, and one dropped in error is not.
+        openElsewhere = true;
+      }
+    }
     if (conversationId && !openElsewhere) {
       changed = forgetDeferredRevivalsForConversation(conversationId) || changed;
     }
@@ -2844,7 +2916,7 @@ async function restoreOpenChatgptTabs() {
 chrome.runtime.onInstalled.addListener(() => {
   void restoreOpenChatgptTabs().then(() => recoverDeferredRevivals()).catch(() => undefined);
   void load().then(() => {
-    if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0) scheduleRetry();
+    if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0 || commandTabs.size > 0) scheduleRetry();
   });
 });
 
@@ -2876,5 +2948,5 @@ if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addLi
 // dead or stale recorder pays the scripting cost.
 void restoreOpenChatgptTabs().then(() => recoverDeferredRevivals()).catch(() => undefined);
 void load().then(() => {
-  if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0) scheduleRetry();
+  if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0 || commandTabs.size > 0) scheduleRetry();
 });
