@@ -123,7 +123,11 @@ state_dir := if os() == "macos" {
 }
 
 # Which chats are recorded, what each last did, and the id `say` wants
-chats:
+#
+# Only chats active in the last `hours` are shown. Every chat this app has ever seen is
+# still on disk, and a driver reading a list of hundreds of finished ones cannot see the
+# three it is actually keeping alive. Pass a bigger number, or 0, for the whole history.
+chats hours="24":
     #!/usr/bin/env python3
     import json, pathlib, time
 
@@ -200,7 +204,10 @@ chats:
 
         rows.append((when, chat, state, describe(newest) if newest else "-"))
 
+    cutoff = float("{{hours}}") * 3600
     for updated, chat, state, action in sorted(rows, reverse=True):
+        if cutoff and time.time() - updated / 1000 > cutoff:
+            continue
         clock = time.strftime("%m-%d %H:%M:%S", time.localtime(updated / 1000))
         print(f"{clock}\t{chat}\t{state}\t{action}")
 
