@@ -618,7 +618,8 @@ routes: `/status`, `/events`, `/closed`, `/activity`, `/compact/claim-auto`, `/c
 `/commands/redeem`, `/commands/ack`. `/settings` is the only pair the page may write, and
 its GET exists for the one composer with no conversation to read `/activity` for: a New Chat.
 
-`/send` and `GET /send/outcome` are the two routes that do not belong to the extension. A
+`/send`, `GET /send/outcome` and `GET /sleep/status` are the three routes that do not
+belong to the extension. A
 local program — the justfile recipes, a script, an agent on this computer — posts
 `{conversationId?, text, verifyHorizonMs?}` and the app types that text into that chat, or
 into a fresh one when no conversation is named. Queueing is not delivery and even the
@@ -626,7 +627,8 @@ page's ACK is only a click receipt: `/send/outcome?id=` reports the typed state 
 (`queued → delivering → typed → sent_verified`, or a terminal
 `typed_unverified`/`refused`/`draft_left_in_composer`/`no_live_composer_tab`/`expired`/
 `failed` with the concrete next action), where the sole success is a fresh `turn_start`
-observed in the recording within the horizon. Both routes present the separate credential
+observed in the recording within the horizon. `/sleep/status` is the read-only sleep/wake
+fleet projection (below). All three routes present the separate credential
 in `<userData>/state/local-token` (mode `0600`, minted once at bridge startup), never the
 extension's bearer token, because `/pair` reissues that one whenever the browser
 reconnects.
@@ -641,7 +643,55 @@ Because this is where browser-observed lifecycle meets recorder, agents, continu
 workspace state, a `bridge.ts` bug presents as a session, extension, or agent bug depending
 on which end you inspect.
 
-**Tests.** `bridge.test.ts`, `extension.test.ts`.
+### Sleep/wake tabless generation — `session/sleep-wake.ts` (config-gated, default off)
+
+Evidence base: `docs/tabless-generation-experiment-2026-09-09.md`. A ChatGPT MCP
+tool-looping turn runs entirely at OpenAI — a turn kept calling for eleven minutes after
+its tab was destroyed, *faster* than with the tab attached — so the tab is needed only at
+turn boundaries. With `sleepWake.enabled` in `config.json` (default **off**; when off every
+hook is inert and behavior is identical to a build without the feature), the push path
+becomes a per-conversation cycle: **push → verify → sleep → quiet → wake → record →
+ready for the next push**.
+
+- **Sleep.** When a `/send` reaches `sent_verified` (the recorder observed the fresh
+  `turn_start`), the conversation's tab is discarded after `sleepWake.graceMs` via the
+  injected tab driver (`headless.ts` wires it over CDP `/json/close`, the HTTP form of
+  `Target.closeTarget`; the desktop entrypoint wires none, so sleeping there fails loudly).
+- **Push-correlated attribution.** The verification also opens a bounded window
+  (`correlationWindowMs`): the first unbound `x-openai-session` key whose calls begin
+  inside it binds to the pushed conversation as `push_correlated` — the strongest degraded
+  tier (`exact > push_correlated > temporal_unique > connector_session`, see
+  `connector-session.ts`), resting on what the app *did* rather than on fleet appearance,
+  and needing zero page evidence. Same sticky contradiction handling as every other
+  binding: disagreeing evidence kills the key for good.
+- **Wake.** A slept conversation with a bound key wakes when its call stream is quiet
+  past `quietMs` (mid-turn gaps measured up to ~80s; the final text phase is call-silent,
+  so quiescence is the trigger, never proof of completion). The tab is remounted, the
+  recorder captures the finished turn cold through the reload-recovery path (an
+  `observer_lost` end deliberately keeps the turn recoverable, in the durable rebuild as
+  well as live), and a `woke_ready` event says the worker can take its next push. A
+  remount that shows the turn still generating re-sleeps and keeps monitoring. Slept with
+  **no** bound key, quiescence is unobservable: the wake runs on `fallbackWakeMs` instead
+  and the events say so. Restored-after-restart conversations are always keyless
+  (bindings are in-memory by design) and ride the fallback timer.
+- **Single-driver invariant.** While slept or waking, POST `/send` answers `409
+  {state:'refused', reason:'sleeping'|'waking', nextCheckHintMs}` — wake→record→push-next
+  is one serialized sequence per conversation.
+- **Honest page evidence.** A slept conversation with a bound key is excluded from
+  temporal-uniqueness computations from its *sleep state*, never by inference — a closed
+  generating tab must not poison "exactly one generating" for the fleet. Slept without a
+  key stays fail-closed.
+
+The steward polls `GET /sleep/status` (local token): `{enabled, conversations:
+[{conversationId, state, sleptAt, sessionKeyBound, lastCallAt, nextCheckAt, wakeCause}],
+events}` with typed events `slept`, `sleep_cancelled`, `sleep_failed`, `wake_started`,
+`wake_failed`, `resleep_still_generating`, `woke_ready`, `woke_unconfirmed`, `restored`.
+`woke_ready` is the "push the next task" signal. Config knobs: `sleepWake.{enabled,
+graceMs, quietMs, fallbackWakeMs, correlationWindowMs}`; changes take effect at the next
+daemon restart, like every other config edit the daemon reads at startup.
+
+**Tests.** `bridge.test.ts`, `extension.test.ts`; sleep/wake in `sleep-wake.test.ts` and
+the `sleep/wake over the push path` describe of `bridge.test.ts`.
 
 ## 15. Compact & Resume — `session/continuation.ts`
 

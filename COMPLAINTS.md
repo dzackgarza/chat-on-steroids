@@ -4,6 +4,27 @@ Friction, deficiencies, and observed-but-unfixed defects, logged per the AGENTS.
 standing directive. Each entry names what was observed, where, and what (if anything)
 was done about it.
 
+## 2026-09-09 — sleep/wake architecture agent
+
+- **`storedHistory()` closed `observer_lost` turns in the durable rebuild — FIXED.** The
+  live projection deliberately keeps an `observer_lost`-ended turn recoverable (in
+  `openTurns`, out of `knownTurnEnds`) so a returning page's real boundary or recovered
+  final assistant message can supersede the unobserved closure — and its own comment
+  admitted the restart rebuild "loses only the supersede nicety". With sleep/wake that
+  nicety became load-bearing: a slept conversation's tab detaches mid-turn *by design*
+  (`closeConversation` appends `observer_lost`), and the rebuilt `openTurns` on remount no
+  longer contained the slept turn, so the reload-recovery path could never close it as
+  `completed` and no wake could ever confirm. Fixed in `recorder.ts` by skipping
+  `observer_lost` ends when rebuilding `openTurns`/`knownTurnEnds`, aligning the restart
+  path with the documented live semantics; covered by the wake-cycle test in
+  `test/sleep-wake.test.ts`.
+- **`npm run verify:privacy` fails at baseline** with the two accepted historical
+  findings (commits `9e27c0f` and `03acbfa` author emails). Every run therefore exits 1
+  and the operator must diff the finding list by eye to see whether a change added
+  anything. An allowlist for the two accepted commits would make the check green/red
+  again. Observed, not fixed (the verifier's finding set is policy, not this task's
+  scope).
+
 ## 2026-09-09 — push-path hardening agent
 
 - **Flaky pre-existing test at HEAD — RESOLVED (test-harness race, not a Goal
