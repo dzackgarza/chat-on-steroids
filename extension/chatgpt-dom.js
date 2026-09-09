@@ -1102,18 +1102,43 @@ var CLF_DOM = (() => {
   function dismissErrors() {
     return safe(() => {
       let closed = 0;
-      for (const node of document.querySelectorAll('[role="alert"]')) {
+      // A rate limit arrives as a modal dialog, not as the alert banner other failures use, and
+      // its only control is labelled "Got it". Matching alerts and close-shaped labels alone
+      // meant the one failure that most needs clearing was the one never seen.
+      for (const node of document.querySelectorAll('[role="alert"], [role="dialog"]')) {
         if (node.closest && node.closest(OWN_SURFACES)) continue;
         if (!displayed(node)) continue;
-        const control = node.querySelector(
-          'button[aria-label*="ismiss" i], button[aria-label*="lose" i], button[data-testid*="close" i]'
-        );
+        const control =
+          node.querySelector(
+            'button[aria-label*="ismiss" i], button[aria-label*="lose" i], button[data-testid*="close" i]'
+          ) ??
+          [...node.querySelectorAll('button')].find((button) =>
+            /^(got it|ok|okay|dismiss|close)$/i.test((button.innerText || button.textContent || '').trim())
+          );
         if (!control) continue;
         control.click();
         closed += 1;
       }
       return closed;
     }, 0);
+  }
+
+  /**
+   * Text of any visible modal dialog, which a caller matches against its own recoverable set.
+   *
+   * Kept separate from errors(): that feed is the chat's error history and is counted, whereas a
+   * dialog is a live obstruction that stops the composer accepting anything at all.
+   */
+  function blockingDialogText() {
+    return safe(() => {
+      for (const node of document.querySelectorAll('[role="dialog"]')) {
+        if (node.closest && node.closest(OWN_SURFACES)) continue;
+        if (!displayed(node)) continue;
+        const value = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (value) return value.slice(0, 500);
+      }
+      return '';
+    }, '');
   }
 
   function composer() {
@@ -1470,6 +1495,7 @@ var CLF_DOM = (() => {
     toolLabel,
     errors,
     dismissErrors,
+    blockingDialogText,
     composer,
     composerSubmitReady,
     composerBox,
