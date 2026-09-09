@@ -786,6 +786,30 @@ describe('extension command delivery', () => {
    * redeems, and the only thing that used to fix it was a person pressing reload. That is not
    * something the app can ask for every time a chat wedges, so it does it itself.
    */
+  /**
+   * Recovery opens a tab for every marker it cannot match to an existing tab, and it runs on
+   * every service-worker start. Nothing aged those markers out, so one left by a command that
+   * died hours ago was still recovered — and restarting the browser after a long day opened a
+   * tab per dead marker, dozens at once.
+   */
+  it('does not open tabs for revival markers whose commands are long gone', async () => {
+    const fresh = 'aaaaaaaa-1111-2222-3333-444444444444';
+    const ancient = 'bbbbbbbb-1111-2222-3333-444444444444';
+    const local = new FakeStorageArea({
+      deferredRevivals: [
+        { id: 'cmd-fresh', conversationId: fresh, queuedAt: Date.now() - 60_000 },
+        { id: 'cmd-ancient', conversationId: ancient, queuedAt: Date.now() - 6 * 60 * 60 * 1000 }
+      ]
+    });
+    const worker = loadWorker({ local, session: new FakeStorageArea(), tabsQuery: async () => [] });
+    await worker.installed('chrome_update');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const opened = worker.tabsCreate.mock.calls.map((call) => String((call[0] as any)?.url ?? ''));
+    expect(opened.some((url) => url.includes(fresh))).toBe(true);
+    expect(opened.some((url) => url.includes(ancient))).toBe(false);
+  });
+
   it('reloads a tab that holds the chat but never acts on its command', async () => {
     const chat = '5c5c5c5c-1111-2222-3333-444444444444';
     const worker = loadWorker({
