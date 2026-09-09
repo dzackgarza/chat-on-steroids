@@ -424,6 +424,7 @@ interface WorkerHarness {
   tabsUpdate: ReturnType<typeof vi.fn>;
   tabsSendMessage: ReturnType<typeof vi.fn>;
   tabsRemove: ReturnType<typeof vi.fn>;
+  tabsReload: ReturnType<typeof vi.fn>;
   windowsUpdate: ReturnType<typeof vi.fn>;
   scriptingExecuteScript: ReturnType<typeof vi.fn>;
   scriptingInsertCSS: ReturnType<typeof vi.fn>;
@@ -452,6 +453,7 @@ function loadWorker(options: {
   tabsGet?: (tabId: number) => Promise<{ id?: number; url?: string; pendingUrl?: string; status?: string }>;
   tabsQuery?: () => Promise<Array<{ id?: number; windowId?: number; url?: string; pendingUrl?: string }>>;
   tabsSendMessage?: (tabId: number, message: Record<string, unknown>) => Promise<unknown>;
+  tabsReload?: (tabId: number) => Promise<unknown>;
 }): WorkerHarness {
   let listener: ((message: any, sender: any, sendResponse: (value: any) => void) => boolean) | null = null;
   const tabRemovedListeners: Array<(tabId: number) => void> = [];
@@ -463,6 +465,7 @@ function loadWorker(options: {
   const tabsUpdate = vi.fn(async (id: number) => ({ id, windowId: 7 }));
   const tabsSendMessage = vi.fn(options.tabsSendMessage ?? (async () => ({ ok: true })));
   const tabsRemove = vi.fn(async () => undefined);
+  const tabsReload = options.tabsReload ?? vi.fn(async () => undefined);
   const scriptingExecuteScript = vi.fn(async () => []);
   const scriptingInsertCSS = vi.fn(async () => undefined);
   const alarmCreate = vi.fn(() => undefined);
@@ -514,6 +517,7 @@ function loadWorker(options: {
       }),
       sendMessage: tabsSendMessage,
       remove: tabsRemove,
+      reload: tabsReload,
       onCreated: {
         addListener(fn: (tab: { id?: number; url?: string; pendingUrl?: string }) => void) {
           tabCreatedListeners.push(fn);
@@ -550,6 +554,7 @@ function loadWorker(options: {
     tabsUpdate,
     tabsSendMessage,
     tabsRemove,
+    tabsReload,
     windowsUpdate,
     scriptingExecuteScript,
     scriptingInsertCSS,
@@ -770,6 +775,47 @@ describe('extension command delivery', () => {
     expect(fetch.mock.calls.every(([input]) => new URL(String(input)).pathname !== '/commands')).toBe(true);
     expect(backgroundSource).toContain("const RETRY_ALARM = 'clf-bridge-drain'");
     expect(backgroundSource).not.toContain("call('/commands'");
+  });
+
+  /**
+   * A tab that holds a chat and will not act on the command for it.
+   *
+   * Preferring the tab that already has the conversation is right while it is a live, current
+   * document — and the same answer names one left from before an extension reload, or one whose
+   * page is stuck behind a turn ChatGPT never finished. Such a tab holds the chat and never
+   * redeems, and the only thing that used to fix it was a person pressing reload. That is not
+   * something the app can ask for every time a chat wedges, so it does it itself.
+   */
+  it('reloads a tab that holds the chat but never acts on its command', async () => {
+    const chat = '5c5c5c5c-1111-2222-3333-444444444444';
+    const worker = loadWorker({
+      local: new FakeStorageArea(),
+      session: new FakeStorageArea(),
+      // Tab 41 already has this chat; tab 42 is the one the app opened for the command.
+      tabsQuery: async () => [
+        { id: 41, windowId: 1, url: `https://chatgpt.com/c/${chat}` },
+        { id: 42, windowId: 1, url: `https://chatgpt.com/c/${chat}?clf=cmd-held-tab` }
+      ]
+    });
+    // The marker in the opening URL is what makes tab 42 the app-opened fallback rather than
+    // an ordinary tab that happens to be on this chat.
+    await worker.createTab({ id: 42, url: `https://chatgpt.com/c/${chat}?clf=cmd-held-tab` });
+    await worker.registerTab(42);
+
+    const defer = async () =>
+      worker.send({ type: 'defer_revival', id: 'cmd-held-tab', conversationId: chat }, 42);
+
+    const first = await defer();
+    expect(first).toMatchObject({ deferred: true, preferredElsewhere: true });
+    expect(worker.tabsReload).not.toHaveBeenCalled();
+
+    // The waiting document polls about once a second and is told the same thing every time.
+    for (let poll = 1; poll < 20; poll++) await defer();
+
+    expect(worker.tabsReload).toHaveBeenCalledWith(41);
+    // Once only: a chat that is merely slow must not be reloaded over and over.
+    for (let poll = 0; poll < 5; poll++) await defer();
+    expect(worker.tabsReload).toHaveBeenCalledTimes(1);
   });
 
   it('re-injects the recorder into already-open ChatGPT tabs after an extension reload', async () => {
