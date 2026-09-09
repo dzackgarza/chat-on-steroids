@@ -18,6 +18,11 @@ import {
   restoreRequestCorrelations,
   resetCorrelationRegistryForTests
 } from '../src/main/session/correlation.js';
+import {
+  learnSessionBinding,
+  resetSessionBindingsForTests,
+  sessionBinding
+} from '../src/main/session/connector-session.js';
 
 describe('request correlation ownership', () => {
   beforeEach(() => resetCorrelationRegistryForTests());
@@ -329,5 +334,38 @@ describe('request correlation ownership', () => {
       resetDurableForTests();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('connector session key bindings', () => {
+  /**
+   * The 2026-09 connector platform sends no x-request-id, so the exact page join can never
+   * fire. What it does send is one opaque `x-openai-session` key per conversation-side
+   * session, observed live to be distinct across concurrently executing workers. A binding
+   * from that key to a conversation may only ever be learned at a temporally unique moment
+   * (exactly one managed conversation generating); once learned it lets later calls from the
+   * same key attribute even while several chats generate. Contradictory evidence must make
+   * the binding permanently unusable rather than letting either side win.
+   */
+  it('learns a key once, keeps it idempotent for the same chat, and makes contradictions sticky', () => {
+    resetSessionBindingsForTests();
+    const key = 'v1/sessionKeyForBindingSemantics';
+    expect(sessionBinding(key)).toBeNull();
+
+    expect(learnSessionBinding(key, 'conv-owner')).toBe('stored');
+    expect(sessionBinding(key)).toBe('conv-owner');
+    expect(learnSessionBinding(key, 'conv-owner')).toBe('same');
+    expect(sessionBinding(key)).toBe('conv-owner');
+
+    expect(learnSessionBinding(key, 'conv-intruder')).toBe('conflict');
+    expect(sessionBinding(key)).toBeNull();
+    // Sticky: not even the original owner can resurrect a contradicted key.
+    expect(learnSessionBinding(key, 'conv-owner')).toBe('conflict');
+    expect(sessionBinding(key)).toBeNull();
+  });
+
+  it('keeps unknown keys unbound', () => {
+    resetSessionBindingsForTests();
+    expect(sessionBinding('v1/neverObservedSessionKey')).toBeNull();
   });
 });

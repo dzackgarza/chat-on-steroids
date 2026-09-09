@@ -37,6 +37,15 @@ import { resetWorkspaces, setWorkspaceFor } from '../src/main/workspace.js';
 import { DEFAULT_CAPABILITIES, type Capabilities, type Root } from '../src/shared/types.js';
 import { emptyEvidence, noteExec, noteOutcome, runInCallContext, type CallContext } from '../src/main/mcp/call-context.js';
 import { observeRequestCorrelation } from '../src/main/session/correlation.js';
+import { resetSessionBindingsForTests } from '../src/main/session/connector-session.js';
+import {
+  flushRecorder,
+  recordChatObservations,
+  resetRecorderForTests,
+  sessionForConversation,
+  unattributedSession
+} from '../src/main/session/recorder.js';
+import { readEvents } from '../src/main/session/store.js';
 import { execOwner, noteExecOwner, resetExecOwnershipForTests } from '../src/main/codex/ownership.js';
 import { unifiedExecManager } from '../src/main/codex/manager.js';
 import { locateRipgrep } from '../src/main/ripgrep.js';
@@ -300,6 +309,82 @@ describe('transport attribution alarm', () => {
     expect(alarms()).toBe(1);
     await modern('tools/call', { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } });
     expect(alarms()).toBe(1);
+  });
+});
+
+/**
+ * The adaptation to what the 2026-09 connector platform actually sends. Captured live on
+ * 2026-09-09 from real ChatGPT traffic on the rack: tools/call arrives with NO x-request-id
+ * anywhere (headers or body), and the page-side metadata.request_id UUIDs appear nowhere in
+ * the request — the exact join is gone. The one per-conversation identity on the wire is the
+ * opaque `x-openai-session` header, distinct across three concurrently generating workers
+ * and stable across each worker's own calls. These tests drive the full HTTP → ingress →
+ * dispatcher → recorder path exactly as that platform does.
+ */
+describe('degraded attribution tiers for the headerless connector platform', () => {
+  const KEY_A = 'v1/e2eSessionKeyAlpha00000000000000000000000000000000';
+  const CONV_A = 'conv-e2e-temporal-owner';
+  const CONV_B = 'conv-e2e-second-generator';
+
+  afterAll(async () => {
+    await flushRecorder();
+    resetRecorderForTests();
+    resetSessionBindingsForTests();
+  });
+
+  it('attributes a headerless call to the only generating chat as temporal_unique', async () => {
+    const observed = await recordChatObservations(CONV_A, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-e2e-temporal-1' }
+    ]);
+    const reply = await modern(
+      'tools/call',
+      { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } },
+      { 'X-OpenAI-Session': KEY_A }
+    );
+    expect(failed(reply)).toBe(false);
+    await flushRecorder();
+    const events = await readEvents(observed.sessionId!, { kinds: ['tool_call'] });
+    const recorded = events.filter((event) => event.kind === 'tool_call');
+    expect(recorded.length).toBe(1);
+    expect(recorded[0]!.call.conversationId).toBe(CONV_A);
+    expect(recorded[0]!.call.attributionMethod).toBe('temporal_unique');
+  });
+
+  it('attributes by the learned session key while several chats generate', async () => {
+    await recordChatObservations(CONV_B, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-e2e-second-1' }
+    ]);
+    // Two chats generate now, so the temporal tier alone cannot place this call; only the
+    // binding learned for KEY_A at the temporally unique moment above can.
+    const reply = await modern(
+      'tools/call',
+      { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } },
+      { 'X-OpenAI-Session': KEY_A }
+    );
+    expect(failed(reply)).toBe(false);
+    await flushRecorder();
+    const sessionId = (await sessionForConversation(CONV_A))!;
+    const events = await readEvents(sessionId, { kinds: ['tool_call'] });
+    const recorded = events.filter((event) => event.kind === 'tool_call');
+    expect(recorded.length).toBe(2);
+    expect(recorded.at(-1)!.call.conversationId).toBe(CONV_A);
+    expect(recorded.at(-1)!.call.attributionMethod).toBe('connector_session');
+  });
+
+  it('leaves an unknown key among several generating chats unattributed', async () => {
+    const reply = await modern(
+      'tools/call',
+      { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } },
+      { 'X-OpenAI-Session': 'v1/e2eNeverBoundKey000000000000000000000000000000000' }
+    );
+    expect(failed(reply)).toBe(false);
+    await flushRecorder();
+    const bucket = unattributedSession();
+    expect(bucket).not.toBeNull();
+    const events = await readEvents(bucket!, { kinds: ['tool_call'] });
+    const recorded = events.filter((event) => event.kind === 'tool_call');
+    expect(recorded.at(-1)!.call.attributionMethod).toBe('unattributed');
+    expect(recorded.at(-1)!.call.conversationId).toBeNull();
   });
 });
 

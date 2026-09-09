@@ -73,6 +73,23 @@ describe('local calls still running', () => {
     });
   });
 
+  it('charges a degraded-evidence inferred call only to its inferred chat', async () => {
+    // The 2026-09 connector platform sends no exact join key, so an owner can be inferred
+    // from temporal/session evidence at arrival. That inference is charge-scoping only:
+    // it must shrink the blast radius from "every chat" to the inferred chat, while the
+    // truly ambiguous call (no exact and no inferred owner) keeps charging everyone.
+    const inferred = callFrom(null);
+    inferred.caller.inferredConversationId = 'conversation-b';
+    inferred.caller.inferredMethod = 'temporal_unique';
+    await whileRunning(inferred, () => {
+      expect(inFlightToolCalls('conversation-a')).toBe(0);
+      expect(inFlightToolCalls('conversation-b')).toBe(1);
+      expect(runningToolCalls('conversation-b')).toBe(1);
+      expect(inFlightToolCalls(null)).toBe(1);
+    });
+    expect(inFlightToolCalls('conversation-b')).toBe(0);
+  });
+
   it('follows a call whose chat is identified part-way through it', async () => {
     // trackInFlight holds the context object, not a copy of the id it had at the start, so
     // the moment the caller is proven the count moves with it.

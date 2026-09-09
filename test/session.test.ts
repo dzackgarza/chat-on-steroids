@@ -1560,6 +1560,59 @@ describe('canonical recorder 1.8', () => {
     expect(after.at(-1)).toContain('exec_command');
   });
 
+  /**
+   * The adaptation to the 2026-09 connector platform: the transport carries no request-id
+   * join key at all, so the dispatcher may infer an owner from degraded evidence — the only
+   * managed conversation generating at arrival, or a connector session key bound at such a
+   * moment. The recorder must file such a call in the inferred conversation's own session
+   * under its honest method label, never masquerading as exact request_id attribution.
+   */
+  it('files a headerless call into the temporally inferred conversation, honestly labeled', async () => {
+    const conversationId = 'conv-temporal-owner';
+    const observed = await recordChatObservations(conversationId, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-temporal-owner-1' }
+    ]);
+    const call = await recordToolCall({
+      tool: 'exec_command',
+      args: { cmd: 'true' },
+      content: [{ type: 'text', text: 'ok' }],
+      outcome: 'ok',
+      durationMs: 1,
+      startedAt: Date.now(),
+      requestId: null,
+      inferredConversationId: conversationId,
+      inferredMethod: 'temporal_unique'
+    });
+    expect(call?.conversationId).toBe(conversationId);
+    expect(call?.attributionMethod).toBe('temporal_unique');
+    expect(call?.attribution).toBe('temporal_unique');
+    const events = await readEvents(observed.sessionId!, { kinds: ['tool_call'] });
+    expect(events.some((event) => event.kind === 'tool_call' && event.call.callId === call?.callId)).toBe(true);
+  });
+
+  it('files a session-key-inferred call under its own distinct honest label', async () => {
+    const conversationId = 'conv-session-key-owner';
+    const observed = await recordChatObservations(conversationId, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-session-key-owner-1' }
+    ]);
+    const call = await recordToolCall({
+      tool: 'read',
+      args: { paths: ['/project/a.ts'] },
+      content: [{ type: 'text', text: 'ok' }],
+      outcome: 'ok',
+      durationMs: 1,
+      startedAt: Date.now(),
+      requestId: null,
+      inferredConversationId: conversationId,
+      inferredMethod: 'connector_session'
+    });
+    expect(call?.conversationId).toBe(conversationId);
+    expect(call?.attributionMethod).toBe('connector_session');
+    expect(call?.attribution).toBe('connector_session');
+    const events = await readEvents(observed.sessionId!, { kinds: ['tool_call'] });
+    expect(events.some((event) => event.kind === 'tool_call' && event.call.callId === call?.callId)).toBe(true);
+  });
+
   it('creates exactly one session when the same conversation is first observed concurrently', async () => {
     const conversationId = 'conv-concurrent-first-sight';
     const [first, second] = await Promise.all([
