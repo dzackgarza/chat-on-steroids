@@ -57,6 +57,20 @@ export interface CallCaller {
    * evidence named one. Never anything the model wrote.
    */
   conversationId: string | null;
+  /**
+   * The opaque connector session key the transport arrived with (`x-openai-session`), when
+   * it sent one. Not identity by itself; see connector-session.ts for how it becomes a
+   * degraded attribution tier.
+   */
+  sessionKey?: string | null;
+  /**
+   * The conversation inferred from degraded evidence at arrival, when exact proof was
+   * absent: the only managed chat generating (`temporal_unique`) or a session key bound at
+   * such a moment (`connector_session`). Charge-scoping and recording only — never identity
+   * authority: agent resolution, inboxes and workspaces still require `conversationId`.
+   */
+  inferredConversationId?: string | null;
+  inferredMethod?: 'temporal_unique' | 'connector_session' | null;
 }
 
 export interface CallContext {
@@ -131,7 +145,11 @@ let inFlightRequests = 0;
 function countFor(calls: Iterable<CallContext>, conversationId: string | null): number {
   let count = 0;
   for (const call of calls) {
-    const owner = call.caller.conversationId;
+    // An exact owner scopes the charge; a degraded-evidence inferred owner scopes it too —
+    // that is the point of the 2026-09 tiers: the blast radius shrinks exactly where
+    // evidence exists. Only the truly ambiguous call (no exact and no inferred owner)
+    // keeps the conservative charge-against-every-chat behaviour.
+    const owner = call.caller.conversationId ?? call.caller.inferredConversationId ?? null;
     if (conversationId === null || owner === null || owner === conversationId) count += 1;
   }
   return count;

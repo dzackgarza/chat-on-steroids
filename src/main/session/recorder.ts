@@ -62,13 +62,19 @@ import {
   requestCorrelationConflicted,
   resetCorrelationRegistryForTests,
 } from './correlation.js';
+import { learnSessionBinding, sessionBinding } from './connector-session.js';
 import { resumeOpeningChat } from './resume-gate.js';
 import { summarizeToolCall } from './summarize.js';
 
 interface LiveConversation {
   conversationId: string;
   sessionId: string;
-  /** Durable local turn lifecycle only. Never used as MCP ownership evidence. */
+  /**
+   * Durable local turn lifecycle. Presentation/recovery state first; since the 2026-09
+   * headerless connector platform it is also the evidence behind the honestly-labeled
+   * `temporal_unique` degraded attribution tier (see inferDegradedCaller) — never behind
+   * anything presented as exact request-id ownership.
+   */
   turnStartedAt: number | null;
   turnId: string | null;
   /**
@@ -589,6 +595,50 @@ export function liveConversations(): Array<{
   }));
 }
 
+/** The one managed conversation currently mid-generation, or null for zero or several. */
+export function soleGeneratingConversation(): string | null {
+  let sole: string | null = null;
+  for (const entry of conversations.values()) {
+    if (entry.turnStartedAt === null) continue;
+    if (sole !== null) return null;
+    sole = entry.conversationId;
+  }
+  return sole;
+}
+
+/**
+ * Places a call from degraded evidence, for the 2026-09 connector platform that sends no
+ * request id at all (measured live: no usable id anywhere in headers or body, and the
+ * page's request UUIDs appear nowhere in the request — the exact join cannot fire).
+ *
+ * Two honestly-labeled tiers, called at arrival by the dispatcher when exact evidence is
+ * absent:
+ *
+ * - `temporal_unique`: exactly one managed conversation is generating right now, so the
+ *   call is attributed to it. Zero or several generating conversations attribute nothing —
+ *   ambiguity keeps the conservative unattributed behaviour.
+ * - `connector_session`: the transport's opaque session key was bound to a conversation at
+ *   an earlier temporally unique moment, so this call attributes even while several chats
+ *   generate. Contradictory temporal evidence for a key kills the key (sticky, see
+ *   connector-session.ts); a contradiction observed on this very call attributes nothing.
+ *
+ * The result is charge-scoping and recording evidence only. It never grants agent
+ * identity, inbox delivery or workspace authority — those still require exact proof.
+ */
+export function inferDegradedCaller(
+  sessionKey: string | null
+): { conversationId: string; method: 'temporal_unique' | 'connector_session' } | null {
+  const bound = sessionBinding(sessionKey);
+  const sole = soleGeneratingConversation();
+  if (sessionKey && sole && learnSessionBinding(sessionKey, sole) === 'conflict') {
+    // The key's history and this moment's temporal evidence disagree. Neither side may win.
+    return null;
+  }
+  if (bound) return { conversationId: bound, method: 'connector_session' };
+  if (sole) return { conversationId: sole, method: 'temporal_unique' };
+  return null;
+}
+
 /**
  * Shortens the evidence waits for the test suite, and only for it.
  *
@@ -1044,6 +1094,13 @@ export interface ToolCallInput {
   requestId?: string | null;
   /** Exact conversation already proven for this request by the dispatcher, when available. */
   conversationId?: string | null;
+  /**
+   * Conversation the dispatcher inferred from degraded evidence at arrival, when no exact
+   * proof exists (see inferDegradedCaller). Used only after the exact tiers have failed,
+   * and always filed under its own honest method label.
+   */
+  inferredConversationId?: string | null;
+  inferredMethod?: 'temporal_unique' | 'connector_session' | null;
 }
 
 /** Writing runs one at a time, so the log keeps call order. See recordToolCall. */
@@ -1097,9 +1154,26 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
     return filed;
   }
 
+  // The degraded tiers, used only after every exact tier has failed. The dispatcher
+  // resolved these at arrival (see inferDegradedCaller); the recorder's job here is to file
+  // the call in the inferred conversation's own session under its honest method label.
+  const inferredTarget = (): Target | null => {
+    const conversationId = input.inferredConversationId ?? null;
+    const method = input.inferredMethod ?? null;
+    if (!conversationId || !method) return null;
+    const live = conversations.get(conversationId);
+    return {
+      conversationId,
+      sessionId: live?.sessionId ?? null,
+      attribution: method,
+      turnId: live?.turnId ?? null
+    };
+  };
+
   // Late browser evidence is the only wait left in attribution. It can prove this exact
   // request after the MCP handler already completed, but no different request/page state can
-  // ever satisfy it. Chrome-off or unmatched modern ids therefore end in Unattributed.
+  // ever satisfy it. Chrome-off or unmatched modern ids fall back to the degraded tiers,
+  // and only then to Unattributed.
   const attributing = input.requestId
     ? awaitRequestCorrelation(input.requestId, REQUEST_ID_GRACE_MS).then((correlation) => {
         const conversationId = correlation?.conversationId ?? null;
@@ -1108,6 +1182,15 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
         // has to carry the id that the page never confirmed — it is the only handle anyone
         // has for matching this against what the extension believed it sent.
         if (!conversationId) {
+          const inferred = inferredTarget();
+          if (inferred) {
+            logInfo(
+              `request attribution: no page evidence for ${input.requestId} within ${REQUEST_ID_GRACE_MS}ms; ` +
+                `filing ${input.tool} under conversation ${inferred.conversationId} by ${inferred.attribution}`
+            );
+            // Degraded evidence is never identity authority, so `bind` stays exact-only.
+            return inferred;
+          }
           logWarn(
             `request attribution: no page evidence for ${input.requestId} within ` +
               `${REQUEST_ID_GRACE_MS}ms; filing ${input.tool} under Unattributed activity`
@@ -1122,13 +1205,24 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
         };
       })
     : (() => {
+        // The 2026-09 connector platform sends no request id at all, so this branch is now
+        // the normal path rather than an outage: the degraded tiers place what they can.
+        const inferred = inferredTarget();
+        if (inferred) {
+          logInfo(
+            `request attribution: no x-request-id on the transport; filing ${input.tool} under ` +
+              `conversation ${inferred.conversationId} by ${inferred.attribution}`
+          );
+          return Promise.resolve<Target>(inferred);
+        }
         // The other half of the loud-failure contract: when the key arrived but the page
         // never confirmed it, the branch above names the request id that gave up. When no
         // key arrived at all there is no id to name, but the silence was worse — the live
         // 2026-09 headerless-transport outage filed 20k+ calls here without a word.
         logWarn(
           `request attribution: call arrived with no x-request-id; filing ${input.tool} under ` +
-            'Unattributed activity — the transport did not supply the correlation join key'
+            'Unattributed activity — the transport did not supply the correlation join key ' +
+            'and the degraded temporal/session tiers could not place the call'
         );
         return Promise.resolve<Target>({ conversationId: null, sessionId: null, attribution: 'unattributed', turnId: null });
       })();
@@ -1205,7 +1299,12 @@ async function fileToolCall(input: ToolCallInput, target: Target): Promise<ToolC
       attribution: target.attribution,
       requestId: input.requestId ?? null,
       conversationId: target.conversationId,
-      attributionMethod: target.conversationId && input.requestId ? 'request_id' : 'unattributed',
+      attributionMethod:
+        target.attribution === 'temporal_unique' || target.attribution === 'connector_session'
+          ? target.attribution
+          : target.conversationId && input.requestId
+          ? 'request_id'
+          : 'unattributed',
       args: await storeText(sessionId, safeJson(redactArgs(input.tool, input.args)), MAX_TOOL_ARGS_CHARS),
       result: await storeText(sessionId, resultText, MAX_TOOL_RESULT_CHARS),
       outcome: input.outcome,

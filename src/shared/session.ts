@@ -118,8 +118,23 @@ export type ToolOutcome = 'ok' | 'error' | 'rejected';
  * nothing identified the caller — those calls are stored in the unattributed stream rather
  * than guessed into somebody's history. The extension refuses to rewrite ChatGPT's UI for
  * an inferred call.
+ *
+ * `temporal_unique` and `connector_session` are the 2026-09 degraded tiers, added when the
+ * connector platform stopped sending any request id (see inbound.ts). `temporal_unique` is
+ * the only managed conversation that was generating when the call arrived. `connector_session`
+ * is the transport's opaque session key, whose owner was learned at such a temporally unique
+ * moment (see connector-session.ts). Both are honestly labeled as what they rest on and are
+ * never presented as exact request-id attribution.
  */
-export type CallAttribution = 'request_id' | 'unattributed' | 'turn' | 'agent' | 'generation' | 'inferred';
+export type CallAttribution =
+  | 'request_id'
+  | 'unattributed'
+  | 'turn'
+  | 'agent'
+  | 'generation'
+  | 'inferred'
+  | 'temporal_unique'
+  | 'connector_session';
 
 /**
  * What each grade of attribution actually rests on, in the words shown to the user.
@@ -146,7 +161,9 @@ export const ATTRIBUTION_LABELS: Record<CallAttribution, string> = {
   agent: 'agent key',
   turn: 'tool block on the page',
   generation: 'the only chat generating',
-  inferred: 'not placed in a chat'
+  inferred: 'not placed in a chat',
+  temporal_unique: 'the only managed chat generating at arrival',
+  connector_session: 'connector session key learned at a temporally unique moment'
 };
 
 export interface ToolCallRecord {
@@ -157,8 +174,12 @@ export interface ToolCallRecord {
   requestId: string | null;
   /** Conversation proven by that request id, or null when ownership was unresolved. */
   conversationId: string | null;
-  /** New 1.8 calls use only these two deterministic outcomes. */
-  attributionMethod: 'request_id' | 'unattributed';
+  /**
+   * How the recorder placed this call. 1.8 used only the two deterministic outcomes;
+   * the 2026-09 headerless connector platform added the two degraded evidence tiers,
+   * each honestly labeled and never masquerading as exact request_id attribution.
+   */
+  attributionMethod: 'request_id' | 'temporal_unique' | 'connector_session' | 'unattributed';
   /** Exact arguments as JSON. Cut inline past the cap, with the whole text in an asset. */
   args: StoredText;
   result: StoredText;

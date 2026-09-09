@@ -330,7 +330,8 @@ hidden acceptance. A deliberate reconnect is the clean boundary for changing the
 ```text
 tunnel request
  → server.ts    loopback Host/Origin, secret tokenized path, bounded body,
-                x-request-id read + normalized (split before '/')
+                x-request-id read + normalized (split before '/'),
+                x-openai-session read as an opaque connector session key
  → tools.ts     build only the requested surface
  → kernel.ts    AsyncLocalStorage call context
                 resolve exact caller from correlation evidence
@@ -455,9 +456,31 @@ HTTP x-request-id                       (inbound.ts, normalized before '/')
 ```
 
 **Never substitute** active tab, timing, tool name, most-recent chat, only-generating chat,
-worker payload, or arrival order. If proof is missing the safe state is **Unattributed**,
-no workspace, or refusal for identity-sensitive work. Guessing is worse than losing
-attribution: it routes commands, files, messages and history into the *wrong* chat.
+worker payload, or arrival order **as identity**. If proof is missing the safe state is
+**Unattributed**, no workspace, or refusal for identity-sensitive work. Guessing is worse
+than losing attribution: it routes commands, files, messages and history into the *wrong*
+chat.
+
+**The 2026-09 connector platform broke the exact chain at its first link.** Measured live
+on 2026-09-09 (loopback capture of real traffic): tools/call arrives with **no
+`x-request-id` anywhere** — headers or body — and the page's `metadata.request_id` UUIDs
+appear nowhere in the request. The one per-conversation identity on the wire is the opaque
+`x-openai-session` header (mirrored in `params._meta["openai/session"]`), distinct across
+concurrently generating workers and stable across a worker's own calls, but never visible
+to page evidence — so no exact join exists. Two **degraded attribution tiers** adapt to
+this (`recorder.ts::inferDegradedCaller`, `connector-session.ts`), and they are recording
+and charge-scoping evidence only:
+
+- `temporal_unique`: exactly one managed conversation was generating when the call
+  arrived; zero or several attribute nothing.
+- `connector_session`: the call's session key was bound to a conversation at an earlier
+  temporally unique moment; contradictory temporal evidence permanently kills a key.
+
+Both are honestly labeled in `attribution`/`attributionMethod` and never masquerade as
+`request_id`. They never grant agent identity, inbox delivery, or workspace authority —
+those still require the exact chain, which resumes automatically if `x-request-id` ever
+returns. Truly ambiguous calls keep the conservative Unattributed / charge-against-all
+behaviour.
 
 This one chain explains symptoms that look unrelated — worker `WORKER_IDENTITY_LOST`, calls
 piling into Unattributed, false worker stalls, wrong or absent project cwd, terminal

@@ -18,7 +18,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { requestIdFromHeader, withInboundRequestId } from './inbound.js';
+import { connectorSessionFromHeader, requestIdFromHeader, withInboundIdentity } from './inbound.js';
 import http from 'node:http';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from '@modelcontextprotocol/node';
@@ -396,9 +396,14 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       return;
     }
 
-    // The tool dispatch reads this back to join the call to the page request that issued
-    // it; see inbound.ts for why it cannot be taken from the MCP call context.
-    const requestId = requestIdFromHeader(req.headers['x-request-id']);
+    // The tool dispatch reads this back to place the call; see inbound.ts for why it cannot
+    // be taken from the MCP call context. The exact request id is the strong join when the
+    // transport still sends one; the connector session key is what the 2026-09 platform
+    // sends instead, and feeds the degraded attribution tiers.
+    const identity = {
+      requestId: requestIdFromHeader(req.headers['x-request-id']),
+      sessionKey: connectorSessionFromHeader(req.headers['x-openai-session'])
+    };
     if (req.method === 'POST' && declaredHeader === undefined) {
       void readBoundedJsonBody(req).then((parsed) => {
         if (parsed.error === 'payload_too_large') {
@@ -409,11 +414,11 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
           jsonError(res, 400, 'invalid_json');
           return;
         }
-        withInboundRequestId(requestId, () => void route.handler(req, res, parsed.body));
+        withInboundIdentity(identity, () => void route.handler(req, res, parsed.body));
       });
       return;
     }
-    withInboundRequestId(requestId, () => void route.handler(req, res));
+    withInboundIdentity(identity, () => void route.handler(req, res));
   });
 
   // Reject slow or oversized bodies rather than holding sockets open indefinitely.

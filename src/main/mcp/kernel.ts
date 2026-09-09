@@ -20,7 +20,7 @@
  */
 
 import { rawPromises as fs } from '../rawfs.js';
-import { inboundRequestId } from './inbound.js';
+import { inboundConnectorSession, inboundRequestId } from './inbound.js';
 import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { Capabilities, Root } from '../../shared/types.js';
@@ -73,6 +73,7 @@ import {
   awaitFreshCallOrigin,
   evidenceWindow,
   freshCallOrigin,
+  inferDegradedCaller,
   recordAgentMessage,
   recordToolCall
 } from '../session/recorder.js';
@@ -320,9 +321,11 @@ function noteTransportAttribution(requestId: string | null): void {
   if (requestId === null && !attributionNoted.absent) {
     attributionNoted.absent = true;
     logError(
-      'MCP tool call arrived with no x-request-id header — attribution is impossible for such calls: ' +
-        'they are filed under Unattributed activity and charged against every chat, which blocks composer ' +
-        'pushes while any call is running. Check that the connector/tunnel path propagates x-request-id.'
+      'MCP tool call arrived with no x-request-id header — exact attribution is impossible for such calls: ' +
+        'they fall back to the degraded temporal/connector-session tiers when a single generating chat can be ' +
+        'proven, and otherwise are filed under Unattributed activity and charged against every chat, which ' +
+        'blocks composer pushes while any call is running. This is the measured 2026-09 connector-platform ' +
+        'behaviour; if x-request-id ever returns, exact attribution resumes automatically.'
     );
   } else if (requestId !== null && !attributionNoted.present) {
     attributionNoted.present = true;
@@ -400,7 +403,14 @@ async function dispatch(
     startedAt: Date.now(),
     transportKey,
     agent: null,
-    caller: { transportKey, requestId, conversationId: null },
+    caller: {
+      transportKey,
+      requestId,
+      conversationId: null,
+      sessionKey: inboundConnectorSession(),
+      inferredConversationId: null,
+      inferredMethod: null
+    },
     outcome: null,
     evidence: emptyEvidence()
   };
@@ -431,6 +441,19 @@ async function dispatchTracked(
   // touch state. If the page is one tick late this stays null; only handlers that actually
   // require identity wait for their own exact mate. Ordinary absolute reads/execs never wait.
   context.caller.conversationId = callerConversation(name, startedAt, requestId);
+  // The 2026-09 connector platform sends no request id at all (measured live), so exact
+  // ingress identity above can never fire for it. Resolve the degraded tiers at arrival:
+  // the only managed chat generating right now, or a connector session key bound at such a
+  // moment. This scopes the charge (countFor) and the eventual record to one conversation,
+  // but it is never identity authority — the agent broker, inboxes and workspace gates
+  // below consult only the exact caller.conversationId.
+  if (!context.caller.conversationId) {
+    const inferred = inferDegradedCaller(context.caller.sessionKey ?? null);
+    if (inferred) {
+      context.caller.inferredConversationId = inferred.conversationId;
+      context.caller.inferredMethod = inferred.method;
+    }
+  }
   // Only calls that need an *existing* per-chat workspace before the handler runs are
   // identity-sensitive here. An absolute read or an exec with an explicit absolute workdir is
   // self-contained and must stay fast; if its exact page mate is late, workspace.ts simply
@@ -602,7 +625,9 @@ async function dispatchTracked(
     agent: context.agent,
     bind: context.bindOnAttribution ?? null,
     requestId: context.caller.requestId,
-    conversationId: context.caller.conversationId
+    conversationId: context.caller.conversationId,
+    inferredConversationId: context.caller.inferredConversationId ?? null,
+    inferredMethod: context.caller.inferredMethod ?? null
   });
   // Exact request-id identity needs no browser wait, so make its durable session append part
   // of completing the MCP call. The recorder catches storage failures and returns null, so a
