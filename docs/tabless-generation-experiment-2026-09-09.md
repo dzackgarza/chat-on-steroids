@@ -26,13 +26,18 @@ Design facts this establishes for a sleep/wake tab architecture:
    conversation it just pushed, pushes are serialized, and the session key that
    begins calling seconds later is that conversation's — a stronger attribution
    signal than temporal uniqueness, native to the sleep/wake model.
-5. **Open risk (n=1, under test):** a different scratch conversation had its
-   connector disabled on turns 2–3 ("tool has been disabled", calls silently served
-   by the built-in container — transcript claims reads the daemon never saw). If
-   wake-and-continue routinely loses the connector, the architecture becomes
-   fresh-conversation-per-work-unit instead of long-lived slept chats. Daemon-side
-   verification is the only truth for "connector worked"; transcripts lie under
-   fallback.
+5. **Connector stability across sleep/wake: RESOLVED (measured same day).** Six
+   scratch conversations, 18 turns, six full close→~3min→remount cycles: zero
+   connector degradations, zero silent fallbacks, every claimed read daemon-verified.
+   The earlier n=1 "disabled on turns 2–3" report did not reproduce and most
+   plausibly trusted a lying transcript. The one real failure class: a *cold
+   first-turn refusal* — the model fabricates an unavailability reason
+   ("CONNECTOR-UNAVAILABLE…") while the connector is live; a single "use the
+   connector now" nudge recovered it every time, and it never occurred on later
+   turns or after remounts. Operational rules for the architecture: strictly
+   single-driver sends per conversation (two drivers raced during the experiment),
+   and first-turn prompts tolerant of refusal-then-nudge. Long-lived slept
+   conversations are viable; fresh-conversation-per-work-unit is not required.
 
 Payoff if implemented: resident renderer count decouples from fleet width entirely —
 tabs exist only at boundaries (typically 1–3 at once), and stream width becomes
