@@ -1127,6 +1127,20 @@ replacement to check what has already landed and to reuse recorded audits; and w
 transcript shows that a unit another was told to start is already done, send that correction to
 the chat holding the stale instruction rather than letting it find out.
 
+### A tick reports nothing
+
+Standing watch produces no status report. Which chats were busy, which were pushed, what `tidy`
+closed, how many tabs there were, which handoff was written — all of it is legible in the
+recordings, the repositories and the loop's own prompt, and repeating it every twenty minutes
+costs the reader more than it tells them. The watch is working when nothing is said.
+
+Four things are worth a sentence, and only these: a decision the user alone can make; a fault in
+this app or another repository that the watch cannot fix; a policy breach, such as a commit made
+with `--no-verify`; and an error of the watcher's own that changed what happened, such as
+replacing a chat that was alive. Everything else that seems worth saying belongs in a durable
+place instead — a trap in this file, a paragraph in the repository the chats work in, a line in
+the loop's prompt — and once it is written there it is not also said in the reply.
+
 ### The job here is delegation and continuation
 
 That is the whole role, and its boundaries are hard:
