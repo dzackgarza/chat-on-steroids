@@ -23,8 +23,13 @@ import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
 import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
 import { enableHeadlessSecretStore, initSecretsPath } from './secrets.js';
+import { enableConsoleFailureEcho } from './logger.js';
 
 async function main(): Promise<void> {
+  // The daemon has no diagnostics panel, so the in-memory log is unreadable in production.
+  // Echo error/warn records to stderr unconditionally so the systemd journal captures them;
+  // without this the 2026-09 attribution alarm "fired" into a buffer nobody could see.
+  enableConsoleFailureEcho();
   console.log(`Starting Chat On Steroids v${APP_VERSION} (Headless Daemon)...`);
 
   const userDataDir = process.env.COS_DATA_DIR || path.join(os.homedir(), '.config', 'chat-on-steroids');

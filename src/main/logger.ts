@@ -36,6 +36,28 @@ export function redact(message: string): string {
  */
 const ECHO_TO_CONSOLE = process.env['CLF_DEBUG'] === '1';
 
+/**
+ * Headless deployments have no diagnostics panel, so this RAM-only ring buffer made every
+ * "loud" failure silent: the 2026-09 transport-attribution alarm called logError on the
+ * rack daemon and not one line reached the systemd journal, because nothing ever read the
+ * buffer. Fail-loud that lands in an unread ring buffer is fail-silent.
+ *
+ * The headless entrypoint therefore opts error- and warn-level records into an
+ * unconditional stderr echo, so journald captures them. Deliberately not gated on
+ * CLF_DEBUG — that switch is for debug/info chatter, never for errors. Messages are
+ * already redacted on insertion, so the echo can never surface a credential. The Electron
+ * app never enables this and keeps its panel-only behaviour unchanged.
+ */
+let echoFailuresToStderr = false;
+
+export function enableConsoleFailureEcho(): void {
+  echoFailuresToStderr = true;
+}
+
+export function resetConsoleFailureEchoForTests(): void {
+  echoFailuresToStderr = false;
+}
+
 export function log(level: LogEntry['level'], message: string): void {
   const agent = currentAgent();
   const entry: LogEntry = {
@@ -46,7 +68,9 @@ export function log(level: LogEntry['level'], message: string): void {
   };
   entries.push(entry);
   if (entries.length > MAX_ENTRIES) entries.shift();
-  if (ECHO_TO_CONSOLE) process.stderr.write(`[${level}] ${entry.message}\n`);
+  if (ECHO_TO_CONSOLE || (echoFailuresToStderr && (level === 'error' || level === 'warn'))) {
+    process.stderr.write(`[${level}] ${entry.message}\n`);
+  }
   for (const listener of listeners) {
     try {
       listener(entry);
