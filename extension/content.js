@@ -360,6 +360,8 @@
   const pageToolsReported = new Map();
 
   let generating = false;
+  let pendingUserNode = null;
+  let generationUserNode = null;
   /**
    * When the stop button was first found missing while a turn was open. 0 while it is there.
    *
@@ -1132,6 +1134,8 @@
     objectiveError = '';
     removeStagePanel();
     generating = false;
+    pendingUserNode = null;
+    generationUserNode = null;
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
@@ -1486,6 +1490,7 @@
         if (seenMessages.has(key)) continue;
         markSeen(key);
         newUserMessage = true;
+        pendingUserNode = message.node;
         emit({
           kind: 'user_message',
           text: message.text,
@@ -1722,6 +1727,8 @@
 
     if (nowGenerating && !generating && !fiberTerminalMessageId && !resumeIdentityPending) {
       generating = true;
+      generationUserNode = pendingUserNode;
+      pendingUserNode = null;
       quietSince = 0;
       quietTurn = null;
       quietOutcome = null;
@@ -2744,12 +2751,22 @@
         }
       }
     }
-    // ChatGPT can mount the response section one observation before it mounts the Stop
-    // control. That section is then part of the generation baseline, so generationTurn()
-    // correctly refuses to adopt it from DOM age alone. The scan stamp still gives an exact
-    // descriptor for the visible response. Use that descriptor only for the app-confirmed
-    // request-id handshake; it does not acquire the local turn id or recorder ownership.
+    // A connector request first appears on the user-message branch that opened the generation.
+    // ChatGPT can also mount the response section before it mounts the Stop control, which puts
+    // that section in the generation baseline. Both sections have exact scan stamps. Use their
+    // descriptors only for the app-confirmed request-id handshake; neither acquires recorder
+    // ownership through this path.
     let requestOwnerTurn = ownedPageTurn;
+    if (!requestOwnerTurn && generationUserNode && (generating || settled)) {
+      const userTurn = turnForNode(generationUserNode);
+      const userDescriptor = stampedFiberTurn(userTurn, answer.turns, answer.scanToken);
+      const userConversation = userDescriptor
+        ? concreteConversation(userDescriptor.conversationId)
+        : null;
+      if (userDescriptor && !userConversation && userDescriptor.conversationConflict !== true) {
+        requestOwnerTurn = userDescriptor;
+      }
+    }
     if (!requestOwnerTurn && generating) {
       const visibleResponse = currentAssistantTurn();
       const visibleDescriptor = stampedFiberTurn(visibleResponse, answer.turns, answer.scanToken);
