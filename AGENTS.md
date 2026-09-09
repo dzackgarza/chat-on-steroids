@@ -941,6 +941,50 @@ nothing.
 simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
 progress. Nothing more.
 
+### When a chat stops
+
+Driving chats means most of the work is deciding whether one has stopped, and the rows lie in
+both directions until you know how to read them.
+
+**`say` reports failure it cannot prove.** It waits for the receipt the browser writes once it
+has typed, and calls the push refused when none arrives in its window. A message that landed
+slightly late reports as never typed. Re-read `just chats` before believing a refusal — a moved
+timestamp means it landed.
+
+**A refused push does not mean the chat is dead.** The page refuses to type while a turn is in
+flight, so a chat that is merely busy refuses exactly like a wedged one. Compare the chat's
+timestamp before and after the attempt: the push takes up to two minutes and a live chat emits
+rows throughout, so a clock that moved means alive and a clock that did not means dead.
+
+**The stall bar is measured, not guessed.** Across 100 hours of recorded live turns the gap
+between rows runs 8.5s at the median, 27s at p90, 85s at p99 and 248s at p99.9. `just chats`
+calls a turn stalled at five minutes. Anything tighter sits inside ordinary working behaviour:
+at a one-minute bar a live chat is past it during 8% of its working time. The asymmetry sets
+the number — a missed stall costs one polling interval, a false one ends a chat that was
+working and hands its context to a summary.
+
+**A stalled chat cannot be rescued from outside.** The composer refuses while a turn is in
+flight, which is exactly the state worth rescuing, so only the page can break it. That is why
+the content script presses Stop and sends `Continue` itself, retries every two minutes because
+ChatGPT often ignores the first press, and why the service worker reloads a tab that holds a
+chat and will not act on the command for it.
+
+**Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
+short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
+finding out why one chat will not accept a message is an hour of three chats not working, and
+the handoff costs minutes.
+
+Three things break every chat at once and none of them is the chat:
+
+- **The app's bridge is not listening.** The app can be running, small and idle, with nothing
+  on 8765-8769. Every send fails and nothing says why. `just install` restarts it.
+- **A runaway process from a chat's `exec_command`.** It is orphaned to init, keeps the app's
+  path in its argv so it looks like the app in `ps`, and holds a core indefinitely. Check for a
+  process burning CPU for many minutes and kill it.
+- **ChatGPT's model slider left on a mode that is out of usage.** The chat cannot answer, the
+  app has no way to leave that mode, and every send into it fails. Replacing the chat does not
+  help; the slider has to be changed.
+
 ### The job here is delegation and continuation
 
 That is the whole role, and its boundaries are hard:
