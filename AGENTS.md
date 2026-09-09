@@ -1188,6 +1188,51 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Claim state stays fresh; no off-ledger work.** In repositories with shared queues or claim ledgers, workers reconcile the queue against actual repository state (all branches) at every claim and record every release before moving on; work without a live claim, and batch-committing work authored off-ledger, are prohibited. A steward who observes duplicate solving or unclaimed diffs points the worker at the repository's claim protocol rather than resolving the duplication itself.
 
+### The failure modes to police, and the hourly sweep
+
+Managed workers author well but bank poorly: the recurring losses are not in the quality
+of the work but in the loop between doing work and landing it as verified, tracked,
+coordinated state. Five failure modes account for nearly all of it. Each has an
+observable **state signature** — detected from repository state (plan files, git refs,
+timestamps, mtimes), never from transcripts, which explain causes but do not measure
+anything:
+
+1. **Blocker tolerance** — a worker routes around an obstacle instead of diagnosing it.
+   Signature: the working tree grows while commits stop; a gate or hook is red across
+   consecutive attempts; a started refactor sits half-applied and unclaimed.
+2. **Breadth without closure** — real work spread across many plan fronts, none driven to
+   acceptance. Signature: diffs touch several DAG nodes while the formally tracked plan
+   surface (TODO/DAG checkboxes, queue counts) does not move.
+3. **Stale coordination state** — parallel workers act on unreconciled shared state.
+   Signature: the same card/node solved on two branches; a queue still listing items
+   another branch already closed; files from one workstream dirty in another's worktree.
+4. **Observability decay** — repository state stops reflecting the work. Signature:
+   batch commits landing many hours of work in minutes; changes uncommitted for hours on
+   a stalled branch; placeholder author identities; deferral tags (`[unverified]` and
+   kin) with no named discharge contract.
+5. **Idle capacity** — hours-on-task, not pace, is the loss. Signature: no writes for an
+   extended stretch in a repository with open plan nodes and a live worker attached.
+
+**Every hour, sweep every managed repository for these signatures.** The sweep is
+state-level and cheap — `git log`/`status` timestamps across branches and worktrees,
+plan-file deltas, queue files cross-checked against solved state, mtimes — and it is the
+sanctioned, bounded exception to the rule against digging into managed repositories:
+it inspects only the signatures above and never judges domain content. Respect each
+repository's own contract while sweeping: a deferred-verification repository (research's
+DEV-58) has no gates by design, so signature 1's gate clause does not apply there.
+
+**On evidence, dispatch a corrective subagent — never rely on a steward message.**
+Chat messages to workers are ephemeral and get forgotten; the durable enforcement layer
+is each repository's own documentation. The dispatched subagent's remit is to repair the
+managed repository's own surfaces so the failure mode is prevented in-repo: amend its
+`AGENTS.md`/`CONTRIBUTING.md` rules where they were silent or ambiguous, fix the queue or
+claim tooling that allowed staleness, repair the gate or hook that was wedged, and
+checkpoint or quarantine stranded state. Only after the repo's own docs carry the rule
+does the steward act on the live worker — and then only by routing it into those docs
+(`"re-read AGENTS.md before continuing"`), never by restating the policy in the prompt.
+The orchestrator's lever is routing agents into each repository's own documentation;
+policy that lives only in orchestrator messages does not exist.
+
 
 ### Where a regression belongs
 
