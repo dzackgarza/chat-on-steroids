@@ -910,6 +910,44 @@ The app must be running and the browser paired — it opens the tab itself. `say
 present the credential the bridge writes to `state/local-token` when it starts, so a build
 that has not been restarted since this landed has no token yet and both refuse.
 
+### What to send them
+
+The chats on the other end are frontier models. Brief them the way you would brief a senior
+engineer who already has the context — not the way you would call a 2024 API.
+
+**Point at a task. Do not say how to do it.** "Work through the open issues on `<repo>`",
+"proceed through the repo todos", "audit `<area>` and report what you find". A model told to
+do a task already forms the verdicts an older prompt would have asked it to return, and acts
+on them. Asking for "a list of YES/NO verdicts" throws away the half of the job that matters.
+
+**Keep it to one or two paragraphs.** The task, plus any external context it cannot already
+see: a path, an issue number, a decision taken elsewhere. Nothing else.
+
+**Never constrain, dictate method, or control.** No step lists, no output formats, no rules
+about how to work. Open-ended, but clear and precise about what the task is.
+
+**They are not one-shots.** One chat runs for many turns — typically tens of minutes, often
+hours. Leave it alone while it works.
+
+**Wedged, or gone quiet part-way through a larger task: send `Continue`.** One word. The chat
+already holds the whole ambient task, and explaining it again spends both contexts for
+nothing.
+
+**When a chat's context fills, hand off.** Read its transcript and open a new chat with a very
+simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
+progress. Nothing more.
+
+### The job here is delegation and continuation
+
+That is the whole role, and its boundaries are hard:
+
+- Do not judge the work for completeness.
+- Do not step in and do the work.
+- Do not pull repository detail into your own context to check theirs.
+- Do not revise their instructions or policies.
+
+Point, send, and continue until the task is done, the chat is wedged, or its context is full.
+
 ### Where a regression belongs
 
 49 suites, named for the subsystem they cover. Vitest uses real filesystem, real processes
