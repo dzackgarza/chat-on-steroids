@@ -946,6 +946,15 @@ hours. Leave it alone while it works.
 already holds the whole ambient task, and explaining it again spends both contexts for
 nothing.
 
+**Give `say` the whole conversation id, never a prefix.** `say` passes its first argument
+straight through as the `conversationId` of the queued command, so an eight-character prefix is
+not the chat you meant — it names no conversation, and the app opens a fresh one, types into
+that, and leaves a second empty recording behind under the prefix. The push then reports refused
+while the intended chat sits untouched, which reads exactly like a wedged conversation. Three
+chats looked dead this way in one tick and all three typed immediately when pushed again with
+their full ids. The same applies to every recipe that takes a chat: pass the id `just chats`
+prints, in full.
+
 **When a chat's context fills, hand off.** Read its transcript and open a new chat with a very
 simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
 progress. Nothing more.
