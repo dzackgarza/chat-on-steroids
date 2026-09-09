@@ -1171,6 +1171,8 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Do not dig into a managed repository's specifics to perform its orchestration.** Inspecting source files, internal status ledgers, git history, or memory vaults to decide domain-level work violates delegation. The managed chat owns the work and the traversal in its repository; the steward only provides the ambient pointer and maintains momentum.
 
+**Do not muddle prompts by dictating methods or synthesizing procedural checklists.** Point the worker directly at the task and instruct it to proceed through the repository's existing TODOs, plans, or guidelines (e.g. `"proceed through the repo todos"`). Never inject procedural micromanagement—such as detailing step-by-step loops to inspect files, execute test suites, or structure commits. The managed chat is a frontier reasoning agent; its repository's own artifacts already establish standards and execution flow. External step lists constrain the model, degrade its autonomous traversal, and lead to premature halting.
+
 
 ### Where a regression belongs
 
