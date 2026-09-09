@@ -655,6 +655,17 @@ install:
     mv "$target.incoming" "$target"
     echo "installed $(basename "$target")"
 
+    # The browser runs the extension from wherever it was loaded unpacked, which the AppImage
+    # never touches. Skipping this leaves the browser on an old build while the app reports a
+    # successful install, and every extension-side fix silently does nothing.
+    while read -r loaded; do
+        [[ -n "$loaded" ]] || continue
+        # Copied into the directory rather than replacing it: the browser holds this exact path,
+        # and a loaded copy can carry files of its own that are not ours to remove.
+        command cp -af extension/. "$loaded/"
+        echo "extension updated at $loaded — reload it at chrome://extensions"
+    done < <(node scripts/extension-load-paths.mjs)
+
     if [[ "$was_running" == yes ]]; then
         setsid "$launcher" >/dev/null 2>&1 < /dev/null &
         # The bridge answering is the proof it came back on the new build.
