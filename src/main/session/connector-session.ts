@@ -6,18 +6,30 @@
  * opaque `x-openai-session` key (see inbound.ts), measured live to be distinct across
  * concurrently generating worker chats and stable across each worker's own calls. The key
  * never appears in page evidence, so its owner cannot be *proved* — it can only be
- * *learned* at a temporally unique moment: when exactly one managed conversation was
- * generating as a call arrived, that call's key is bound to that conversation.
+ * *learned*, by one of two kinds of evidence:
  *
- * The binding is therefore only ever as strong as the temporal evidence that taught it,
- * and everything here is built around not letting that weakness spread:
+ * - a temporally unique moment: exactly one managed conversation was generating as a call
+ *   arrived, so that call's key is bound to that conversation (`temporal_unique` learning);
+ * - a push-correlated window: the app itself just delivered a verified send into one known
+ *   conversation, pushes are serialized, and the key whose calls begin inside the bounded
+ *   window after that verification is that conversation's (`push_correlated` learning —
+ *   see session/sleep-wake.ts, which owns the window). This is the stronger of the two:
+ *   it rests on what the app *did*, not on what the page fleet happened to look like, and
+ *   it works with zero page evidence — which is what makes slept (tab-discarded)
+ *   conversations attributable at all.
+ *
+ * The binding is only ever as strong as the evidence that taught it, and everything here
+ * is built around not letting that weakness spread:
  *
  * - A key observed at a unique moment for a *different* conversation than its binding is a
  *   contradiction, and contradictions are sticky: the key becomes permanently unusable
- *   rather than letting either side win (same rule as correlation.ts).
+ *   rather than letting either side win (same rule as correlation.ts). This applies
+ *   identically to push-correlated bindings — stronger evidence does not get to survive
+ *   contradiction, it only ranks higher while uncontradicted.
  * - Bindings are in-memory only. If OpenAI rotates keys per turn the stale binding simply
- *   never matches again; after a restart the tiers re-learn from the next unique moment.
- *   Persisting a guess would let one wrong moment outlive every chance to correct it.
+ *   never matches again; after a restart the tiers re-learn from the next unique moment or
+ *   push window. Persisting a guess would let one wrong moment outlive every chance to
+ *   correct it.
  * - Nothing here is identity authority. The dispatcher records and charge-scopes by these
  *   bindings under their own honest labels; agent identity, inboxes and workspaces still
  *   require exact evidence.
@@ -25,11 +37,15 @@
 
 import { logInfo, logWarn } from '../logger.js';
 
+/** How a binding was learned. `push_correlated` outranks `temporal_unique` in honesty labeling. */
+export type SessionBindingMethod = 'temporal_unique' | 'push_correlated';
+
 interface HeldBinding {
   conversationId: string | null;
   /** A contradiction is sticky; null alone must not look absent. */
   conflicted: boolean;
   learnedAt: number;
+  method: SessionBindingMethod;
 }
 
 const MAX_BINDINGS = 5000;
@@ -44,6 +60,15 @@ function trim(): void {
   }
 }
 
+/** Moves a re-confirmed binding to the recency tail of the bounded registry. */
+function refresh(sessionKey: string, held: HeldBinding): void {
+  held.learnedAt = Date.now();
+  // Recency is the bounded registry's eviction order; a re-confirmed live key must not sit
+  // at the eviction head while genuinely stale keys survive.
+  byKey.delete(sessionKey);
+  byKey.set(sessionKey, held);
+}
+
 /**
  * Learns (or re-confirms) that `sessionKey` belongs to `conversationId`.
  *
@@ -54,7 +79,7 @@ function trim(): void {
 export function learnSessionBinding(sessionKey: string, conversationId: string): 'stored' | 'same' | 'conflict' {
   const previous = byKey.get(sessionKey);
   if (!previous) {
-    byKey.set(sessionKey, { conversationId, conflicted: false, learnedAt: Date.now() });
+    byKey.set(sessionKey, { conversationId, conflicted: false, learnedAt: Date.now(), method: 'temporal_unique' });
     trim();
     logInfo(`connector session attribution: learned key -> conversation ${conversationId} at a temporally unique moment`);
     return 'stored';
@@ -65,21 +90,77 @@ export function learnSessionBinding(sessionKey: string, conversationId: string):
     return 'conflict';
   }
   if (previous.conversationId === conversationId) {
-    previous.learnedAt = Date.now();
-    // Recency is the bounded registry's eviction order; a re-confirmed live key must not sit
-    // at the eviction head while genuinely stale keys survive.
-    byKey.delete(sessionKey);
-    byKey.set(sessionKey, previous);
+    // Temporal re-confirmation never downgrades a push-correlated binding's label: the
+    // stronger evidence already stands and the weaker observation merely agrees with it.
+    refresh(sessionKey, previous);
     return 'same';
   }
   previous.conflicted = true;
   const prior = previous.conversationId;
   previous.conversationId = null;
   logWarn(
-    `connector session attribution conflict: one session key was temporally unique for conversation ${prior} ` +
-      `and later for ${conversationId}; the key is now permanently unusable for attribution`
+    `connector session attribution conflict: one session key was bound to conversation ${prior} (${previous.method}) ` +
+      `and later temporally unique for ${conversationId}; the key is now permanently unusable for attribution`
   );
   return 'conflict';
+}
+
+/**
+ * Learns (or upgrades) a binding from push-correlated evidence: the app verified its own
+ * send into `conversationId` and this key's calls began inside the bounded window after it.
+ *
+ * Same contradiction rules as temporal learning — a key already bound to a different
+ * conversation is killed, sticky, rather than re-owned. Agreement upgrades the method
+ * label, because the push correlation is the stronger claim about who owns the key.
+ */
+export function learnPushCorrelatedBinding(
+  sessionKey: string,
+  conversationId: string
+): 'stored' | 'same' | 'conflict' {
+  const previous = byKey.get(sessionKey);
+  if (!previous) {
+    byKey.set(sessionKey, { conversationId, conflicted: false, learnedAt: Date.now(), method: 'push_correlated' });
+    trim();
+    logInfo(
+      `connector session attribution: learned key -> conversation ${conversationId} from the push-correlated window`
+    );
+    return 'stored';
+  }
+  if (previous.conflicted || !previous.conversationId) {
+    previous.conflicted = true;
+    previous.conversationId = null;
+    return 'conflict';
+  }
+  if (previous.conversationId === conversationId) {
+    previous.method = 'push_correlated';
+    refresh(sessionKey, previous);
+    return 'same';
+  }
+  previous.conflicted = true;
+  const prior = previous.conversationId;
+  previous.conversationId = null;
+  logWarn(
+    `connector session attribution conflict: one session key was bound to conversation ${prior} ` +
+      `and later push-correlated to ${conversationId}; the key is now permanently unusable for attribution`
+  );
+  return 'conflict';
+}
+
+/**
+ * Kills a key outright on first-sight contradictory evidence — e.g. a fresh key arriving
+ * while both a push window (for one conversation) and a temporally unique moment (for a
+ * different one) claim it. Neither side may win, same as every other contradiction here.
+ */
+export function condemnSessionKey(sessionKey: string, reason: string): void {
+  const previous = byKey.get(sessionKey);
+  if (previous) {
+    previous.conflicted = true;
+    previous.conversationId = null;
+  } else {
+    byKey.set(sessionKey, { conversationId: null, conflicted: true, learnedAt: Date.now(), method: 'temporal_unique' });
+    trim();
+  }
+  logWarn(`connector session attribution: key condemned — ${reason}`);
 }
 
 /** Exact key lookup. A contradicted and an absent key both resolve to null. */
@@ -87,6 +168,31 @@ export function sessionBinding(sessionKey: string | null | undefined): string | 
   if (!sessionKey) return null;
   const held = byKey.get(sessionKey);
   return held && !held.conflicted ? held.conversationId : null;
+}
+
+/** Exact key lookup carrying the honesty label the binding was learned under. */
+export function sessionBindingDetail(
+  sessionKey: string | null | undefined
+): { conversationId: string; method: SessionBindingMethod } | null {
+  if (!sessionKey) return null;
+  const held = byKey.get(sessionKey);
+  if (!held || held.conflicted || !held.conversationId) return null;
+  return { conversationId: held.conversationId, method: held.method };
+}
+
+/**
+ * The most recently learned live key bound to a conversation, or null.
+ *
+ * Used by the sleep path to record which key a conversation slept with. A conversation can
+ * own several keys over time (OpenAI may rotate); the newest uncontradicted one is the one
+ * its current server turn is calling with.
+ */
+export function boundKeyForConversation(conversationId: string): string | null {
+  let found: string | null = null;
+  for (const [key, held] of byKey) {
+    if (!held.conflicted && held.conversationId === conversationId) found = key;
+  }
+  return found;
 }
 
 /** Whether this key has contradictory temporal evidence. Diagnosis/tests only. */

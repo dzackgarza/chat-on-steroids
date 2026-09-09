@@ -62,7 +62,14 @@ import {
   requestCorrelationConflicted,
   resetCorrelationRegistryForTests,
 } from './correlation.js';
-import { learnSessionBinding, sessionBinding } from './connector-session.js';
+import { learnSessionBinding, sessionBindingDetail, type SessionBindingMethod } from './connector-session.js';
+import {
+  claimPushCorrelation,
+  isSleptWithBoundKey,
+  noteConnectorActivity,
+  noteObservedTurnEnd,
+  noteObservedTurnStart
+} from './sleep-wake.js';
 import { resumeOpeningChat } from './resume-gate.js';
 import { summarizeToolCall } from './summarize.js';
 
@@ -565,8 +572,19 @@ async function storedHistory(sessionId: string): Promise<StoredHistory> {
         }
       } else if (event.kind === 'turn_end') {
         if (event.turnId) {
-          knownTurnEnds.add(event.turnId);
-          openTurns.delete(event.turnId);
+          // An `observer_lost` end is an unobserved closure and deliberately keeps the turn
+          // recoverable — the same supersede rule the live projection applies (see
+          // closeStaleObserverTurns/closeConversation, which keep such turns in `openTurns`
+          // and out of `knownTurnEnds`). Rebuilding used to close them here, which lost only
+          // a nicety while every closure was accidental; the sleep/wake architecture made it
+          // load-bearing: a slept conversation's tab detaches *by design* mid-turn, and the
+          // woken (or restarted) app must still let the remounted page's recovered final
+          // assistant message close that turn as `completed`. A later observed end for the
+          // same turn still lands normally and closes it here on the next rebuild.
+          if (event.outcome !== 'observer_lost') {
+            knownTurnEnds.add(event.turnId);
+            openTurns.delete(event.turnId);
+          }
         }
       } else if (event.kind === 'page_tool' && event.messageId) {
         const held = pageTools.get(event.messageId);
@@ -673,14 +691,29 @@ export function liveConversations(): Array<{
 export function soleGeneratingConversation(): string | null {
   const now = Date.now();
   pruneDetachedGenerating(now);
-  if (detachedWhileGenerating.size > 0) return null;
+  for (const conversationId of detachedWhileGenerating.keys()) {
+    // A *slept* conversation with a bound session key is the explicit exception to the
+    // fail-closed rule: its tab was discarded by the sleep/wake architecture on purpose,
+    // its server turn is expected to be running, and its calls carry its bound key — so
+    // they can never be the unidentified call this uniqueness claim is about. Excluding
+    // it from sleep state (never from inference) is what stops one slept generating chat
+    // from poisoning "exactly one generating" for the whole fleet. Slept with NO bound
+    // key stays fail-closed: that chat's calls are indistinguishable.
+    if (!isSleptWithBoundKey(conversationId)) return null;
+  }
   let sole: string | null = null;
   for (const entry of conversations.values()) {
     if (entry.observerLostAt !== null) {
-      if (now - entry.observerLostAt < OBSERVER_LOST_UNCERTAINTY_MS) return null;
-      // Past the ceiling the stale claim expires on its own; clear it so one lost tab
-      // cannot suppress unique-moment learning forever.
-      entry.observerLostAt = null;
+      if (isSleptWithBoundKey(entry.conversationId)) {
+        // Same exclusion as above; the sleep state, not the uncertainty ceiling, accounts
+        // for this conversation until it wakes.
+      } else if (now - entry.observerLostAt < OBSERVER_LOST_UNCERTAINTY_MS) {
+        return null;
+      } else {
+        // Past the ceiling the stale claim expires on its own; clear it so one lost tab
+        // cannot suppress unique-moment learning forever.
+        entry.observerLostAt = null;
+      }
     }
     if (entry.turnStartedAt === null) continue;
     if (sole !== null) return null;
@@ -694,15 +727,21 @@ export function soleGeneratingConversation(): string | null {
  * request id at all (measured live: no usable id anywhere in headers or body, and the
  * page's request UUIDs appear nowhere in the request — the exact join cannot fire).
  *
- * Two honestly-labeled tiers, called at arrival by the dispatcher when exact evidence is
- * absent:
+ * Honestly-labeled tiers, called at arrival by the dispatcher when exact evidence is
+ * absent, strongest first (exact > push_correlated > temporal_unique > connector_session):
  *
+ * - `push_correlated`: the key was bound inside the bounded window after a send this app
+ *   itself delivered and verified (turn_start observed). Pushes are serialized, so the
+ *   window names exactly one conversation. Rests on what the app *did* rather than on
+ *   fleet appearance, needs zero page evidence, and is therefore the attribution path
+ *   for slept (tab-discarded) conversations. Owned by session/sleep-wake.ts and inert
+ *   while `sleepWake.enabled` is off.
  * - `temporal_unique`: exactly one managed conversation is generating right now, so the
  *   call is attributed to it. Zero or several generating conversations attribute nothing —
  *   ambiguity keeps the conservative unattributed behaviour.
  * - `connector_session`: the transport's opaque session key was bound to a conversation at
  *   an earlier temporally unique moment, so this call attributes even while several chats
- *   generate. Contradictory temporal evidence for a key kills the key (sticky, see
+ *   generate. Contradictory evidence for a key kills the key (sticky, see
  *   connector-session.ts); a contradiction observed on this very call attributes nothing.
  *
  * The result is charge-scoping and recording evidence only. It never grants agent
@@ -710,14 +749,41 @@ export function soleGeneratingConversation(): string | null {
  */
 export function inferDegradedCaller(
   sessionKey: string | null
-): { conversationId: string; method: 'temporal_unique' | 'connector_session' } | null {
-  const bound = sessionBinding(sessionKey);
+): { conversationId: string; method: SessionBindingMethod | 'connector_session' } | null {
+  // Every degraded call is the quiescence heartbeat for whichever slept conversation owns
+  // its key; a no-op while nothing sleeps.
+  if (sessionKey) noteConnectorActivity(sessionKey);
+  const held = sessionBindingDetail(sessionKey);
+  if (held && isSleptWithBoundKey(held.conversationId)) {
+    // A key bound to a slept conversation is that chat's own call stream. Slept chats are
+    // excluded from the uniqueness computation precisely because their calls carry their
+    // bound key, so whatever `sole` says about the visible fleet is not temporal evidence
+    // about *this* key — running the contradiction check here would assume its own
+    // conclusion and sticky-kill the binding that keeps the slept chat attributable.
+    return {
+      conversationId: held.conversationId,
+      method: held.method === 'push_correlated' ? 'push_correlated' : 'connector_session'
+    };
+  }
+  if (sessionKey && !held) {
+    // Push-correlated learning outranks temporal learning for a first-seen key. When both
+    // claim the key for different conversations at first sight, the claim is contradictory
+    // and the key is condemned (sticky) inside claimPushCorrelation — neither side wins.
+    const claim = claimPushCorrelation(sessionKey, soleGeneratingConversation());
+    if (claim === 'contradicted') return null;
+    if (claim) return { conversationId: claim, method: 'push_correlated' };
+  }
   const sole = soleGeneratingConversation();
   if (sessionKey && sole && learnSessionBinding(sessionKey, sole) === 'conflict') {
     // The key's history and this moment's temporal evidence disagree. Neither side may win.
     return null;
   }
-  if (bound) return { conversationId: bound, method: 'connector_session' };
+  if (held) {
+    return {
+      conversationId: held.conversationId,
+      method: held.method === 'push_correlated' ? 'push_correlated' : 'connector_session'
+    };
+  }
   if (sole) return { conversationId: sole, method: 'temporal_unique' };
   return null;
 }
@@ -1183,7 +1249,7 @@ export interface ToolCallInput {
    * and always filed under its own honest method label.
    */
   inferredConversationId?: string | null;
-  inferredMethod?: 'temporal_unique' | 'connector_session' | null;
+  inferredMethod?: 'push_correlated' | 'temporal_unique' | 'connector_session' | null;
 }
 
 /** Writing runs one at a time, so the log keeps call order. See recordToolCall. */
@@ -1383,7 +1449,9 @@ async function fileToolCall(input: ToolCallInput, target: Target): Promise<ToolC
       requestId: input.requestId ?? null,
       conversationId: target.conversationId,
       attributionMethod:
-        target.attribution === 'temporal_unique' || target.attribution === 'connector_session'
+        target.attribution === 'push_correlated' ||
+        target.attribution === 'temporal_unique' ||
+        target.attribution === 'connector_session'
           ? target.attribution
           : target.conversationId && input.requestId
           ? 'request_id'
@@ -1738,6 +1806,10 @@ async function recordChatObservationsNow(
             live.observerLostAt = null;
           }
           detachedWhileGenerating.delete(conversationId);
+          // Sleep/wake: the whole-turn reconstruction path. A woken tab discovers the
+          // finished answer cold, and this recovered completion is what proves the slept
+          // turn is done and the conversation is ready for its next push.
+          noteObservedTurnEnd(conversationId, item.turnId, 'completed', item.time);
           stored++;
         }
         break;
@@ -1781,6 +1853,9 @@ async function recordChatObservationsNow(
           live.observerLostAt = null;
         }
         detachedWhileGenerating.delete(conversationId);
+        // Sleep/wake: a fresh observed turn_start is the verification of a pending push,
+        // or a waking remount showing its turn still generating. Inert while disabled.
+        noteObservedTurnStart(conversationId, item.time);
         break;
       // Also not stored, and for the same reason: this is the page describing which calls
       // it made, which is a fact about attribution rather than something that happened in
@@ -1818,6 +1893,9 @@ async function recordChatObservationsNow(
             live.turnId = null;
           }
         }
+        // Sleep/wake: a page-observed end settles a waking conversation's turn. Inert
+        // while no conversation is sleep-managed.
+        noteObservedTurnEnd(conversationId, item.turnId, item.outcome ?? 'unknown', item.time);
         break;
     }
     stored++;

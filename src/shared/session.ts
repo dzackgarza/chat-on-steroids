@@ -135,7 +135,11 @@ export type ToolOutcome = 'ok' | 'error' | 'rejected';
  * connector platform stopped sending any request id (see inbound.ts). `temporal_unique` is
  * the only managed conversation that was generating when the call arrived. `connector_session`
  * is the transport's opaque session key, whose owner was learned at such a temporally unique
- * moment (see connector-session.ts). Both are honestly labeled as what they rest on and are
+ * moment (see connector-session.ts). `push_correlated` is the strongest of the degraded
+ * tiers: the key was bound inside the bounded window after a send this app itself delivered
+ * and verified against the recording (see session/sleep-wake.ts) — evidence about what the
+ * app did, not about how the page fleet looked, and the attribution path for slept
+ * (tab-discarded) conversations. All are honestly labeled as what they rest on and are
  * never presented as exact request-id attribution.
  */
 export type CallAttribution =
@@ -145,6 +149,7 @@ export type CallAttribution =
   | 'agent'
   | 'generation'
   | 'inferred'
+  | 'push_correlated'
   | 'temporal_unique'
   | 'connector_session';
 
@@ -174,6 +179,7 @@ export const ATTRIBUTION_LABELS: Record<CallAttribution, string> = {
   turn: 'tool block on the page',
   generation: 'the only chat generating',
   inferred: 'not placed in a chat',
+  push_correlated: 'connector session key bound after a verified push by this app',
   temporal_unique: 'the only managed chat generating at arrival',
   connector_session: 'connector session key learned at a temporally unique moment'
 };
@@ -191,7 +197,7 @@ export interface ToolCallRecord {
    * the 2026-09 headerless connector platform added the two degraded evidence tiers,
    * each honestly labeled and never masquerading as exact request_id attribution.
    */
-  attributionMethod: 'request_id' | 'temporal_unique' | 'connector_session' | 'unattributed';
+  attributionMethod: 'request_id' | 'push_correlated' | 'temporal_unique' | 'connector_session' | 'unattributed';
   /** Exact arguments as JSON. Cut inline past the cap, with the whole text in an asset. */
   args: StoredText;
   result: StoredText;

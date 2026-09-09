@@ -70,7 +70,7 @@ export interface CallCaller {
    * authority: agent resolution, inboxes and workspaces still require `conversationId`.
    */
   inferredConversationId?: string | null;
-  inferredMethod?: 'temporal_unique' | 'connector_session' | null;
+  inferredMethod?: 'push_correlated' | 'temporal_unique' | 'connector_session' | null;
 }
 
 export interface CallContext {
