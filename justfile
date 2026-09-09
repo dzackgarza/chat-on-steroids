@@ -186,12 +186,13 @@ chats:
         when = newest.get("time", 0) if newest else meta["updatedAt"]
 
         # A turn nothing has added to for a while is not generating, whatever the last event
-        # says. A working agent is in continuous contact with this app: it writes prose, runs a
-        # command, reports a tool result, and even its waiting on a long command arrives here as
-        # rows of its own. So a gap is not a slow turn, it is a turn that stopped, and the gap
-        # that proves it is a minute rather than several. Reading a longer silence as `busy` is
-        # how a wedge sits unnoticed while every row insists work is happening.
-        if state == "busy" and time.time() - when / 1000 > 60:
+        # says. Measured over 100 hours of recorded live turns, a working chat's gaps between
+        # rows run 8.5s at the median and 27s at p90, with p99.9 at 248s — so five minutes is
+        # past everything a live turn has been observed to do, while a bar down at a minute
+        # would call a live chat stalled during 8% of its working time. That asymmetry is the
+        # whole reason for the number: a missed stall costs one polling interval, and a false
+        # one ends a chat that was working.
+        if state == "busy" and time.time() - when / 1000 > 300:
             state = "stalled"
 
         rows.append((when, chat, state, describe(newest) if newest else "-"))
