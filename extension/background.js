@@ -2359,8 +2359,13 @@ const revivalReuseAttempted = new Map();
 /**
  * How many times a tab the app opened defers to a tab that already holds the chat before that
  * other tab is reloaded. The waiting document polls about once a second.
+ *
+ * Deliberately shorter than the waiting document's own hand-back window. Those two are the
+ * same race: the moment that document stops deferring it takes the command itself, stops
+ * asking, and the held tab is never reloaded — so it has to be reloaded while the asking is
+ * still going on, not at the instant it stops.
  */
-const DEFERRALS_BEFORE_RELOAD = 20;
+const DEFERRALS_BEFORE_RELOAD = 8;
 /** Deferrals seen per command, and the commands whose held tab has already been reloaded. */
 const revivalDeferrals = new Map();
 const revivalTabReloaded = new Set();
