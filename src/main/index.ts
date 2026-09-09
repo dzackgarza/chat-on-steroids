@@ -9,6 +9,7 @@ import { connect, disconnect, getStatus, onStatusChange, shutdownConnection } fr
 import { registerIpc } from './ipc.js';
 import { logError, logInfo, logWarn } from './logger.js';
 import { unifiedExecManager } from './codex/manager.js';
+import { stopExecReaper } from './exec-reaper.js';
 import { initSecretsPath } from './secrets.js';
 import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
 import { flushSessions, initSessionStore, pruneSessions } from './session/store.js';
@@ -398,7 +399,13 @@ app.on('will-quit', (event) => {
       {
         name: 'process cleanup',
         budgetMs: 15_000,
-        run: () => [unifiedExecManager.terminateAllProcesses(), stopComputerHelper()]
+        // The reaper's timer is stopped here because this phase is its subject matter:
+        // once every session is being terminated there is nothing left for it to sweep.
+        run: () => [
+          Promise.resolve(stopExecReaper()),
+          unifiedExecManager.terminateAllProcesses(),
+          stopComputerHelper()
+        ]
       },
       // Phase 3: recorder work can enqueue both session projections and named durable state.
       { name: 'recorder flush', budgetMs: 10_000, run: () => [flushRecorder()] },

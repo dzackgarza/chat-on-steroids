@@ -212,6 +212,8 @@ src/main/codex/unified-exec-constants.ts  yield deadlines, buffer and token poli
 src/main/codex/exec-output.ts model-facing exec serialization
 src/main/codex/shell.ts       host shell selection, quoting, launch
 src/main/codex/ownership.ts   terminal-session caller ownership
+src/main/exec-reaper.ts       orphaned exec descendant reaper (startup + periodic sweeps)
+src/main/exec-spawn-marker.ts CLF_EXEC_SPAWN ownership marker for exec descendants
 src/main/codex/filesystem.ts  ported low-level Codex fs primitives (no policy)
 src/main/codex/read-backend.ts  connector read semantics over those primitives
 src/main/codex/view-image.ts  image load/validate + MCP content adaptation
