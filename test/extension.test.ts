@@ -822,6 +822,33 @@ describe('extension command delivery', () => {
   });
 
   /**
+   * Recovery used to open every outstanding wake in one tight loop. Several conversations
+   * loading at once is a burst of requests from a single account, and the rate limit it earns
+   * lands on the chats themselves — so recovering many wakes together is precisely what stops
+   * them working.
+   */
+  it('spaces the tabs it opens during recovery instead of opening them at once', async () => {
+    const chats = [
+      'e1111111-1111-2222-3333-444444444444',
+      'e2222222-1111-2222-3333-444444444444',
+      'e3333333-1111-2222-3333-444444444444'
+    ];
+    const local = new FakeStorageArea({
+      deferredRevivals: chats.map((conversationId, index) => ({
+        id: `cmd-${index}`,
+        conversationId,
+        queuedAt: Date.now()
+      }))
+    });
+    const worker = loadWorker({ local, session: new FakeStorageArea(), tabsQuery: async () => [] });
+    await worker.installed('chrome_update');
+    for (let turn = 0; turn < 12; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The first is opened straight away; the rest wait out their gaps rather than arriving with it.
+    expect(worker.tabsCreate.mock.calls.length).toBe(1);
+  });
+
+  /**
    * The app opens a tab per command, and the extension is the only thing that ever closes one
    * whose command never acknowledged. Custody lived in a plain Map, and the service worker is
    * torn down every few idle seconds, so the sweep woke with nothing to sweep: every such tab

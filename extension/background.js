@@ -2453,6 +2453,24 @@ const COMMAND_TAB_TTL_MS = 150_000;
  * marker older than that names nothing and must not open anything.
  */
 const DEFERRED_REVIVAL_TTL_MS = 30 * 60 * 1000;
+/**
+ * Gap between tabs opened in one recovery pass, in milliseconds.
+ *
+ * Opening several conversations at once is a burst of requests from a single account, and the
+ * rate limit it earns lands on the chats themselves: recovering many wakes together is precisely
+ * what stops them working. Randomised so repeated passes do not line up into a burst of their
+ * own.
+ */
+const TAB_OPEN_GAP_MIN_MS = 700;
+const TAB_OPEN_GAP_MAX_MS = 2_000;
+
+function tabOpenGap() {
+  return TAB_OPEN_GAP_MIN_MS + Math.floor(Math.random() * (TAB_OPEN_GAP_MAX_MS - TAB_OPEN_GAP_MIN_MS));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // Custody has its own storage key and its own writer rather than riding persistLive(). That
 // snapshot write covers every live field at once, so calling it from a tab lifecycle event that
@@ -2810,6 +2828,7 @@ function recoverDeferredRevivals() {
       tabs = [];
     }
 
+    let opened = 0;
     for (const entry of [...deferredRevivals]) {
       const preference = revivalPreference(entry.id);
       let exact = null;
@@ -2854,8 +2873,13 @@ function recoverDeferredRevivals() {
 
       const url = deferredRevivalUrl(entry);
       if (!url) continue;
+      // Opened one at a time with a jittered gap. Several conversations loading at once is a
+      // burst of requests from one account, which earns a rate limit — and a rate limit lands on
+      // the chats themselves, so recovering many wakes at once is what stops them working.
+      if (opened > 0) await sleep(tabOpenGap());
       try {
         const created = await chrome.tabs.create({ url });
+        opened += 1;
         if (created && typeof created.id === 'number') tabs.push({ ...created, url });
       } catch {
         // Browser policy/window teardown can reject create; the local marker remains for the next
