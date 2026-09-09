@@ -1015,6 +1015,7 @@ expensive way in one such run, and none of it is guessable from the code.
 - **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): Sweep II corpus mapping across sources (FC08, FC10, FC11).
 - **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): Quality audit and card-by-card solution remediation on problem collections.
 - **`research`** (`/home/dzack/research`): Preamble construction workstreams: C (category foundations) and A0 (categorical group actions).
+- **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): Native engine remediation and foundational category framework implementation.
 
 **Check-in reporting.** At each check-in (every 20 minutes), report in chat for each managed workstream:
 - Current local time and anticipated time of the next scheduled wakeup.
