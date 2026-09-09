@@ -1017,6 +1017,7 @@ expensive way in one such run, and none of it is guessable from the code.
 - **`research`** (`/home/dzack/research`): Preamble construction workstreams: C (category foundations) and A0 (categorical group actions).
 
 **Check-in reporting.** At each check-in (every 20 minutes), report in chat for each managed workstream:
+- Current local time and anticipated time of the next scheduled wakeup.
 - Status of the workstream.
 - A 1-line summary of the last activity.
 - How long ago that activity occurred.
@@ -1144,6 +1145,7 @@ the chat holding the stale instruction rather than letting it find out.
 
 At each check-in (every twenty minutes), report the status of each managed repository workstream
 directly in chat:
+- Current local time and anticipated time of the next scheduled wakeup.
 - Workstream status.
 - A 1-line summary of its last activity.
 - How long ago that activity occurred.
