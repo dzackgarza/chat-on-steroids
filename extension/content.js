@@ -622,6 +622,12 @@
   let job = null;
   /** Local tool calls the app still has running. Only ever a hint from /activity. */
   let pendingTools = 0;
+  /**
+   * Whitespace-squeezed texts the app itself asked to be typed into this chat, from
+   * `/activity`. A composer draft matching one of these is the app's own manufactured wedge
+   * (a background-tab send click that silently no-oped), never user writing.
+   */
+  let staleDraftHints = [];
   let pressedAt = 0;
   let localError = '';
   let retirementHandledFor = null;
@@ -1148,6 +1154,7 @@
     since = 0;
     job = null;
     pendingTools = 0;
+    staleDraftHints = [];
     autoCompactReady = false;
     resumeIdentityPending = false;
     // A native compaction belongs to the conversation it was started in. Navigating away
@@ -1928,8 +1935,19 @@
     }
     if (!alive || CLF_DOM.conversationId() !== chat) return;
     if (!CLF_DOM.composerSubmitReady || !CLF_DOM.composerSubmitReady()) return;
+    // This recovery fires in hidden tabs by design, which is exactly where ChatGPT's send
+    // button reports enabled and the click silently no-ops. Activate first, and if the send
+    // still fails, take our own text back out rather than leave an unsent draft that blocks
+    // the app's push path afterwards.
+    await ask({ type: 'activate_tab' }).catch(() => undefined);
+    if (!alive || CLF_DOM.conversationId() !== chat) return;
     if (!CLF_DOM.insertPrompt(STALL_RESTART_TEXT)) return;
-    await CLF_DOM.send();
+    if (!(await CLF_DOM.send())) {
+      const leftover = CLF_DOM.composer();
+      if (leftover && (leftover.textContent || '').trim() === STALL_RESTART_TEXT && CLF_DOM.clearComposer) {
+        CLF_DOM.clearComposer();
+      }
+    }
   }
 
   /**
@@ -5129,6 +5147,14 @@
       if (Number.isFinite(nextSince) && nextSince > since) since = nextSince;
       job = data.job || null;
       pendingTools = Number.isFinite(Number(data.pendingTools)) ? Number(data.pendingTools) : 0;
+      if (Array.isArray(data.staleDrafts)) {
+        const hints = data.staleDrafts.filter((draft) => typeof draft === 'string' && draft);
+        const changed = hints.length !== staleDraftHints.length || hints.some((hint, at) => hint !== staleDraftHints[at]);
+        staleDraftHints = hints;
+        // A wedged draft mutates no DOM, so a revival waiter blocked on it re-evaluates only
+        // when told. New ledger knowledge is exactly such a moment.
+        if (changed) notifyCommandReadiness();
+      }
       // The generation this chat has open in the app, if any. Only ever *read* by
       // resumeOpenTurn(), on the boot pull, and only to work out whether this document is
       // standing in the middle of a turn a previous one opened. See adoptTurnId.
@@ -8062,11 +8088,11 @@
    * worker may be revived; it does not say ChatGPT has finished rendering the assistant turn
    * that contains that tool call. The recorder's conservative generation state is the latter.
    */
-  function revivalSubmitReady(target) {
+  function revivalSubmitReady(target, allowDraft = false) {
     if (!commandReadinessInitialized || !alive || CLF_DOM.conversationId() !== target) return false;
     if (generating || CLF_DOM.generating()) return false;
     if (pendingTools > 0 || nativeBusy || goalBusy || compactCapture || (job && job.busy)) return false;
-    return Boolean(CLF_DOM.composerSubmitReady && CLF_DOM.composerSubmitReady());
+    return Boolean(CLF_DOM.composerSubmitReady && CLF_DOM.composerSubmitReady(allowDraft === true));
   }
 
   /**
@@ -8091,9 +8117,27 @@
         if (observer) observer.disconnect();
         resolve(value);
       };
+      /**
+       * Ready, or blocked *only* by a composer draft the app's own ledger claims.
+       *
+       * Waiting on any draft forever was the wedge: an app-typed draft a background-tab send
+       * click silently failed to submit never changes again, so the revival never redeemed
+       * and never reported anything — silence, in exactly the chat that most needed the push.
+       * `/activity` now carries the squeezed texts this app itself asked to type here; a
+       * blocking draft that matches one is the app's manufactured wedge and ends the wait, so
+       * the redeem path can clear it and proceed. User writing matches nothing in that ledger
+       * and keeps its absolute protection: the wait continues untouched.
+       */
+      const readyEnough = () => {
+        if (revivalSubmitReady(target)) return true;
+        if (!revivalSubmitReady(target, true)) return false;
+        const box = CLF_DOM.composer();
+        const text = box ? (box.textContent || '').replace(/\s+/g, '') : '';
+        return text !== '' && staleDraftHints.includes(text);
+      };
       const check = () => {
         if (attempt?.cancelled || !alive || CLF_DOM.conversationId() !== target) return finish(false);
-        if (!revivalSubmitReady(target) || flushingReadyBoundary) return;
+        if (!readyEnough() || flushingReadyBoundary) return;
         // Snapshot exactly what this already-finished turn left in page custody. Later observations
         // are allowed to exist independently; they must not turn this into an unbounded "queue must
         // be globally empty" condition. Object identity is stable until the durable flush path
@@ -8110,7 +8154,7 @@
             !attempt?.cancelled &&
             alive &&
             CLF_DOM.conversationId() === target &&
-            revivalSubmitReady(target) &&
+            readyEnough() &&
             pendingBoundary()
           ) {
             const durable = await flush();
@@ -8120,7 +8164,7 @@
           .then(() => {
             flushingReadyBoundary = false;
             if (attempt?.cancelled || !alive || CLF_DOM.conversationId() !== target) return finish(false);
-            if (revivalSubmitReady(target) && !pendingBoundary()) finish(true);
+            if (readyEnough() && !pendingBoundary()) finish(true);
           })
           .catch(() => {
             // A service-worker/app outage is not evidence that the chat is unsafe forever. Keep
@@ -8387,12 +8431,41 @@
     };
     if (await failIfRetargeted()) return;
 
-    // Fresh worker/resume commands still have the old one-shot draft rule. A revival never gets
-    // this far with a draft: its pre-redeem readiness wait preserves the user's text and waits
-    // for the exact chat to become safe without consuming browser ownership.
+    // Field-proven, paid for in lost ticks: in a background tab ChatGPT's send button reports
+    // enabled and the click silently no-ops, leaving the inserted text as an *unsent draft*
+    // that then blocks every later push into this chat. Activate the tab before driving the
+    // composer, every time. Best-effort — an unfocusable window still gets the attempt, and a
+    // failed send below now rolls its own inserted text back instead of manufacturing a wedge.
+    await ask({ type: 'activate_tab' }).catch(() => undefined);
+    if (await failIfRetargeted()) return;
+
+    // Compared with whitespace squeezed out of both sides. The composer is a rich-text
+    // editor: a blank line in the bootstrap becomes a paragraph break, and `textContent`
+    // stitches the paragraphs back together with no separator at all.
+    const squeeze = (value) => (value || '').replace(/\s+/g, '');
+    const expectedText = squeeze(boot.text);
+    const staleDrafts = Array.isArray(boot.staleDrafts) ? boot.staleDrafts.filter((d) => typeof d === 'string') : [];
+
+    // A pre-existing draft is one of three things, decided by proof rather than by guessing:
+    //   1. this command's own text — an earlier attempt typed it and the send silently
+    //      no-opped; the words are already in place, so send them rather than stack a copy;
+    //   2. a text the app's ledger proves the app itself asked to type here earlier — the
+    //      manufactured wedge; clear it and proceed;
+    //   3. anything else is user writing. Preserved, and the command fails with a typed
+    //      reason the caller can act on.
     const existing = CLF_DOM.composer();
-    if (existing && (existing.textContent || '').trim()) {
-      return void (await fail('the composer already holds something the user was writing'));
+    const held = squeeze(existing ? existing.textContent : '');
+    let alreadyTyped = false;
+    if (held) {
+      if (held === expectedText) {
+        alreadyTyped = true;
+      } else if (staleDrafts.includes(held) && CLF_DOM.clearComposer && CLF_DOM.clearComposer()) {
+        // Cleared a draft this app manufactured; the composer is ours to type into again.
+      } else if (staleDrafts.includes(held)) {
+        return void (await fail('a stale app-typed draft could not be cleared from the composer'));
+      } else {
+        return void (await fail('the composer already holds something the user was writing'));
+      }
     }
 
     // The composer is the readiness signal. Page-level `readyState` says whether every
@@ -8402,7 +8475,9 @@
     if (!readyComposer) return void (await fail('ChatGPT never exposed a usable composer for bootstrap'));
     if (await failIfRetargeted()) return;
 
-    if (!CLF_DOM.insertPrompt(boot.text)) return void (await fail('ChatGPT refused the inserted text'));
+    if (!alreadyTyped && !CLF_DOM.insertPrompt(boot.text)) {
+      return void (await fail('ChatGPT refused the inserted text'));
+    }
     // Give synchronous React/input work one microtask turn to replace the editing host, then
     // re-prove the exact draft before the irreversible send. This used to sleep for 100 ms.
     // Long-hidden Chrome tabs throttle wall-clock timers, so that tiny "stability" delay became
@@ -8412,13 +8487,8 @@
     await Promise.resolve();
     if (await failIfRetargeted()) return;
     let composer = CLF_DOM.composer();
-    // Compared with whitespace squeezed out of both sides. The composer is a rich-text
-    // editor: a blank line in the bootstrap becomes a paragraph break, and `textContent`
-    // stitches the paragraphs back together with no separator at all. Compare the entire
-    // whitespace-normalized value: a prefix proves insertion happened, but it would also
-    // approve user text appended after focus moved into this tab.
-    const squeeze = (value) => (value || '').replace(/\s+/g, '');
-    const expectedText = squeeze(boot.text);
+    // Compare the entire whitespace-normalized value: a prefix proves insertion happened,
+    // but it would also approve user text appended after focus moved into this tab.
     if (!composer || squeeze(composer.textContent) !== expectedText) {
       if (composer && !(composer.textContent || '').trim() && CLF_DOM.insertPrompt(boot.text)) {
         await Promise.resolve();
@@ -8437,7 +8507,15 @@
       return void (await fail('the composer changed before bootstrap send; the draft was preserved'));
     }
     if (await failIfRetargeted()) return;
-    if (!(await CLF_DOM.send())) return void (await fail('ChatGPT did not accept the bootstrap send'));
+    if (!(await CLF_DOM.send())) {
+      // The click ran and nothing on the page accepted it — the background-tab silent no-op
+      // shape. The composer's text was proven to be exactly this command's own just above, so
+      // remove it rather than leave the unsent draft that wedges every later push. Only our
+      // exact text is ever cleared: if the composer changed meanwhile it is left alone.
+      const wedged = CLF_DOM.composer();
+      if (wedged && squeeze(wedged.textContent) === expectedText && CLF_DOM.clearComposer) CLF_DOM.clearComposer();
+      return void (await fail('ChatGPT did not accept the bootstrap send'));
+    }
     agent = boot.agent || null;
     agentCommandId = agent && typeof boot.id === 'string' ? boot.id : null;
 

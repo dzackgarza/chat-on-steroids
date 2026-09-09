@@ -1708,6 +1708,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // REQUEST_ID_GRACE_MS to file its history cannot change the workspace and must not add
         // a cross-chat 15-second tax to the machine-settle barrier.
         pendingTools: runningToolCalls(live.conversationId),
+        // Whitespace-squeezed texts this app itself asked to be typed into this chat. The
+        // page's revival/send waiter compares a blocking composer draft against these: a
+        // match is the app's own wedge (a background-tab send click that silently no-oped)
+        // and may end the wait so the redeem path can clear it; user writing matches nothing
+        // here and keeps its absolute protection.
+        staleDrafts: appDraftsFor(live.conversationId),
         // Diagnostic only. A finished unattributed call is still being placed into durable
         // history; unknown ownership is conservatively projected onto every chat until that
         // attribution finishes, but this number never gates the compaction prompt.
@@ -3238,11 +3244,11 @@ async function turnStartAfter(conversation: string, since: number): Promise<numb
 
 /** A typed state name plus the concrete next action, from a terminal receipt's error text. */
 function classifySendFailure(reason: string): { state: string; hint: string } {
-  if (reason.includes('draft_left_in_composer') || reason.includes('composer already holds')) {
+  if (reason.includes('composer already holds') || reason.includes('stale app-typed draft')) {
     return {
       state: 'draft_left_in_composer',
       hint:
-        "An unsent draft is sitting in that chat's composer and it does not match anything this app typed, so it was preserved as user work. Clear or send it in the browser, then retry."
+        "An unsent draft is wedged in that chat's composer. A draft matching nothing this app typed is preserved as user work; one the app manufactured resisted clearing. Clear or send it in the browser, then retry."
     };
   }
   if (reason.includes('never exposed a usable composer')) {

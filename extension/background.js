@@ -2241,6 +2241,29 @@ const HANDLERS = {
     await forgetDeferredRevival(message.id);
     return { ok: true };
   },
+  /**
+   * Raises the exact tab whose document is about to drive the composer.
+   *
+   * Field-proven, paid for in lost ticks: in a background tab ChatGPT's send button reports
+   * enabled and the click silently no-ops, leaving an unsent draft that then blocks every
+   * later push into that chat. So the content script asks for activation before every
+   * composer drive — command delivery and stall recovery alike. The sender is the locator;
+   * never a search by conversation. Failure is advisory: the caller still attempts the send
+   * and rolls its own inserted text back if the page refuses it.
+   */
+  async activate_tab(_message, sender, source) {
+    await load();
+    if (!ownsDocument(source)) return { ok: false, error: 'stale_document' };
+    try {
+      const activated = await chrome.tabs.update(source.tab, { active: true });
+      const senderWindow = sender && sender.tab && typeof sender.tab.windowId === 'number' ? sender.tab.windowId : null;
+      const windowId = senderWindow ?? (activated && typeof activated.windowId === 'number' ? activated.windowId : null);
+      if (windowId !== null) await chrome.windows.update(windowId, { focused: true });
+    } catch {
+      return ownsDocument(source) ? { ok: false, error: 'focus_failed' } : { ok: false, error: 'stale_document' };
+    }
+    return ownsDocument(source) ? { ok: true, focused: true } : { ok: false, error: 'stale_document' };
+  },
   async ack(message, _sender, source) {
     const result = await ackCommand(
       String(message.id || ''),
@@ -2285,6 +2308,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     'redeem',
     'defer_revival',
     'forget_revival',
+    'activate_tab',
     'ack'
   ]);
   const run = async () => {
@@ -2359,13 +2383,26 @@ async function reuseOpenChatTab(openedTabId, conversation, commandId) {
     // If browser metadata itself cannot be persisted, keep the fallback alive. The content-side
     // defer custody gate will retry before either document is allowed to redeem/send.
   }
+  // The browser routinely holds two or three tabs per conversation and only one carries a live
+  // composer, so first-match selection hits a stale duplicate. Probe every copy. The probe
+  // distinguishes two kinds of unusable tab and they are treated very differently: a *rejected*
+  // ping is a dead/remounting content script — the tab itself may be perfectly healthy and about
+  // to recover, so it is skipped but preserved — while a ping that *times out* is a frozen
+  // renderer, the field-proven wedge, and once a working tab for the conversation exists those
+  // frozen copies are verified-stale duplicates to recycle.
+  const frozen = [];
+  let sawDead = false;
+  let claimedBy = null;
   for (const candidate of existing) {
-    try {
-      const alive = await chrome.tabs.sendMessage(candidate.id, { type: 'clf-recorder-ping' });
-      if (!alive || alive.ok !== true || alive.recorderVersion !== PAGE_RECORDER_VERSION) continue;
-    } catch {
+    const health = await probeTab(candidate.id);
+    if (health === 'frozen') {
+      frozen.push(candidate.id);
+      continue;
+    }
+    if (health !== 'live') {
       // Two copies of one chat can survive an extension reload differently. A dead first match
       // must not hide a healthy second one and force a third duplicate to remain open.
+      sawDead = true;
       continue;
     }
     let reply = null;
@@ -2378,10 +2415,15 @@ async function reuseOpenChatTab(openedTabId, conversation, commandId) {
     } catch {
       // It died after the ping but before it could acquire the lease. Try another already-open
       // copy; if none can claim, the app-opened fallback remains the ordinary delivery path.
+      sawDead = true;
       continue;
     }
     if (!reply || reply.ok !== true || reply.claimed !== true) continue;
+    claimedBy = candidate.id;
+    break;
+  }
 
+  if (claimedBy !== null) {
     // This document now owns the command durably. The marked fallback can no longer redeem it,
     // so removing that tab cannot destroy the only owner or cause duplicate user-message sends.
     try {
@@ -2390,9 +2432,74 @@ async function reuseOpenChatTab(openedTabId, conversation, commandId) {
       // The fallback may already have been closed by the user. Ownership is still safely here.
     }
     await clearRevivalPreference(commandId).catch(() => undefined);
+    await closeStaleDuplicates(conversation, frozen, claimedBy);
     return true;
   }
+
+  if (frozen.length === existing.length && !sawDead) {
+    // Every already-open copy is a frozen renderer — the wedge where nothing in those tabs will
+    // ever answer again. The preference written above would make the marked fallback defer to a
+    // tab that can never redeem; clear it so the fallback — which has this conversation freshly
+    // open — proceeds immediately, and recycle the frozen copies now that a working tab exists.
+    // A dead-but-remounting recorder never takes this path: that tab may recover, so it keeps
+    // both its preference and its tab.
+    await clearRevivalPreference(commandId).catch(() => undefined);
+    await closeStaleDuplicates(conversation, frozen, openedTabId);
+  }
   return false;
+}
+
+/** How long a tab gets to answer the liveness ping before it counts as frozen. */
+const PING_TIMEOUT_MS = 3_000;
+/** Distinguishes "no answer yet" from "no answer ever" — only the race can produce it. */
+const PING_TIMED_OUT = Symbol('clf-ping-timeout');
+
+/**
+ * One tab's content-document health: `'live'`, `'dead'`, or `'frozen'`.
+ *
+ * `tabs.sendMessage` to a frozen renderer can *hang* rather than reject — Chromium freezes
+ * long-backgrounded tabs wholesale — so the probe is raced against a bounded timer, and the
+ * timeout is the one signature that separates a frozen renderer (recycle candidate) from a
+ * dead/remounting content script (skip, preserve: reload recovery re-injects those).
+ */
+async function probeTab(tabId) {
+  try {
+    const alive = await Promise.race([
+      chrome.tabs.sendMessage(tabId, { type: 'clf-recorder-ping' }),
+      new Promise((resolve) => setTimeout(() => resolve(PING_TIMED_OUT), PING_TIMEOUT_MS))
+    ]);
+    if (alive === PING_TIMED_OUT) return 'frozen';
+    return alive && alive.ok === true && alive.recorderVersion === PAGE_RECORDER_VERSION ? 'live' : 'dead';
+  } catch {
+    return 'dead';
+  }
+}
+
+/** Whether a tab's content document is alive enough to be handed a command right now. */
+async function pingTab(tabId) {
+  return (await probeTab(tabId)) === 'live';
+}
+
+/**
+ * Closes duplicate tabs of one conversation that failed the liveness probe, once a live tab
+ * for that conversation is known to exist.
+ *
+ * Only ever called with tabs that were just probed as unresponsive *and* whose conversation
+ * is open elsewhere — the "verified stale duplicate" from the push-path field facts. Each is
+ * re-checked immediately before removal so a tab the user navigated somewhere else meanwhile
+ * is not touched; anything already gone is simply skipped.
+ */
+async function closeStaleDuplicates(conversation, tabIds, keepTabId) {
+  for (const id of tabIds) {
+    if (id === keepTabId) continue;
+    try {
+      const tab = await chrome.tabs.get(id);
+      if (conversationForTab(tab) !== conversation) continue;
+      await chrome.tabs.remove(id);
+    } catch {
+      // Already closed, or the browser refused; either way the duplicate is not ours to force.
+    }
+  }
 }
 
 /**
@@ -2860,14 +2967,11 @@ function recoverDeferredRevivals() {
         // answer yet. Probe readiness first so a startup race does not spray repeated run-command
         // messages at a document that cannot receive them; registration/reload recovery retries
         // the same tab, and only a current recorder receives the actual command once.
-        try {
-          const live = await chrome.tabs.sendMessage(exact.id, { type: 'clf-recorder-ping' });
-          if (live && live.ok === true && live.recorderVersion === PAGE_RECORDER_VERSION) {
-            offerDeferredRevivalToTab(entry, exact);
-          }
-        } catch {
-          // Exact tab still exists. Temporary receiver absence is readiness=false, never absence.
-        }
+        // Bounded probe: a frozen renderer hangs sendMessage rather than rejecting it, and an
+        // unbounded ping here parked the whole recovery loop behind one dead tab. Temporary
+        // receiver absence is readiness=false, never absence — the exact tab still exists and
+        // the content-side custody handback reclaims the command if this tab never wakes.
+        if (await pingTab(exact.id)) offerDeferredRevivalToTab(entry, exact);
         continue;
       }
 
@@ -2905,7 +3009,12 @@ async function restoreOpenChatgptTabs() {
     const id = tab && typeof tab.id === 'number' ? tab.id : null;
     if (id === null) continue;
     try {
-      const live = await chrome.tabs.sendMessage(id, { type: 'clf-recorder-ping' });
+      // Bounded like every other liveness probe: one frozen tab must not stall the
+      // restoration of every tab behind it.
+      const live = await Promise.race([
+        chrome.tabs.sendMessage(id, { type: 'clf-recorder-ping' }),
+        new Promise((resolve) => setTimeout(() => resolve(null), PING_TIMEOUT_MS))
+      ]);
       if (live && live.ok === true && live.recorderVersion === PAGE_RECORDER_VERSION) {
         // Healthy content.js does not prove the independently running MAIN-world helper is
         // still present. Request-id ownership depends on fiber.js, and re-executing it is

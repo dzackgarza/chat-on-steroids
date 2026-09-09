@@ -1154,12 +1154,15 @@ var CLF_DOM = (() => {
    * Keeping the emptiness check here also makes it impossible for a revival waiter to "reserve"
    * the composer by inserting its text before the page is actually ready.
    */
-  function composerSubmitReady() {
+  function composerSubmitReady(ignoreDraft = false) {
     return safe(() => {
       const box = composer();
       if (!box || !box.isConnected) return false;
       if (generating() || stopButton()) return false;
-      if ((box.textContent || '').trim() !== '') return false;
+      // `ignoreDraft` is for one caller only: the revival/send waiter that has proven the
+      // draft static and is about to compare it against the app's own typed-text ledger.
+      // Everything that types unconditionally keeps the empty-composer requirement.
+      if (!ignoreDraft && (box.textContent || '').trim() !== '') return false;
       if (box.getAttribute('aria-disabled') === 'true') return false;
       if (box.getAttribute('contenteditable') === 'false') return false;
       return true;
@@ -1371,6 +1374,33 @@ var CLF_DOM = (() => {
     }, false);
   }
 
+  /**
+   * Empties the composer, and reports whether it really is empty afterwards.
+   *
+   * Only ever called on a draft the caller has already proven to be this app's own — a text
+   * the bridge's ledger says the app itself asked to type, left unsent by a background-tab
+   * click that silently no-opped. Clearing user writing is never this function's business;
+   * the caller owns that proof, this owns only the editing mechanics.
+   */
+  function clearComposer() {
+    return safe(() => {
+      const box = composer();
+      if (!box) return false;
+      if ((box.textContent || '').trim() === '') return true;
+      box.focus();
+      // The same native editing path insertPrompt() uses, so React observes the mutation.
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+      if ((box.textContent || '').trim() !== '') {
+        // Some composer builds ignore execCommand deletion; fall back to replacing the
+        // children and telling React explicitly.
+        box.replaceChildren();
+      }
+      box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+      return (box.textContent || '').trim() === '';
+    }, false);
+  }
+
   /** Types into the composer. Refuses if the user already has a draft there. */
   function insertPrompt(value) {
     return safe(() => {
@@ -1507,6 +1537,7 @@ var CLF_DOM = (() => {
     hideProgress,
     replaceTurn,
     insertPrompt,
+    clearComposer,
     send
   };
 })();
