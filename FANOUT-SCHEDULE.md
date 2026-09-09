@@ -20,6 +20,18 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
+**Degraded-control brake:** stream targets assume a working control path (pushes
+land, attribution works, worker state is observable). When the push path is
+degraded — composer refusals, broken tool-call attribution, missing per-chat
+evidence channels — **pause new stream launches and hold current width**: added
+throughput is worthless if a stalled worker cannot be reached, and each extra
+stream consumes the quiet windows recovery pushes need. Keep existing streams
+running, run a state-driven push loop against the stalest idle stream, and resume
+launching toward targets only after the control path is verified healthy again.
+*Status 2026-09-09: brake is ON fleet-wide (tool-call attribution defect, fix in
+progress in this repo). new-qual-site holds at S3/S4/S5 + pre-existing streams;
+S1 (relaunch into its empty chat), S6, S8 launch when the brake lifts.*
+
 ---
 
 ## new-qual-site — 8 streams (widest, cleanest)
