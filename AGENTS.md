@@ -924,6 +924,15 @@ engineer who already has the context — not the way you would call a 2024 API.
 do a task already forms the verdicts an older prompt would have asked it to return, and acts
 on them. Asking for "a list of YES/NO verdicts" throws away the half of the job that matters.
 
+**Never dispatch the next unit of a task.** Not the next chapter, issue, file, or item. A chat
+that just finished one knows what it finished, and the repository it is working in says what
+comes after. Handing it one unit at a time makes it stop after each one and wait, so it idles
+most of every window, and every tick is spent recomputing something the chat could read for
+itself. If a repository does not say how to pick the next unit and carry on without being asked,
+that is a missing paragraph in that repository's `AGENTS.md` or task list — write it there. Chats
+are ephemeral and a new one starts with none of what you told the last; only the repository
+survives.
+
 **Keep it to one or two paragraphs.** The task, plus any external context it cannot already
 see: a path, an issue number, a decision taken elsewhere. Nothing else.
 
