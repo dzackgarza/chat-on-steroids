@@ -581,7 +581,7 @@ _send $chat $text:
             # yet is indistinguishable from one already finished, and every send reports failure.
             # The app gives up on a command after 90s, so no receipt by then means it never sent.
             state="{{state_dir}}/bridge-commands.json"
-            for _ in $(seq 1 120); do
+            for _ in $(seq 1 180); do
                 landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null || true)
                 if [[ -n "$landed" ]]; then
                     echo "typed into $landed"
