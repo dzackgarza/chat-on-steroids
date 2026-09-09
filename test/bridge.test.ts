@@ -4380,4 +4380,167 @@ describe('local send', () => {
     expect(reply.status).toBe(409);
     expect(opened).toEqual([]);
   });
+
+  /**
+   * The typed outcome surface. A caller must never read a queue acceptance — or even the
+   * page's own ACK, which is a click receipt — as delivery. The one success is a fresh
+   * turn_start observed in the recording within the horizon.
+   */
+  it('walks a send through queued → typed → sent_verified, and verifies only on a fresh turn_start', async () => {
+    await pair();
+    const chat = '3d1a2b3c-4d5e-4f6a-8b7c-9d0e1f2a3b4c';
+    const reply = await send({ conversationId: chat, text: 'push: continue the run' });
+    expect(reply.status).toBe(200);
+    expect(reply.body.verifyHorizonMs).toBe(90_000);
+    expect(reply.body.outcome).toContain('/send/outcome?id=');
+    const id = reply.body.command.id as string;
+    const outcome = async () =>
+      (await request('GET', `/send/outcome?id=${id}`, { origin: null, auth: await localToken() })).body;
+
+    // Nothing acknowledged yet: still in flight, never a success.
+    expect(['queued', 'delivering']).toContain((await outcome()).state);
+
+    await waitForOpened(1);
+    await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+    await request('POST', '/commands/ack', { body: { id, status: 'sent', conversationId: chat, client: 'tab-1' } });
+
+    // The ACK alone is a click receipt. The outcome stays 'typed' until the recording moves.
+    const typed = await outcome();
+    expect(typed).toMatchObject({ state: 'typed', conversationId: chat });
+
+    const events = await request('POST', '/events', {
+      body: { conversationId: chat, events: [{ kind: 'turn_start', time: Date.now(), turnId: 'turn-verified' }] }
+    });
+    expect(events.status).toBe(200);
+
+    const verified = await outcome();
+    expect(verified).toMatchObject({ state: 'sent_verified', conversationId: chat });
+    expect(verified.turnStartTs).toBeGreaterThan(0);
+  });
+
+  it('downgrades a typed send to typed_unverified once the horizon passes with no turn_start', async () => {
+    await pair();
+    const chat = '4e2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+    const reply = await send({ conversationId: chat, text: 'push that never lands', verifyHorizonMs: 5_000 });
+    expect(reply.body.verifyHorizonMs).toBe(5_000);
+    const id = reply.body.command.id as string;
+    const auth = await localToken();
+
+    await waitForOpened(1);
+    await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+    await request('POST', '/commands/ack', { body: { id, status: 'sent', conversationId: chat, client: 'tab-1' } });
+
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(6_000);
+      const out = (await request('GET', `/send/outcome?id=${id}`, { origin: null, auth })).body;
+      expect(out.state).toBe('typed_unverified');
+      // Actionable, not a bare failure: the caller is told what to treat this as and what to do.
+      expect(out.message).toContain('NOT delivered');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves an actionable receipt when a send expires undelivered, naming in-flight tool calls when they are the cause', async () => {
+    await pair();
+    const chat = '5f3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e';
+    const auth = await localToken();
+
+    // Fake timers from the start, so the delivery deadline armed at browser-open time is a
+    // controllable timer rather than a real 90-second wait.
+    vi.useFakeTimers();
+    try {
+      const reply = await send({ conversationId: chat, text: 'never redeemed by any page' });
+      const id = reply.body.command.id as string;
+      await vi.waitFor(() => expect(opened.length).toBeGreaterThan(0));
+      // The 90-second command deadline passes with no page ever redeeming: a frozen tab or a
+      // closed browser. The caller polling the outcome must learn the cause, not unknown_command.
+      await vi.advanceTimersByTimeAsync(91_000);
+      const out = (await request('GET', `/send/outcome?id=${id}`, { origin: null, auth })).body;
+      expect(out.state).toBe('expired');
+      expect(out.reason).toContain('did not report back in time');
+      expect(out.message).toContain('Retry');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('answers unknown_command for an id nothing remembers, with the receipts-window explanation', async () => {
+    await pair();
+    const out = (
+      await request('GET', '/send/outcome?id=feedfacecafebeef', { origin: null, auth: await localToken() })
+    ).body;
+    expect(out.state).toBe('unknown_command');
+    expect(out.message).toContain('re-send');
+  });
+
+  it('requires the local credential on the outcome route exactly as on /send', async () => {
+    await pair();
+    const withExtensionToken = await request('GET', '/send/outcome?id=abc', { origin: null, auth: token! });
+    expect(withExtensionToken.status).toBe(401);
+    const withNothing = await request('GET', '/send/outcome?id=abc', { origin: null, auth: null });
+    expect(withNothing.status).toBe(401);
+  });
+
+  /**
+   * The app-typed draft ledger. A background-tab click that silently no-ops leaves the app's
+   * own text as an unsent draft; the page can only clear it safely if the app tells it which
+   * texts are provably the app's own. User writing must never match.
+   */
+  it('hands a redeeming page the earlier app-typed texts for that chat, never the command’s own', async () => {
+    await pair();
+    const chat = '6a4d5e6f-7a8b-4c9d-8e0f-2a3b4c5d6e7f';
+    const first = await send({ conversationId: chat, text: 'wedge me please' });
+    expect(first.status).toBe(200);
+    await waitForOpened(1);
+
+    // One delivery slot: the second command queues behind the first rather than opening a
+    // second tab, so it is redeemed by id instead of via an opened marker URL.
+    const second = await send({ conversationId: chat, text: 'follow-up push' });
+    const id = second.body.command.id as string;
+    const boot = await request('POST', '/commands/redeem', { body: { id, client: 'tab-2', conversationId: chat } });
+    expect(boot.status).toBe(200);
+    // Squeezed of all whitespace: the composer is a rich-text editor and paragraph breaks
+    // vanish under textContent, so this is the only stable comparison form.
+    expect(boot.body.command.staleDrafts).toContain('wedgemeplease');
+    expect(boot.body.command.staleDrafts).not.toContain('follow-uppush');
+  });
+
+  it('publishes the same ledger on the /activity feed the wedged tab is already polling', async () => {
+    await pair();
+    const chat = '7b5e6f7a-8b9c-4d0e-9f1a-3b4c5d6e7f8a';
+    await send({ conversationId: chat, text: 'the wedged text' });
+    await waitForOpened(1);
+    // /activity answers with the ledger only for a conversation the recorder knows is open.
+    await request('POST', '/events', {
+      body: { conversationId: chat, events: [{ kind: 'turn_start', time: Date.now(), turnId: 't-1' }] }
+    });
+    const activity = await request('GET', `/activity?conversationId=${chat}&since=0`);
+    expect(activity.status).toBe(200);
+    expect(activity.body.staleDrafts).toContain('thewedgedtext');
+  });
+
+  it('classifies a page draft refusal as draft_left_in_composer with the preserve-user-work hint', async () => {
+    await pair();
+    const chat = '8c6f7a8b-9c0d-4e1f-8a2b-4c5d6e7f8a9b';
+    const reply = await send({ conversationId: chat, text: 'blocked by a human draft' });
+    const id = reply.body.command.id as string;
+    await waitForOpened(1);
+    await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+    await request('POST', '/commands/ack', {
+      body: {
+        id,
+        status: 'failed',
+        error: 'the composer already holds something the user was writing',
+        conversationId: chat,
+        client: 'tab-1'
+      }
+    });
+    const out = (
+      await request('GET', `/send/outcome?id=${id}`, { origin: null, auth: await localToken() })
+    ).body;
+    expect(out.state).toBe('draft_left_in_composer');
+    expect(out.message).toContain('retry');
+  });
 });
