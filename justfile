@@ -186,8 +186,11 @@ chats:
         when = newest.get("time", 0) if newest else meta["updatedAt"]
 
         # A turn nothing has added to for a while is not generating, whatever the last event
-        # says. ChatGPT streams continuously, so a genuinely live turn is never this quiet.
-        if state == "busy" and time.time() - when / 1000 > 300:
+        # says. A working chat writes prose, runs a command or reports a tool result every few
+        # seconds; ninety seconds of nothing is already unusual and several minutes is not a
+        # slow turn, it is a turn that stopped. Reading those as `busy` is how a wedge sits
+        # unnoticed while every row insists work is happening.
+        if state == "busy" and time.time() - when / 1000 > 90:
             state = "stalled"
 
         rows.append((when, chat, state, describe(newest) if newest else "-"))
