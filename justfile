@@ -134,16 +134,24 @@ chats:
         chat = meta.get("conversationId")
         if not chat:
             continue  # nothing to address a message to
-        # The recorder writes turn_start when ChatGPT begins generating and turn_end when it
-        # stops, so the newest of the two is what "is this chat busy right now" means here.
-        # A tab closed mid-turn never records its turn_end, so an old "busy" row is a chat
-        # nobody is watching rather than one still generating. Read the clock column too.
+        # The recorder writes turn_start when ChatGPT begins generating. Three things end that
+        # turn: turn_end when it finishes, and chat_error or a wedged/closed tab when it does
+        # not. Only the first is a clean ending, and a turn that died the other two ways still
+        # has turn_start as its newest turn event — so reading those alone reports a dead chat
+        # as busy forever, which is exactly the row nobody should be waiting on.
         state = "idle"
         for line in reversed((meta_file.parent / "events.jsonl").read_text().splitlines()):
             kind = json.loads(line).get("kind") if line.strip() else None
+            if kind == "chat_error":
+                state = "wedged"
+                break
             if kind in ("turn_start", "turn_end"):
                 state = "busy" if kind == "turn_start" else "idle"
                 break
+        # A turn nothing has added to for a while is not generating, whatever the last event
+        # says. ChatGPT streams continuously, so a genuinely live turn is never this quiet.
+        if state == "busy" and time.time() - meta["updatedAt"] / 1000 > 300:
+            state = "stalled"
         rows.append((meta["updatedAt"], chat, state, meta["title"]))
 
     for updated, chat, state, title in sorted(rows, reverse=True):
@@ -171,12 +179,27 @@ _send $chat $text:
         # /hello is unauthenticated and names the app, so it is how a local caller finds
         # which of the five candidate ports this app actually bound.
         if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
-            curl -fsS -m 10 "http://127.0.0.1:$port/send" \
+            id=$(curl -fsS -m 10 "http://127.0.0.1:$port/send" \
                 -H "authorization: Bearer $token" \
                 -H 'content-type: application/json' \
-                --data-binary "$body" \
-                | jq -r '.command | "sent to \(.conversationId // "a fresh chat")"'
-            exit 0
+                --data-binary "$body" | jq -r '.command.id')
+
+            # Accepting the message only queues it. The browser still has to open the chat,
+            # find a composer it may type into, and send — and it fails outright if that chat
+            # is mid-turn. Reporting "sent" at the queue is how a caller ends up believing a
+            # message landed when nothing was typed, so wait for the real outcome instead.
+            state="{{state_dir}}/bridge-commands.json"
+            for _ in $(seq 1 120); do
+                jq -e --arg id "$id" 'any(.commands[]?; .id == $id)' "$state" >/dev/null 2>&1 || break
+                sleep 1
+            done
+            landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null)
+            if [[ -n "$landed" ]]; then
+                echo "typed into $landed"
+                exit 0
+            fi
+            echo "queued but never typed: the browser did not send it (chat mid-turn, or no tab)" >&2
+            exit 1
         fi
     done
     echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
