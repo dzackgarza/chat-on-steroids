@@ -334,6 +334,30 @@ const settle = async (rounds = 40): Promise<void> => {
   for (let round = 0; round < rounds; round++) await Promise.resolve();
 };
 
+/**
+ * Yields real host event-loop rounds until `ready()` holds, without touching the page's own
+ * (possibly deliberately frozen) timers.
+ *
+ * The hidden-tab cases freeze `window.setTimeout` and then wait for content.js to request a
+ * Fiber scan. jsdom delivers MutationObserver callbacks at the microtask checkpoint, but the
+ * scan request itself crosses jsdom's `postMessage`, which schedules delivery on a real Node
+ * timer of its own. A single fixed 10 ms wait armed *before* that delivery timer exists is a
+ * race: Node runs expired timers in expiry order, so whenever the synchronous
+ * mutation -> observe -> askFiber chain takes more than 10 ms of wall clock, the test's own
+ * timer expires first and the assertions run before the ask can ever be delivered — the
+ * intermittent `expected 0 to be greater than 0` recorded in COMPLAINTS.md. Re-arming a fresh
+ * short timer each round removes the race, because a delivery timer created during an earlier
+ * round always expires before the next round resumes the test. The deadline keeps a real
+ * regression honest: a content script that never asks still fails the caller's assertion,
+ * just without a timer race deciding when the question is asked.
+ */
+const hostRoundsUntil = async (ready: () => boolean, deadlineMs = 2_000): Promise<void> => {
+  const deadline = globalThis.Date.now() + deadlineMs;
+  do {
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+  } while (!ready() && globalThis.Date.now() < deadline);
+};
+
 let live: Harness | null = null;
 
 afterEach(() => {
@@ -10684,10 +10708,7 @@ describe('the goal loop', () => {
     try {
       stopGenerating(live.document);
       prose(live.document, section, 'a-hidden-final', 'The audit is still unfinished.');
-      // jsdom delivers MutationObserver callbacks at the host event-loop checkpoint; the
-      // browser-side timer is intentionally frozen above, so use Node's real timer only to let
-      // that checkpoint happen without accidentally unthrottling the content script.
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+      await hostRoundsUntil(() => scans > 0);
       await settle(1200);
     } finally {
       live.window.removeEventListener('message', onAsk);
@@ -10767,7 +10788,7 @@ describe('the goal loop', () => {
     live.window.addEventListener('message', onAsk);
     try {
       stopGenerating(live.document);
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+      await hostRoundsUntil(() => scans > 0);
       await settle(1200);
     } finally {
       live.window.removeEventListener('message', onAsk);
