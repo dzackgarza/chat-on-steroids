@@ -810,6 +810,54 @@ describe('extension command delivery', () => {
     expect(opened.some((url) => url.includes(ancient))).toBe(false);
   });
 
+  /**
+   * The TTL above measures a marker's age from the stamp it carries, and re-queuing rewrote that
+   * stamp. Tabs restate their revival preference every couple of seconds, so the age never grew,
+   * no marker ever expired, and each one reopened its conversation for the life of the profile.
+   */
+  it('ages a revival marker from when it was first queued, not from the last restatement', async () => {
+    const chat = 'cccccccc-1111-2222-3333-444444444444';
+    // Inside the TTL, so recovery keeps it; the point is that restating the preference must not
+    // push the stamp forward and hold it there forever.
+    const queuedAt = Date.now() - 20 * 60 * 1000;
+    const local = new FakeStorageArea({
+      deferredRevivals: [{ id: 'cmd-old', conversationId: chat, queuedAt }]
+    });
+    const worker = loadWorker({
+      local,
+      session: new FakeStorageArea(),
+      tabsQuery: async () => [{ id: 7, windowId: 1, url: `https://chatgpt.com/c/${chat}` }]
+    });
+    await worker.registerTab(7);
+
+    await worker.send({ type: 'defer_revival', id: 'cmd-old', conversationId: chat }, 7);
+
+    const stored = (local.data.deferredRevivals ?? []) as { id: string; queuedAt: number }[];
+    expect(stored.find((entry) => entry.id === 'cmd-old')?.queuedAt).toBe(queuedAt);
+  });
+
+  /**
+   * Closing a conversation's tab retires its wake. Clearing only the preference left the marker,
+   * so recovery reopened the conversation on the next service-worker start and closing a tab
+   * never stuck.
+   */
+  it('retires a conversation revival marker when its last tab closes', async () => {
+    const chat = 'dddddddd-1111-2222-3333-444444444444';
+    const local = new FakeStorageArea({
+      deferredRevivals: [{ id: 'cmd-closing', conversationId: chat, queuedAt: Date.now() }]
+    });
+    const worker = loadWorker({
+      local,
+      // tabConversations is session state, not local.
+      session: new FakeStorageArea({ tabConversations: { '7': chat } }),
+      tabsQuery: async () => []
+    });
+
+    await worker.closeTab(7);
+
+    expect(local.data.deferredRevivals ?? []).toEqual([]);
+  });
+
   it('reloads a tab that holds the chat but never acts on its command', async () => {
     const chat = '5c5c5c5c-1111-2222-3333-444444444444';
     const worker = loadWorker({
