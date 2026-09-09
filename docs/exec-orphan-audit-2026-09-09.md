@@ -21,5 +21,17 @@ Two distinct defects:
    app is the only place a guard can live (e.g., the reaper above; the pattern is
    detectable: a poll loop whose watched pid set includes itself or its own shell).
 
-Fix owner: this repo. Status: open — queued behind the in-flight attribution
-adaptation work to avoid concurrent edits; pick this up when that lands.
+Fix owner: this repo. Status: **fixed, pending restart** — implemented in
+`84c1b72e9578a24cc600ae67a12aa07e946f7844` (reaper, spawn marker, startup sweep,
+tests). Every unified exec spawn now carries a `CLF_EXEC_SPAWN` ownership marker
+inherited by all descendants; a periodic sweep (default 10 min cadence and 10 min
+orphan lifetime, `COS_EXEC_REAP_INTERVAL_MS` / `COS_EXEC_ORPHAN_LIFETIME_MS`)
+kills the process tree of every session whose owning tool call ended beyond the
+lifetime — which subsumes the self-matching poll loops in defect 2 — plus, on
+Linux, marked descendants that outlived their session; and a startup sweep reaps
+a previous run's leftovers deliberately, with every kill logged at warn level
+with pid, age, and command line. Deliberately persistent sessions are declarable
+(`UnifiedExecProcessManager.declareSessionPersistent`), not inferred; a
+model-facing declaration surface still needs wiring in `mcp/tools-core.ts` once
+the attribution work there lands. The code activates at the next daemon restart;
+the live daemon predates it and still has no reaper until then.
