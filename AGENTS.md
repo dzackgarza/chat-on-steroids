@@ -1010,6 +1010,13 @@ Three things break every chat at once and none of them is the chat:
 A steward keeps a handful of chats working across a whole day. Everything below was learned the
 expensive way in one such run, and none of it is guessable from the code.
 
+**Always keep current managed workstreams listed here.** Keep this list up-to-date with at most 1–2 lines of status per repository. Update the list only when major management changes occur (for example: adding primes for parallel work on a repository, or dropping repositories entirely):
+
+- **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): Sweep II corpus mapping across sources (FC08, FC10, FC11).
+- **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): Quality audit and card-by-card solution remediation on problem collections.
+- **`research`** (`/home/dzack/research`): Preamble construction workstreams: C (category foundations) and A0 (categorical group actions).
+
+
 **Count tabs from the browser, never from `just tabs`.** Both `tabs` and `tidy` match only URLs
 containing `/c/<id>`. A tab sitting on bare `chatgpt.com` is invisible to them: it is never
 counted and never closed. A run once reported "14 tabs → 4" every twenty minutes while the
