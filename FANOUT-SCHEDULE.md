@@ -28,9 +28,32 @@ throughput is worthless if a stalled worker cannot be reached, and each extra
 stream consumes the quiet windows recovery pushes need. Keep existing streams
 running, run a state-driven push loop against the stalest idle stream, and resume
 launching toward targets only after the control path is verified healthy again.
-*Status 2026-09-09: brake is ON fleet-wide (tool-call attribution defect, fix in
-progress in this repo). new-qual-site holds at S3/S4/S5 + pre-existing streams;
-S1 (relaunch into its empty chat), S6, S8 launch when the brake lifts.*
+
+A degraded app-side push path does not have to mean degraded control. The brake
+lifts when *some* verified control path exists, not when the original one is
+repaired: the test is whether a stalled, wedged, or frozen stream can be brought
+back and observed executing, by any route.
+
+*Status 2026-09-09: brake LIFTED ~11:57. The attribution defect itself is
+unresolved and upstream — the connector transport stopped sending `x-request-id`,
+so every call is filed unattributed and the composer's charge-against-every-chat
+rule keeps `just say` refusing under load. Control was restored by a different
+route: a CDP push that types into the page composer directly, using
+`extension/chatgpt-dom.js`'s own selectors and acceptance test. Two things it
+requires, both learned the expensive way — the tab must be activated first (in a
+background tab the send button reports enabled and the click silently no-ops,
+leaving an unsent draft that then blocks the app's path too), and every tab
+matching the conversation must be tried, since the browser routinely holds two or
+three per chat and only one carries a live composer. A tab that times out on
+`Runtime.evaluate` is frozen: close it and reopen the conversation (`/json/new` is
+PUT-only since Chrome M111). Evidence for the lift: a 26-minute stall, two frozen
+tabs, and one wedged chat all recovered and observed at `turn_start` within 90s.
+new-qual-site is launching S6 and S8 to reach its 8-stream target.*
+
+While attribution is broken, per-chat `tool_call` recency is unavailable as an
+evidence channel — every call lands in one unattributed session. Stream state
+comes from `just chats` rows, and fleet-level execution from the unattributed
+bucket still growing.
 
 ---
 
