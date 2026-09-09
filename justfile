@@ -286,12 +286,24 @@ archive chat:
 
     targets = json.loads(subprocess.run(
         ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
-    # Any ChatGPT tab will do: it is only the execution context that holds the credentials,
-    # and the conversation being archived is named explicitly rather than by what is on screen.
-    ws = next((t["webSocketDebuggerUrl"] for t in targets
-               if t.get("type") == "page" and "chatgpt.com" in (t.get("url") or "")), None)
+    # Any ChatGPT tab will do — it is only the execution context that holds the credentials, and
+    # the conversation is named explicitly rather than taken from what is on screen. But it has
+    # to be a tab that can still run JavaScript: a wedged page accepts the connection and then
+    # answers nothing, which is indistinguishable from a refusal until you probe it.
+    ws = None
+    for target in targets:
+        if target.get("type") != "page" or "chatgpt.com" not in (target.get("url") or ""):
+            continue
+        probe = subprocess.run(
+            ["timeout", "10", "websocat", "-n1", "-B", "16777216", target["webSocketDebuggerUrl"]],
+            input=json.dumps({"id": 1, "method": "Runtime.evaluate",
+                              "params": {"expression": "1+1", "returnByValue": True}}),
+            capture_output=True, text=True).stdout
+        if '"value":2' in probe:
+            ws = target["webSocketDebuggerUrl"]
+            break
     if not ws:
-        raise SystemExit("no ChatGPT tab is open — the account's own session is what archives these")
+        raise SystemExit("no ChatGPT tab that can still run a request — open one and retry")
 
     expr = (
         "(async () => {"
@@ -307,9 +319,20 @@ archive chat:
     )
     payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
                           "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
-    status = json.loads(raw)["result"]["result"].get("value")
-    print("archived {{chat}}" if status == 200 else f"could not archive: status {status}")
+    raw = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws],
+                         input=payload, capture_output=True, text=True).stdout
+    # A page that cannot answer returns nothing at all, and crashing on that reads as a broken
+    # tool rather than as the page being wedged.
+    try:
+        status = json.loads(raw)["result"]["result"].get("value")
+    except Exception:
+        status = None
+    if status == 200:
+        print("archived {{chat}}")
+    elif status is None:
+        raise SystemExit("the tab this ran through did not answer — try again, or open another ChatGPT tab")
+    else:
+        raise SystemExit(f"ChatGPT refused the archive with status {status}")
 
 # Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
 tabs quiet="30":
