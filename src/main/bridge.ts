@@ -171,6 +171,18 @@ const COMMAND_DEADLINE_MS = 90_000;
  * deliberate exception: broker `waking` + run identity, rather than elapsed wall time, cancels it.
  */
 const COMMAND_TTL_MS = 30 * 60_000;
+/**
+ * The ceiling on the exemption above.
+ *
+ * A revival waiting for its own chat to become submit-ready is deliberately exempt from the
+ * acknowledgement deadline, because a worker's chat can legitimately stay busy for a long time
+ * and that must not read as a failed wake. Nothing bounded that exemption, so a revival whose
+ * page never came back stayed queued for good: it survived every restart and was re-opened on
+ * each one, and because a waiting revival also does not hold the delivery slot, a queue holding
+ * several of them opened a tab for every one at once. Two hours is past any real chat being
+ * busy, so beyond it the wake is stale rather than patient.
+ */
+const REVIVAL_WAIT_CEILING_MS = 2 * 60 * 60_000;
 const MAX_COMMANDS = 20;
 /**
  * The longest message a local caller may have typed into a chat.
@@ -3868,7 +3880,8 @@ function tidyCommands(): void {
       retire(command, 'its worker is bound and running');
       continue;
     }
-    if (now - command.createdAt > COMMAND_TTL_MS && !waitingForRevivalReadiness(command)) {
+    const patient = waitingForRevivalReadiness(command) && now - command.createdAt <= REVIVAL_WAIT_CEILING_MS;
+    if (now - command.createdAt > COMMAND_TTL_MS && !patient) {
       drop(command, 'it has been waiting too long to still be what the user expects');
     }
   }
@@ -4165,7 +4178,8 @@ function planCommandRestore(
     const persistedLeased = version !== 1 && raw.phase === 'leased';
     const persistedWaitingRevival =
       spec.type === 'revive' && persistedLeased && (raw.owner === null || raw.owner === undefined);
-    if (now - createdAt > COMMAND_TTL_MS && !persistedWaitingRevival) {
+    const patientRevival = persistedWaitingRevival && now - createdAt <= REVIVAL_WAIT_CEILING_MS;
+    if (now - createdAt > COMMAND_TTL_MS && !patientRevival) {
       if (spec.type === 'revive') expiredRevivals.push({ id: raw.id!, spec });
       continue;
     }

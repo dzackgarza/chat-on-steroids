@@ -1218,6 +1218,60 @@ describe('delivering a bootstrap', () => {
     };
   }
 
+  /**
+   * A revival nobody ever redeemed.
+   *
+   * A waiting revival is deliberately exempt from the acknowledgement deadline, because the
+   * worker's own chat can legitimately stay busy for a long time and that must not read as a
+   * failed wake. Nothing bounded that exemption, so a revival whose page never came back stayed
+   * queued forever — surviving every restart, and being re-opened on each one. Because a waiting
+   * revival also does not block the delivery slot, a queue holding several of them opened a tab
+   * for every one at once. Two hours is past any real chat being busy.
+   */
+  it('drops a revival that has been waiting far past any plausible busy chat', async () => {
+    const workerConversation = '9a9a9a9a-1111-2222-3333-444444444444';
+    await pair();
+    spawn({ workers: [{ task: 'become the never-redeemed revival' }], caller: { conversationId: PRIME_CHAT } });
+    const bootstrap = await redeem();
+    await request('POST', '/commands/ack', {
+      body: { id: bootstrap.id, status: 'sent', conversationId: workerConversation, agent: 'worker-1' }
+    });
+    finishAgent({ conversationId: workerConversation }, 'sleep before the wake nobody answers');
+    wake([{ to: 'worker-1', text: 'this wake is never redeemed by any page' }]);
+    await waitForOpened(2);
+    const revivalId = new URL(opened[1]!).searchParams.get('clf')!;
+
+    // Deliberately no redeem: the app opened a tab and no document ever claimed it, which is the
+    // state that never expired.
+    await flushDurable();
+    await stopBridge();
+    await flushDurable();
+    const durable = await readDurable<any>('bridge-commands');
+    const row = durable.commands.find((entry: any) => entry?.id === revivalId);
+    expect(row).toMatchObject({ phase: 'leased', owner: null });
+    const longAgo = Date.now() - 2 * 60 * 60_000 - 60_000;
+    row.createdAt = longAgo;
+    row.claimedAt = longAgo;
+    await writeDurableNow('bridge-commands', durable);
+
+    resetBridgeForTests();
+    opened.length = 0;
+    setBrowserOpener(async (url) => {
+      opened.push(url);
+    });
+    await restoreCommands();
+
+    expect(pendingCommands()).toEqual([]);
+    expect(opened).toEqual([]);
+
+    resetSwarm();
+    resetBridgeForTests();
+    const restarted = await startBridge();
+    expect(restarted).not.toBeNull();
+    base = `http://127.0.0.1:${restarted}`;
+    opened.length = 0;
+  });
+
   it('does not publish or deliver a bridge start after stop begins', async () => {
     // Model Cmd+Q/settings stop while a fresh bridge is between listen() and startup recovery.
     // An invited worker already exists in broker state, so registering the startup replay
