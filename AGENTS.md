@@ -1174,6 +1174,8 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Do not muddle prompts by dictating methods or synthesizing procedural checklists.** Point the worker directly at the task and instruct it to proceed through the repository's existing TODOs, plans, or guidelines (e.g. `"proceed through the repo todos"`). Never inject procedural micromanagement—such as detailing step-by-step loops to inspect files, execute test suites, or structure commits. The managed chat is a frontier reasoning agent; its repository's own artifacts already establish standards and execution flow. External step lists constrain the model, degrade its autonomous traversal, and lead to premature halting.
 
+**Do not fire a continuation and wait for the next reporting tick.** Pushing `Continue` is an unverified recovery attempt, not confirmed execution. The 20-minute check-in is purely a reporting cadence to the user, not an operational sleep timer. Because live turn gaps run 8.2s median and 26s p90, any inactivity past 90 seconds is a stall. The steward must verify recovery on a tight 30–90s horizon: confirm whether the clock advanced and whether real `tool_call` events resumed. If a push fails to produce active execution or if the tab is wedged, act immediately—probe the browser, kill frozen tabs, and launch a fresh replacement with `just new` and a clean handoff rather than abandoning the workstream to dead time.
+
 
 ### Where a regression belongs
 
