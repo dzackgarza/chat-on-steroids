@@ -46,7 +46,7 @@ import {
   unattributedSession
 } from '../src/main/session/recorder.js';
 import { readEvents } from '../src/main/session/store.js';
-import { execOwner, noteExecOwner, resetExecOwnershipForTests } from '../src/main/codex/ownership.js';
+import { execOwner, forgetExecOwner, noteExecOwner, resetExecOwnershipForTests } from '../src/main/codex/ownership.js';
 import { unifiedExecManager } from '../src/main/codex/manager.js';
 import { locateRipgrep } from '../src/main/ripgrep.js';
 import { IS_WINDOWS, makeTempDir, removeTempDir, writeTree } from './helpers.js';
@@ -2904,7 +2904,8 @@ describe('exec_command and write_stdin', () => {
       'session_id',
       'chars',
       'yield_time_ms',
-      'max_output_tokens'
+      'max_output_tokens',
+      'declare_persistent'
     ]);
     expect(stdin.inputSchema.required).toEqual(['session_id']);
     expect(stdin.inputSchema.additionalProperties).toBe(false);
@@ -2912,6 +2913,11 @@ describe('exec_command and write_stdin', () => {
     expect(stdin.inputSchema.properties.chars.type).toBe('string');
     expect(stdin.inputSchema.properties.yield_time_ms.type).toBe('number');
     expect(stdin.inputSchema.properties.max_output_tokens.type).toBe('number');
+    // The local persistence extension has to say *when* to declare, because the reaper it
+    // protects against acts silently minutes after the model stopped looking.
+    expect(stdin.inputSchema.properties.declare_persistent.type).toBe('boolean');
+    expect(String(stdin.inputSchema.properties.declare_persistent.description)).toMatch(/orphan reaper/i);
+    expect(String(stdin.inputSchema.properties.declare_persistent.description)).toMatch(/declare before backgrounding/i);
     for (const retired of ['cursor', 'close', 'signal', 'env', 'max_lines']) {
       expect(stdin.inputSchema.properties).not.toHaveProperty(retired);
     }
@@ -3061,6 +3067,66 @@ describe('exec_command and write_stdin', () => {
     expect(textOf(second)).toContain('Process exited with code 0');
     // The process buffer is drained per call; previously delivered output is not replayed.
     expect(textOf(second)).not.toContain('first=raw-no-newline');
+  });
+
+  it.skipIf(IS_WINDOWS)('spares a tool-declared persistent session from the idle reap while an undeclared twin dies', async () => {
+    // The documented shape (docs/exec-orphan-audit-2026-09-09.md): a deliberately long-lived
+    // server. Through the real tool surface — exec_command starts twins, write_stdin declares
+    // exactly one — and against the real reaper entry point with a clock far past the bound.
+    await fs.writeFile(
+      path.join(approved, 'persistent-server.cjs'),
+      "setInterval(() => console.log('tick'), 250);\n",
+      'utf8'
+    );
+    const startServer = async (): Promise<number> => {
+      const reply = await core('tools/call', {
+        name: 'exec_command',
+        arguments: { cmd: 'node persistent-server.cjs', workdir: '/workspace', tty: true, yield_time_ms: 25 }
+      });
+      expect(reply.body.result?.isError, textOf(reply)).not.toBe(true);
+      const id = Number(textOf(reply).match(/Process running with session ID (\d+)/)?.[1]);
+      expect(Number.isInteger(id)).toBe(true);
+      return id;
+    };
+    const declaredId = await startServer();
+    const undeclaredId = await startServer();
+    try {
+      const declared = await core('tools/call', {
+        name: 'write_stdin',
+        arguments: { session_id: declaredId, declare_persistent: true, yield_time_ms: 250 }
+      });
+      expect(declared.body.result?.isError, textOf(declared)).not.toBe(true);
+      expect(textOf(declared)).toContain(`session ${declaredId} is declared persistent`);
+
+      const reaped = await unifiedExecManager.reapIdleSessions(60_000, Date.now() + 20 * 60_000);
+      const reapedIds = reaped.map((entry) => entry.processId);
+      expect(reapedIds).toContain(undeclaredId);
+      expect(reapedIds).not.toContain(declaredId);
+      expect(unifiedExecManager.listProcesses().some((entry) => entry.processId === declaredId)).toBe(true);
+      expect(unifiedExecManager.listProcesses().some((entry) => entry.processId === undeclaredId)).toBe(false);
+    } finally {
+      await unifiedExecManager.terminateProcess(declaredId).catch(() => {});
+      await unifiedExecManager.terminateProcess(undeclaredId).catch(() => {});
+    }
+  });
+
+  it('fails loudly when declare_persistent names a session that is not live', async () => {
+    // A session id the caller may address but whose process is gone: the owner row can
+    // outlive the manager entry between calls, which is exactly when a silent declaration
+    // would let the model believe a dead server was protected. (A wholly unknown id is
+    // refused even earlier, by the ownership guard.)
+    noteExecOwner(999_999, null);
+    try {
+      const reply = await core('tools/call', {
+        name: 'write_stdin',
+        arguments: { session_id: 999_999, declare_persistent: true, chars: 'x', yield_time_ms: 250 }
+      });
+      expect(reply.body.result?.isError).toBe(true);
+      expect(textOf(reply)).toContain('no live exec session 999999');
+      expect(textOf(reply)).toContain('nothing was declared and nothing was written');
+    } finally {
+      forgetExecOwner(999_999);
+    }
   });
 
   it('runs in workdir and omits the old connector-specific cwd header', async () => {

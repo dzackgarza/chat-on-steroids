@@ -31,7 +31,7 @@ lifetime — which subsumes the self-matching poll loops in defect 2 — plus, o
 Linux, marked descendants that outlived their session; and a startup sweep reaps
 a previous run's leftovers deliberately, with every kill logged at warn level
 with pid, age, and command line. Deliberately persistent sessions are declarable
-(`UnifiedExecProcessManager.declareSessionPersistent`), not inferred; a
-model-facing declaration surface still needs wiring in `mcp/tools-core.ts` once
-the attribution work there lands. The code activates at the next daemon restart;
-the live daemon predates it and still has no reaper until then.
+(`UnifiedExecProcessManager.declareSessionPersistent`), not inferred; the model
+declares one through `write_stdin`'s `declare_persistent` parameter, which fails
+loudly for a dead or unknown session id. The code activates at the next daemon
+restart; the live daemon predates it and still has no reaper until then.

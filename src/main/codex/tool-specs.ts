@@ -56,6 +56,19 @@ export const WRITE_STDIN_YIELD_TIME_DESCRIPTION =
   'Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait up to 5000-300000 ms by default but return early when the first output arrives.';
 
 /**
+ * Local extension, not a Codex spec. Codex has no orphan reaper, so it has no notion of a
+ * deliberately long-lived session; this app does (see `exec-reaper.ts`), and the reaper's
+ * contract is that persistence is declared, never inferred. The when-to-declare guidance
+ * lives in the model-visible text because the reaper acts silently long after the launch.
+ */
+export const WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION =
+  'True declares this session a deliberately long-lived process (a server, watcher or REPL meant to keep running). ' +
+  'Declare before backgrounding or walking away from any intentionally long-lived process: an undeclared session ' +
+  'with no tool activity is killed by the orphan reaper after its lifetime bound (default 10 minutes). Keep the ' +
+  'process in this session’s foreground — a survivor whose session has ended is reaped regardless of any ' +
+  'declaration. The declaration lasts until the session exits or the daemon restarts.';
+
+/**
  * `APPLY_PATCH_LARK_GRAMMAR` (`core/src/tools/handlers/apply_patch.lark`).
  *
  * On Codex this grammar *is* the schema: `apply_patch` is `ToolSpec::Freeform`, so the model is

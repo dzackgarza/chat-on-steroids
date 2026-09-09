@@ -79,6 +79,7 @@ import {
   EXEC_COMMAND_YIELD_TIME_DESCRIPTION,
   MAX_OUTPUT_TOKENS_DESCRIPTION,
   WRITE_STDIN_CHARS_DESCRIPTION,
+  WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION,
   WRITE_STDIN_DESCRIPTION,
   WRITE_STDIN_SESSION_ID_DESCRIPTION,
   WRITE_STDIN_YIELD_TIME_DESCRIPTION
@@ -838,7 +839,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             session_id: int32Number.describe(WRITE_STDIN_SESSION_ID_DESCRIPTION),
             chars: z.string().optional().describe(WRITE_STDIN_CHARS_DESCRIPTION),
             yield_time_ms: unsignedIntegerNumber.optional().describe(WRITE_STDIN_YIELD_TIME_DESCRIPTION),
-            max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION)
+            max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION),
+            declare_persistent: z.boolean().optional().describe(WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION)
           })
           .strict(),
         outputSchema: unifiedExecOutputSchema
@@ -861,6 +863,19 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               `write_stdin failed: session ${input.session_id} is not proven to belong to this ChatGPT conversation. Start your own with exec_command or retry after the extension reconnects.`
             );
           }
+          // Persistence is declared, never inferred (the reaper's contract; see
+          // exec-reaper.ts). Declared before the write so a call that also observes the
+          // exit still made its declaration while the session was live, and failed loudly
+          // for a dead or unknown id instead of silently "declaring" nothing.
+          if (input.declare_persistent) {
+            if (!unifiedExecManager.declareSessionPersistent(input.session_id)) {
+              return fail(
+                `write_stdin failed: declare_persistent found no live exec session ${input.session_id}. ` +
+                  'Only a running session started by exec_command can be declared persistent; nothing was declared and nothing was written.'
+              );
+            }
+            logInfo(`tool write_stdin declared exec session ${input.session_id} persistent`);
+          }
           try {
             const output = await unifiedExecManager.writeStdin({
               processId: input.session_id,
@@ -878,8 +893,15 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               durationMs: output.wallTimeMs
             });
             logInfo(`tool write_stdin ${input.session_id} (${(input.chars ?? '').length} chars)`);
+            // Said out loud, because the reaper the declaration protects against is
+            // otherwise invisible from the tool surface.
+            const notes = input.declare_persistent
+              ? [
+                  `session ${input.session_id} is declared persistent: the orphan reaper will spare it until it exits or the daemon restarts.`
+                ]
+              : [];
             return {
-              content: [{ type: 'text' as const, text: execCommandResponseText(output) }],
+              content: [{ type: 'text' as const, text: withExecNotes(execCommandResponseText(output), notes) }],
               structuredContent: execCommandStructuredOutput(output)
             };
           } catch (error) {
