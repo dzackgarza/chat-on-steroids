@@ -1233,6 +1233,34 @@ does the steward act on the live worker — and then only by routing it into tho
 The orchestrator's lever is routing agents into each repository's own documentation;
 policy that lives only in orchestrator messages does not exist.
 
+### The fan-out schedule — `FANOUT-SCHEDULE.md`
+
+[`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) at this repo's root is the canonical
+parallelization plan for the managed fleet: per-repository target stream counts, the
+claim partitions that make streams collision-free, the preconditions that must hold
+before fanning out, and the **unlock triggers** — DAG events (a node accepting, a
+sweep closing, the rack migration landing) that change how wide a repository can go.
+It operationalizes the "Track task DAGs and saturate parallel workflows" directive:
+saturation targets live there, not in steward judgment calls.
+
+How stewards use it:
+
+- **Spawn to the schedule.** When a repository is below its target stream count and
+  its preconditions are met, launch workers to match — one worker per partition slot,
+  each pointed (per the fresh-agent directive) at the repo's own docs and its assigned
+  claim scope. Never exceed a repo's stated cap: every width number is bound by a
+  named constraint, and exceeding it recreates a documented failure mode.
+- **Watch triggers in the hourly sweep.** The failure-mode sweep already reads each
+  repo's plan surfaces; while there, check the schedule's unlock triggers. When one
+  fires, adjust stream counts per the schedule's post-unlock section and dispatch a
+  subagent to update `FANOUT-SCHEDULE.md` to the new state.
+- **Keep it current.** The schedule is a living document owned by the steward, on
+  `main` like everything here. When measured velocity, a re-planned DAG, or a fired
+  trigger invalidates a section, update the schedule in the same turn the change is
+  observed — a stale saturation target misroutes every subsequent spawn. Per-repo
+  claim protocols stay in each repository's own docs; this file holds only the
+  fleet-level plan and routes to them.
+
 
 ### Where a regression belongs
 
