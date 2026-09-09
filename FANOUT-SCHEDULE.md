@@ -15,7 +15,10 @@ or machine RAM), and exceeding it recreates a documented failure mode.
 
 Universal rules, inherited from AGENTS.md and each repo's own docs: one front per
 worker, closed to acceptance; claims before authoring; workers read their repo's
-AGENTS/CONTRIBUTING, not steward prompts, for policy.
+AGENTS/CONTRIBUTING, not steward prompts, for policy. When fanning out, **stagger
+the initial launch requests by at least 10 seconds each** — a simultaneous burst of
+new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
+hours-long streams.
 
 ---
 

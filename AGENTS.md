@@ -1249,7 +1249,12 @@ How stewards use it:
   its preconditions are met, launch workers to match — one worker per partition slot,
   each pointed (per the fresh-agent directive) at the repo's own docs and its assigned
   claim scope. Never exceed a repo's stated cap: every width number is bound by a
-  named constraint, and exceeding it recreates a documented failure mode.
+  named constraint, and exceeding it recreates a documented failure mode. **Space the
+  initial launch requests at least 10 seconds apart** — firing a fan-out as a
+  simultaneous burst trips rate limiting; the stagger is invisible against
+  hours-long streams. (This spacing is for the kickoff burst only — it does not
+  license delaying continuations or replacements, which remain immediate per the
+  no-phantom-constraints directive.)
 - **Watch triggers in the hourly sweep.** The failure-mode sweep already reads each
   repo's plan surfaces; while there, check the schedule's unlock triggers. When one
   fires, adjust stream counts per the schedule's post-unlock section and dispatch a
