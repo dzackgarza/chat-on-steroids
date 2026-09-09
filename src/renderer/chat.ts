@@ -436,6 +436,30 @@ function textBlock(className: string, value: string, truncated: boolean, chars: 
   return node;
 }
 
+/** Builds one recorded message with a small, named action for its stored text. */
+function messageBox(className: string, label: string, text: string, content: HTMLElement): HTMLElement {
+  const box = el('div', className);
+  const head = el('div', 'said-head');
+  const copy = messageCopyButton(text, label);
+  head.append(el('b', '', label), copy);
+  box.append(head, content);
+  return box;
+}
+
+function messageCopyButton(text: string, label: string): HTMLButtonElement {
+  const button = el('button', 'btn btn-quiet message-copy') as HTMLButtonElement;
+  button.type = 'button';
+  button.title = `Copy ${label} message`;
+  button.setAttribute('aria-label', `Copy ${label} message`);
+  button.append(icon('i-copy'), document.createTextNode('Copy'));
+  button.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const copied = await run(api.writeClipboard(text));
+    if (copied) toast(`${label} message copied`);
+  });
+  return button;
+}
+
 const RENDERED_TAGS = new Set([
   'A', 'BLOCKQUOTE', 'BR', 'CODE', 'DEL', 'DIV', 'EM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
   'HR', 'KBD', 'LI', 'MARK', 'OL', 'P', 'PRE', 'S', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TABLE',
@@ -583,16 +607,21 @@ function eventBody(event: SessionEvent): HTMLElement {
     case 'session_start':
       return el('p', 'meta', `Session started — ${event.title}`);
     case 'user_message': {
-      const box = el('div', 'said is-user');
-      box.append(el('b', '', 'You'));
-      box.append(textBlock('msg', event.message.text, event.message.truncated, event.message.chars));
-      return box;
+      return messageBox(
+        'said is-user',
+        'You',
+        event.message.text,
+        textBlock('msg', event.message.text, event.message.truncated, event.message.chars)
+      );
     }
     case 'assistant_message': {
-      const box = el('div', 'said');
-      box.append(el('b', '', event.final ? 'ChatGPT' : 'ChatGPT (partial)'));
-      box.append(renderedMessage(event.renderedHtml?.text ?? '', event.message.text));
-      return box;
+      const label = event.final ? 'ChatGPT' : 'ChatGPT (partial)';
+      return messageBox(
+        'said',
+        label,
+        event.message.text,
+        renderedMessage(event.renderedHtml?.text ?? '', event.message.text)
+      );
     }
     case 'progress':
       return el('p', 'meta is-progress', event.message.text);
@@ -625,15 +654,19 @@ function eventBody(event: SessionEvent): HTMLElement {
      * broken log — the one impression a session recorder cannot afford to give.
      */
     case 'agent_message': {
-      const box = el('div', 'said');
       // Which end of the message this record is. The same message is written once here and
       // once in the other agent's session, so without this a pair reads as two messages.
+      const label = `${event.from} → ${event.to}`;
+      const box = messageBox(
+        'said',
+        label,
+        event.message.text,
+        textBlock('msg', event.message.text, event.message.truncated, event.message.chars)
+      );
       box.title =
         event.delivery === 'sent'
           ? `Sent by ${event.from}; recorded when the app accepted it`
           : `Received by ${event.to}; recorded when it acknowledged delivery`;
-      box.append(el('b', '', `${event.from} → ${event.to}`));
-      box.append(textBlock('msg', event.message.text, event.message.truncated, event.message.chars));
       return box;
     }
     case 'handoff':

@@ -331,6 +331,16 @@ describe('the settings sheet', () => {
 });
 
 describe('the session timeline', () => {
+  it('gives each conversational message a clipboard action', () => {
+    const body = chatSource.slice(chatSource.indexOf('function eventBody'));
+    expect(chatSource).toMatch(/function messageBox\([\s\S]*api\.writeClipboard\(text\)/);
+    expect(chatSource).toMatch(/message-copy[\s\S]*aria-label/);
+    for (const kind of ['user_message', 'assistant_message', 'agent_message']) {
+      const branch = body.slice(body.indexOf(`case '${kind}'`), body.indexOf('\n    case ', body.indexOf(`case '${kind}'`) + 10));
+      expect(branch, `${kind} has no copy action`).toContain('messageBox(');
+    }
+  });
+
   it('renders every event kind the recorder can write', async () => {
     const [shared, chat] = await Promise.all([
       fs.readFile(path.join(process.cwd(), 'src', 'shared', 'session.ts'), 'utf8'),
