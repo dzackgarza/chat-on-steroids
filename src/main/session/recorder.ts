@@ -92,6 +92,65 @@ interface LiveConversation {
   knownTurnEnds: Set<string>;
   /** Visible ChatGPT-native activity rows, updated by the page's stable row identity. */
   pageTools: Map<string, ProgressRecord>;
+  /**
+   * When this conversation's page last proved it still has a live observer — any
+   * observation batch or /activity poll. A live content script polls at worst about once
+   * a minute even from a throttled background tab, so a mid-turn conversation whose
+   * observer has been silent for several minutes has *lost* its observer (tab discarded,
+   * page frozen, isolated world orphaned) and its open turn is a stale claim, not
+   * evidence. See closeStaleObserverTurns().
+   */
+  lastContactAt: number;
+  /**
+   * When this conversation's open turn was closed by the app with `observer_lost`, or
+   * null. While set (and inside OBSERVER_LOST_UNCERTAINTY_MS) the conversation is
+   * *possibly still generating*: the closure was never observed on the page, so ChatGPT's
+   * server turn may be running with nobody watching. soleGeneratingConversation() fails
+   * closed on that ambiguity — an unobserved closure must never manufacture a temporally
+   * unique moment for some other chat. Cleared by fresh page lifecycle evidence.
+   */
+  observerLostAt: number | null;
+}
+
+/**
+ * How long a mid-turn conversation may go without any page contact before its open turn
+ * is closed as `observer_lost`. A live recorder in the most throttled background tab
+ * still reaches the app about once a minute (`HIDDEN_ACTIVITY_MS` doubled by Chrome's
+ * intensive timer throttling), so five minutes of silence is several missed cycles —
+ * an observer that is gone, not slow. Generous enough that a laptop suspend/resume
+ * blip does not close a genuinely watched turn.
+ */
+const OBSERVER_SILENCE_MS = 5 * 60_000;
+
+/**
+ * How long after an unobserved closure (`observer_lost`, or a tab that detached while
+ * generating) the conversation is still treated as possibly generating for temporal
+ * uniqueness. The server-side turn nobody was watching can keep running; the longest
+ * such turn measured live ran about fifteen minutes. Past this ceiling the claim
+ * "that old turn is still running" stops being plausible and unique-moment learning
+ * resumes. This bounds how long one lost tab can suppress fleet-wide key binding; it
+ * never attributes anything by itself.
+ */
+const OBSERVER_LOST_UNCERTAINTY_MS = 15 * 60_000;
+
+/**
+ * Conversations whose page detached (tab closed / navigated away) while a turn was open,
+ * by detach time. closeConversation() deletes the live map entry, so this is the only
+ * memory that such a conversation may still be generating server-side — consulted by
+ * soleGeneratingConversation() with the same uncertainty ceiling. Bounded and pruned.
+ */
+const detachedWhileGenerating = new Map<string, number>();
+const MAX_DETACHED_GENERATING = 200;
+
+function pruneDetachedGenerating(now: number): void {
+  for (const [conversationId, at] of detachedWhileGenerating) {
+    if (now - at >= OBSERVER_LOST_UNCERTAINTY_MS) detachedWhileGenerating.delete(conversationId);
+  }
+  while (detachedWhileGenerating.size > MAX_DETACHED_GENERATING) {
+    const oldest = detachedWhileGenerating.keys().next();
+    if (oldest.done) break;
+    detachedWhileGenerating.delete(oldest.value);
+  }
 }
 
 interface ProgressRecord {
@@ -330,7 +389,13 @@ async function initializeSessionForConversation(
     openTurns: history.openTurns,
     knownTurnStarts: history.knownTurnStarts,
     knownTurnEnds: history.knownTurnEnds,
-    pageTools: history.pageTools
+    pageTools: history.pageTools,
+    // Being restored is itself contact: something (an observation, an /activity poll) is
+    // touching this conversation right now. The observer-silence clock starts here, so a
+    // restored-but-never-revisited open turn from hours ago still closes after the normal
+    // silence window rather than instantly on pickup.
+    lastContactAt: Date.now(),
+    observerLostAt: null
   });
   if (!known) {
     await appendEvent(summary.id, {
@@ -595,10 +660,28 @@ export function liveConversations(): Array<{
   }));
 }
 
-/** The one managed conversation currently mid-generation, or null for zero or several. */
+/**
+ * The one managed conversation currently mid-generation, or null for zero or several.
+ *
+ * "Exactly one" is a claim about the whole managed fleet, so it also fails closed on
+ * *unknowns*: a conversation whose open turn was closed `observer_lost`, or whose tab
+ * detached mid-turn, may still be generating server-side with nobody watching. While any
+ * such conversation is inside its uncertainty ceiling, no moment is provably unique and
+ * nothing may be learned from it. An unobserved closure therefore never counts as a
+ * unique-moment boundary; callers that want to override that must not use this function.
+ */
 export function soleGeneratingConversation(): string | null {
+  const now = Date.now();
+  pruneDetachedGenerating(now);
+  if (detachedWhileGenerating.size > 0) return null;
   let sole: string | null = null;
   for (const entry of conversations.values()) {
+    if (entry.observerLostAt !== null) {
+      if (now - entry.observerLostAt < OBSERVER_LOST_UNCERTAINTY_MS) return null;
+      // Past the ceiling the stale claim expires on its own; clear it so one lost tab
+      // cannot suppress unique-moment learning forever.
+      entry.observerLostAt = null;
+    }
     if (entry.turnStartedAt === null) continue;
     if (sole !== null) return null;
     sole = entry.conversationId;
@@ -1556,6 +1639,9 @@ async function recordChatObservationsNow(
   );
   if (!sessionId) return { sessionId: null, stored: 0 };
   const live = conversations.get(conversationId);
+  // Any observation batch is proof the page observer exists; the staleness invariant in
+  // closeStaleObserverTurns() is measured against this heartbeat.
+  if (live) live.lastContactAt = Date.now();
   let stored = 0;
   // A cold/reloaded page can discover that a turn finished while the content script was
   // absent. There is then a new final assistant message but no live `generating -> false`
@@ -1646,7 +1732,12 @@ async function recordChatObservationsNow(
               live.turnId = null;
             }
           }
-          if (live) live.knownTurnEnds.add(item.turnId);
+          if (live) {
+            live.knownTurnEnds.add(item.turnId);
+            // Recovered observed evidence — same supersede rule as an explicit turn_end.
+            live.observerLostAt = null;
+          }
+          detachedWhileGenerating.delete(conversationId);
           stored++;
         }
         break;
@@ -1685,7 +1776,11 @@ async function recordChatObservationsNow(
           live.turnStartedAt = item.time;
           live.turnId = item.turnId;
           live.openTurns.add(item.turnId);
+          // The page is observably generating again: fresh first-hand lifecycle evidence
+          // ends any observer-lost uncertainty for this conversation.
+          live.observerLostAt = null;
         }
+        detachedWhileGenerating.delete(conversationId);
         break;
       // Also not stored, and for the same reason: this is the page describing which calls
       // it made, which is a fact about attribution rather than something that happened in
@@ -1700,6 +1795,13 @@ async function recordChatObservationsNow(
         // turn happened to be live. Ignore it. A stale named end is still useful history for
         // the turn it names, but it must not tear down a newer active generation.
         if (!item.turnId) continue;
+        // Before the dedupe guard on purpose: even when the durable record already holds
+        // this exact end — an at-least-once replay, or a boundary the app closed as
+        // observer_lost first — the page *observed* this turn end, and that is the
+        // first-hand evidence that resolves any observer-lost / detached-mid-turn
+        // uncertainty. Dedupe is about not double-writing, never about disbelief.
+        detachedWhileGenerating.delete(conversationId);
+        if (live) live.observerLostAt = null;
         if (live?.knownTurnEnds.has(item.turnId)) continue;
         await appendEvent(sessionId, {
           ...base,
@@ -1838,13 +1940,94 @@ export async function closeConversation(conversationId: string): Promise<void> {
       source: 'extension',
       kind: 'turn_end',
       ...(live.turnId ? { turnId: live.turnId } : {}),
-      outcome: 'unknown',
+      outcome: 'observer_lost',
       detail: 'the ChatGPT page detached while generating; outcome may be recovered when the chat reopens'
     }).catch(() => undefined);
+    // The page is gone but ChatGPT's server turn may not be. Until the uncertainty
+    // ceiling passes (or the chat reopens with fresh lifecycle evidence), no other
+    // conversation can be certified as the *only* one generating.
+    detachedWhileGenerating.set(conversationId, Date.now());
+    pruneDetachedGenerating(Date.now());
   }
   conversations.delete(conversationId);
   await endSession(live.sessionId).catch(() => undefined);
   notifyChanged();
+}
+
+/**
+ * Marks first-hand contact from a conversation's page — an /activity poll or an
+ * observation batch. This is the heartbeat the observer-staleness invariant is measured
+ * against; it says the observer exists, deliberately *not* anything about whether
+ * ChatGPT is generating (only lifecycle evidence says that).
+ */
+export function noteConversationContact(conversationId: string): void {
+  const live = conversations.get(conversationId);
+  if (live) live.lastContactAt = Date.now();
+}
+
+/**
+ * The staleness invariant for open turns: an open turn is only evidence while somebody
+ * is actually watching the page.
+ *
+ * The turn lifecycle is built from content-script observation, and a content script can
+ * stop existing without any close signal at all — a discarded/frozen background tab, an
+ * orphaned isolated world, a killed browser. `chrome.tabs.onRemoved` never fires for any
+ * of those, so nothing posts /closed and the turn stays open forever. One live session
+ * showed a turn held open fifteen minutes this way, and every such stale claim both
+ * blocks temporally-unique attribution moments fleet-wide and can *falsely create* one
+ * (the stale chat looks like the only generator when a call arrives).
+ *
+ * A live recorder polls /activity at worst about once a minute from the deepest
+ * throttled background tab, so several minutes of total silence proves observer loss,
+ * not a slow page. The closure is honest: outcome `observer_lost`, which the
+ * attribution layer treats as "possibly still generating" rather than "stopped"
+ * (see soleGeneratingConversation), and which deliberately does not enter
+ * `knownTurnEnds` — if the page comes back and reports the real boundary (or a final
+ * assistant message), that observed evidence still lands and supersedes this closure
+ * in the record.
+ *
+ * Never fabricates a boundary the attribution or quiescence layers could trust: an
+ * `observer_lost` end is not `completed`, is not a unique-moment edge, and keeps the
+ * turn recoverable through `openTurns`.
+ */
+export async function closeStaleObserverTurns(now = Date.now()): Promise<number> {
+  let closed = 0;
+  for (const live of conversations.values()) {
+    if (live.turnStartedAt === null) continue;
+    if (now - live.lastContactAt < OBSERVER_SILENCE_MS) continue;
+    const turnId = live.turnId;
+    try {
+      await appendEvent(live.sessionId, {
+        time: now,
+        source: 'app',
+        kind: 'turn_end',
+        ...(turnId ? { turnId } : {}),
+        outcome: 'observer_lost',
+        detail:
+          'no page observer has reported for this conversation in over five minutes while this turn was open; ' +
+          'closed by the app — whether ChatGPT actually finished is unknown'
+      });
+    } catch (err) {
+      logWarn(`stale observer turn for ${live.conversationId} could not be closed: ${(err as Error).message}`);
+      continue;
+    }
+    // Projection follows the durable append, as everywhere else. The turn id stays in
+    // `openTurns` and out of `knownTurnEnds` on purpose: a returning page's real
+    // turn_end or recovered final assistant message may still close it with observed
+    // evidence. (Across an app restart the durable observer_lost end wins instead —
+    // storedHistory() rebuilds from the journal — which loses only the supersede nicety,
+    // never correctness.)
+    live.turnStartedAt = null;
+    live.turnId = null;
+    live.observerLostAt = now;
+    logInfo(
+      `session ${live.sessionId}: open turn ${turnId ?? '(unnamed)'} closed as observer_lost — ` +
+        'its page observer went silent mid-turn'
+    );
+    closed += 1;
+  }
+  if (closed > 0) notifyChanged();
+  return closed;
 }
 
 /**
@@ -1875,7 +2058,9 @@ export function rebindConversation(sessionId: string, fromConversationId: string
     openTurns: new Set<string>(),
     knownTurnStarts: new Set<string>(),
     knownTurnEnds: new Set<string>(),
-    pageTools: new Map()
+    pageTools: new Map(),
+    lastContactAt: Date.now(),
+    observerLostAt: null
   });
   lastActiveSessionId = sessionId;
   notifyChanged();
@@ -1919,6 +2104,7 @@ export function estimate(text: string): number {
 export function resetRecorderForTests(): void {
   resetCorrelationRegistryForTests();
   conversations.clear();
+  detachedWhileGenerating.clear();
   observationChains.clear();
   sessionInitializations.clear();
   pendingOrigins.clear();

@@ -550,6 +550,28 @@ describe('observations', () => {
     expect(end.kind === 'turn_end' && end.outcome).toBe('unknown');
   });
 
+  it('refuses observer_lost from the page — an observer cannot report its own absence', async () => {
+    await pair();
+    const conversationId = '6a805197-b090-83eb-bbd8-a32b482941db';
+    const reply = await request('POST', '/events', {
+      body: {
+        conversationId,
+        events: [
+          { kind: 'turn_start', time: Date.now(), turnId: 'turn-claimed-lost' },
+          // Only the app may append this outcome (recorder.ts closeStaleObserverTurns);
+          // the attribution layer treats it specially, so a page claiming it would be
+          // fabricating an unobserved closure. It degrades to `unknown` like any other
+          // invented outcome.
+          { kind: 'turn_end', time: Date.now(), turnId: 'turn-claimed-lost', outcome: 'observer_lost' }
+        ]
+      }
+    });
+    expect(reply.status).toBe(200);
+    const events = await readEvents(reply.body.sessionId);
+    const end = events.at(-1)!;
+    expect(end.kind === 'turn_end' && end.outcome).toBe('unknown');
+  });
+
   it('replaces an impossible timestamp rather than storing it', async () => {
     await pair();
     const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';

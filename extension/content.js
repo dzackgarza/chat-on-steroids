@@ -433,6 +433,47 @@
   let quietTurn = null;
   let quietOutcome = null;
   /**
+   * The one-shot timer that re-runs observe() when an open settle window is due to close.
+   *
+   * The settle window is measured on the clock, so somebody has to look again once
+   * TURN_SETTLE_MS has passed — and in a background tab neither of the ordinary lookers
+   * can be relied on for that: the page is quiet (a finished turn stops mutating, so the
+   * MutationObserver goes silent) and Chrome's intensive throttling slows the OBSERVE_MS
+   * interval to one tick a minute. The live effect was a `turn_end` arriving up to a
+   * minute after the turn visibly finished, and the app's temporally-unique attribution
+   * moments (recorder.ts) starved on exactly that latency. A fresh one-shot timer armed
+   * from the Stop-removal mutation has timer nesting 0, which intensive throttling leaves
+   * alone, so it fires on schedule even hidden. It only calls observe(); every completion
+   * rule still lives there, and an `unknown` outcome still refuses to close — this never
+   * fabricates a boundary, it only makes sure the already-earned one is noticed on time.
+   */
+  let settleCheckTimer = null;
+  /** When the armed settle check is due, for the test hook; 0 when none is armed. */
+  let settleCheckDueAt = 0;
+
+  function armSettleCheck(delayMs) {
+    if (settleCheckTimer !== null || delayMs <= 0) return;
+    settleCheckDueAt = Date.now() + delayMs;
+    // The harness stubs the periodic loops out and drives observe() itself; an instant
+    // fake timer here would slam every settle window shut the moment it opened. Same
+    // seam, and same reason, as scheduleActivityPull's re-arm.
+    if (TEST_MODE) return;
+    settleCheckTimer = setTimeout(() => {
+      settleCheckTimer = null;
+      settleCheckDueAt = 0;
+      if (!alive || !sameChat()) return;
+      observe();
+    }, delayMs);
+  }
+
+  function cancelSettleCheck() {
+    if (settleCheckTimer !== null) {
+      clearTimeout(settleCheckTimer);
+      settleCheckTimer = null;
+    }
+    settleCheckDueAt = 0;
+  }
+  /**
    * Assistant sections that already had a completed-message action before this generation.
    *
    * Section ownership is deliberately stronger than remembering one HTMLElement. Retry can
@@ -1043,6 +1084,7 @@
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
+    cancelSettleCheck();
     userStopped = false;
     stallReported = false;
     stallRestartAt = 0;
@@ -1191,6 +1233,7 @@
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
+    cancelSettleCheck();
     completionActionBaselineSections = new WeakSet();
     resumedFirstObservation = false;
     turnId = null;
@@ -1587,6 +1630,7 @@
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
+    cancelSettleCheck();
     completionActionBaselineSections = new WeakSet();
     if (ended && endedTurnId) {
       for (const node of ended.nodes || [ended.node]) {
@@ -2021,6 +2065,7 @@
       quietSince = 0;
       quietTurn = null;
       quietOutcome = null;
+      cancelSettleCheck();
     }
 
     if (generating && !nowGenerating) {
@@ -2064,15 +2109,21 @@
       // interrupted outcome for the record, while no longer forcing the user to type another
       // message merely to prove the already-finished turn ended.
       const corroboratedTerminalBoundary = markerOnlyInterrupted && Boolean(fiberQuietTerminal(quietTurn || turn));
-      if (
-        userStopped ||
-        ((result.outcome !== 'unknown' && (!markerOnlyInterrupted || corroboratedTerminalBoundary)) && quietFor >= TURN_SETTLE_MS)
-      ) {
+      const closeable = result.outcome !== 'unknown' && (!markerOnlyInterrupted || corroboratedTerminalBoundary);
+      if (userStopped || (closeable && quietFor >= TURN_SETTLE_MS)) {
         // The turn the end is about is the one that was on screen when it went quiet.
         // Re-reading it here would pick up whatever ChatGPT has rendered since, which during
         // a settle window can be a different section entirely.
         const ended = quietTurn || turn;
         finishGeneration(ended, result);
+      } else if (closeable) {
+        // The close is already earned and only waiting out the settle window. A quiet page
+        // produces no further mutations and a hidden tab's interval is throttled to a tick a
+        // minute, so book the follow-up look explicitly rather than hoping one happens.
+        // An `unknown` outcome deliberately arms nothing: no amount of elapsed time turns
+        // "nothing proves the turn ended" into an ending, and observe() will be woken by the
+        // evidence itself (a mutation, a user message, Fiber) if any ever arrives.
+        armSettleCheck(TURN_SETTLE_MS - quietFor + 50);
       }
     }
 
@@ -2193,10 +2244,23 @@
       // Stop is mounted under the composer, outside TURN_SECTION. In a background tab the final
       // prose can arrive while Stop still exists (scheduling the throttled debounce below), and
       // Stop removal can then be the *only* terminal mutation. Check the local->page generation
-      // edge before filtering to transcript mutations so that composer-side Stop removal wakes
-      // the recorder in a microtask. observe() still owns every completion rule and therefore
+      // edge — in BOTH directions — before filtering to transcript mutations, so that
+      // composer-side Stop mount/removal wakes the recorder in a microtask. Microtasks are the
+      // one scheduling primitive Chrome does not throttle in hidden tabs, and MutationObserver
+      // keeps firing there, so this is what makes turn boundaries event-driven instead of
+      // waiting on the OBSERVE_MS interval that intensive throttling slows to one tick a
+      // minute. The opening edge matters as much as the closing one: Stop mounting produces no
+      // TURN_SECTION mutation of its own, so a background tab used to miss `turn_start` until
+      // a throttled tick — and a short turn could start *and* finish between two such ticks,
+      // never being observed at all. observe() still owns every lifecycle rule and therefore
       // remains conservative on transient tool-phase dropouts.
-      if (generating && !CLF_DOM.generating()) {
+      //
+      // The third disjunct is the flicker: while a settle window is open, local `generating`
+      // is still true, so Stop remounting is not a local↔page edge — but it is exactly the
+      // evidence that abandons the window (and withdraws the booked settle re-check), and a
+      // hidden tab needs that withdrawal now, not on a throttled tick.
+      const pageGenerating = CLF_DOM.generating();
+      if (generating !== pageGenerating || (quietSince > 0 && pageGenerating)) {
         if (timer !== null) {
           clearTimeout(timer);
           timer = null;
@@ -8845,6 +8909,7 @@
       clearTimeout(activityTimer);
       activityTimer = null;
     }
+    cancelSettleCheck();
     for (const cleanup of stopCleanups.splice(0)) {
       try {
         cleanup();
@@ -8913,6 +8978,14 @@
       visibleStream,
       /** So a test settles a turn by the real window rather than a copy of the number. */
       TURN_SETTLE_MS,
+      /**
+       * When the armed background-safe settle re-check is due, or 0. TEST_MODE never
+       * schedules the real timer (the harness's instant timers would slam every settle
+       * window shut), so this readback is how a test proves the follow-up look is booked
+       * for a hidden tab where neither mutations nor the throttled interval will provide
+       * one.
+       */
+      settleCheckDueAt: () => settleCheckDueAt,
       STALL_MS,
       ERROR_RECOVERY_RETRY_MS,
       PRESENTATION_SCROLL_IDLE_MS,

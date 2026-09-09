@@ -49,8 +49,10 @@ import {
 import { logInfo, logWarn } from './logger.js';
 import {
   closeConversation,
+  closeStaleObserverTurns,
   liveConversations,
   noteChatOrigin,
+  noteConversationContact,
   recordAgentMessage,
   recordChatObservations,
   restoreRecordedConversation,
@@ -732,6 +734,9 @@ const OBSERVATION_KINDS = new Set([
   // requestId -> conversationId correlation registry.
   'tool_evidence'
 ]);
+// Deliberately excludes `observer_lost`: only the app may append that outcome. An observer
+// cannot report its own absence, so a page claiming it would be fabricating a closure the
+// attribution layer treats specially (see recorder.ts closeStaleObserverTurns).
 const OUTCOMES = new Set(['completed', 'failed', 'stopped', 'interrupted', 'stalled', 'unknown']);
 const MAX_OBSERVATIONS = 200;
 /** Connector requests accepted from one turn. Far above any real turn's call count. */
@@ -1478,6 +1483,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       await restoreRecordedConversation(id);
       live = liveConversations().find((entry) => entry.conversationId === id);
     }
+    // Every poll is first-hand proof the page observer exists, whether or not anything is
+    // generating — the heartbeat the open-turn staleness invariant is measured against.
+    // A throttled background tab still lands here about once a minute; a discarded/frozen
+    // tab or orphaned content script never does, which is exactly the distinction
+    // closeStaleObserverTurns() needs.
+    if (live) noteConversationContact(id);
     if (!live) {
       const workerBlocked = goalWorkerChat(id);
       return json(res, 200, {
@@ -3028,6 +3039,14 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       if (staleSwarmTimer) clearInterval(staleSwarmTimer);
       staleSwarmTimer = setInterval(() => {
         void runStaleSwarmSweep().catch((err: Error) => logWarn(`stale swarm sweep failed: ${err.message}`));
+        // Same maintenance cadence, independent job: close open turns whose page observer
+        // has gone silent, with the honest observer_lost outcome. This is the app-side
+        // half of the turn-lifecycle staleness invariant; a discarded or frozen tab sends
+        // neither /closed nor further observations, and without this its turn stayed open
+        // indefinitely, poisoning temporally-unique attribution moments fleet-wide.
+        void closeStaleObserverTurns().catch((err: Error) =>
+          logWarn(`stale observer turn sweep failed: ${err.message}`)
+        );
       }, STALE_SWARM_SWEEP_MS);
       staleSwarmTimer.unref?.();
       bridgeRecovering = false;

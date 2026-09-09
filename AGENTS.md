@@ -484,6 +484,20 @@ those still require the exact chain, which resumes automatically if `x-request-i
 returns. Truly ambiguous calls keep the conservative Unattributed / charge-against-all
 behaviour.
 
+Both tiers are only as strong as the turn-lifecycle evidence beneath them, so that
+lifecycle carries a **staleness invariant**: an open turn is evidence only while its page
+observer actually reports. A mid-turn conversation with no page contact (observations or
+`/activity` polls) for five minutes has *lost* its observer — discarded/frozen tab,
+orphaned isolated world, dead browser — and the app closes the turn with the honest
+`observer_lost` outcome (`recorder.ts::closeStaleObserverTurns`, run from the bridge's
+maintenance sweep). An **unobserved closure is not a "stopped generating" boundary**: while
+any conversation is inside its observer-lost/detached-mid-turn uncertainty window,
+`soleGeneratingConversation()` certifies no moment as temporally unique, because the
+unwatched server turn may still be running and a false unique moment poisons a key binding
+permanently. Only the app may append `observer_lost` (the bridge refuses it from `/events`
+— an observer cannot report its own absence), and a page-observed boundary that arrives
+later supersedes the staleness closure and ends the uncertainty.
+
 This one chain explains symptoms that look unrelated — worker `WORKER_IDENTITY_LOST`, calls
 piling into Unattributed, false worker stalls, wrong or absent project cwd, terminal
 polling crossing chats, agent messages stopping, Overwrite having no local activity to
@@ -573,7 +587,15 @@ page-controlled evidence useful for joining page to local truth — **never a cr
 Its protocol version and the content-side expectations move together.
 
 **Must hold.** ChatGPT is an SPA: every async result proves it still belongs to its
-navigation epoch before mutating state. `pagehide` is **not** proof a conversation ended —
+navigation epoch before mutating state. Turn boundaries must stay **event-driven**: Chrome's
+intensive throttling slows a hidden tab's timers to one tick a minute, so the periodic
+`observe()` loop may never be the only path to a `turn_start`/`turn_end` — the Stop
+control mounting/unmounting is itself a body mutation, and `watchTranscript()`'s
+lifecycle-edge check wakes the recorder from a MutationObserver microtask (unthrottled)
+in both directions, with a fresh one-shot settle re-check timer (nesting 0, so also
+unthrottled) booked whenever a closeable quiet window would otherwise wait on a throttled
+tick. `unknown` outcomes book nothing: elapsed time is not evidence and never closes a
+turn. `pagehide` is **not** proof a conversation ended —
 reload and bfcache fire it too; real closure is decided at the service-worker layer from tab
 removal and navigation away. **Reload is not conversation close.** Content-script acceptance
 means *handed to the journal*, not *stored by the app*, and the journal must never silently

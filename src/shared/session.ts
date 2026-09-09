@@ -22,7 +22,18 @@ export type TurnOutcome =
   | 'stopped'
   | 'interrupted'
   | 'stalled'
-  | 'unknown';
+  | 'unknown'
+  /**
+   * The app closed this turn because the page observer that opened it disappeared —
+   * tab discarded/frozen, content script orphaned, browser gone — and no evidence
+   * arrived for long enough that the open turn had become a stale claim. Deliberately
+   * distinct from `unknown`: this closure was *not observed on the page*, so it says
+   * nothing about whether ChatGPT actually finished, and the attribution layer must
+   * never treat it as a real "stopped generating" boundary (see recorder.ts
+   * soleGeneratingConversation). Only the app appends this outcome; the bridge refuses
+   * it from extension input because an observer cannot report its own absence.
+   */
+  | 'observer_lost';
 
 export const TURN_OUTCOME_LABELS: Record<TurnOutcome, string> = {
   completed: 'completed',
@@ -30,7 +41,8 @@ export const TURN_OUTCOME_LABELS: Record<TurnOutcome, string> = {
   stopped: 'stopped by the user',
   interrupted: 'interrupted before it finished',
   stalled: 'stalled — no visible progress',
-  unknown: 'ended for an unknown reason'
+  unknown: 'ended for an unknown reason',
+  observer_lost: 'closed by the app after its page observer disappeared'
 };
 
 /**

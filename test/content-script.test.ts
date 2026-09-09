@@ -129,6 +129,8 @@ interface Hook {
   visibleStream(entries: Array<Record<string, any>>, groupId?: string | null): Array<Record<string, any>>;
   /** How long the stop button must stay gone before content.js calls a turn finished. */
   TURN_SETTLE_MS: number;
+  /** When the background-safe settle re-check is due, or 0 when none is booked. */
+  settleCheckDueAt(): number;
   /** Test seam for the no-visible-progress fallback. */
   STALL_MS: number;
   ERROR_RECOVERY_RETRY_MS: number;
@@ -4728,6 +4730,113 @@ describe('a stop button that goes missing while the turn is still running', () =
     const ends = emitted(live.sent, 'turn_end').map((entry) => entry.event);
     expect(ends).toHaveLength(1);
     expect(ends[0]!.outcome).toBe('completed');
+  });
+});
+
+/**
+ * Turn lifecycle in a background tab, where Chrome throttles every timer.
+ *
+ * A hidden tab's setInterval loop is slowed to one tick a minute under intensive
+ * throttling, so the OBSERVE_MS poll cannot be what notices a turn boundary there.
+ * MutationObservers and microtasks are not throttled, which is why the boundaries have to
+ * be mutation-driven: the Stop control mounting or unmounting is itself a DOM mutation
+ * under document.body, and the recorder must react to it without any polling tick. These
+ * tests therefore mutate the page and deliberately never call hook.observe() themselves —
+ * if the mutation path does not carry the boundary, nothing else here will.
+ */
+describe('turn lifecycle in a throttled background tab', () => {
+  /** jsdom reports 'visible'; the hidden-tab scenario is what these tests model. */
+  const hideDocument = (document: Document): void => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+  };
+
+  it('opens a turn from the Stop-mount mutation alone, with no polling tick', async () => {
+    live = await harness();
+    hideDocument(live.document);
+    // Stop mounts under the composer, outside any conversation-turn section. Before the
+    // lifecycle edge check ran in both directions this mutation was filtered out as
+    // irrelevant, and a background tab's turn_start waited for a throttled interval tick —
+    // a short turn could start and finish between two of them and never be seen at all.
+    startGenerating(live.document);
+    await settle();
+
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(1);
+  });
+
+  it('books the settle re-check when the quiet page will produce no further wake-up', async () => {
+    live = await harness();
+    hideDocument(live.document);
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'turn-background-close', []);
+    const answer = live.document.createElement('div');
+    answer.className = 'markdown';
+    answer.textContent = 'Done: the fix is committed.';
+    section.append(answer);
+    await settle();
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(1);
+
+    // The terminal mutation: Stop unmounts, and a finished page then goes silent — no more
+    // mutations, and the hidden tab's interval is a minute away. The urgent mutation path
+    // must open the settle window *and* book its own follow-up look.
+    stopGenerating(live.document);
+    await settle();
+    expect(emitted(live.sent, 'turn_end')).toHaveLength(0);
+    expect(live.hook.settleCheckDueAt()).toBeGreaterThan(0);
+
+    // What the booked timer does when it fires: one more observe() after the window.
+    live.advance(live.hook.TURN_SETTLE_MS + 100);
+    live.hook.observe();
+    await settle();
+    const ends = emitted(live.sent, 'turn_end').map((entry) => entry.event);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.outcome).toBe('completed');
+    expect(live.hook.settleCheckDueAt()).toBe(0);
+  });
+
+  it('cancels the booked re-check when the Stop control comes back', async () => {
+    live = await harness();
+    hideDocument(live.document);
+    startGenerating(live.document);
+    const section = assistantTurn(live.document, 'turn-background-flicker', []);
+    const answer = live.document.createElement('div');
+    answer.className = 'markdown';
+    answer.textContent = 'Interim prose during a tool phase.';
+    section.append(answer);
+    await settle();
+
+    stopGenerating(live.document);
+    await settle();
+    expect(live.hook.settleCheckDueAt()).toBeGreaterThan(0);
+
+    // The dropout was a flicker: the same turn is still running. The follow-up look would
+    // now be answered by "still generating" anyway, but the booking itself must be
+    // withdrawn so a stale timer never observes against a later window's state.
+    startGenerating(live.document);
+    await settle();
+    expect(live.hook.settleCheckDueAt()).toBe(0);
+    expect(emitted(live.sent, 'turn_end')).toHaveLength(0);
+  });
+
+  it('books nothing for an unknown outcome: elapsed time never fabricates a boundary', async () => {
+    live = await harness();
+    hideDocument(live.document);
+    startGenerating(live.document);
+    assistantTurn(live.document, 'turn-background-ambiguous', []);
+    await settle();
+    expect(emitted(live.sent, 'turn_start')).toHaveLength(1);
+
+    // Stop unmounts with no answer, no error, no interruption marker — nothing proves the
+    // turn ended. No re-check may be booked, because the only thing a later look could add
+    // is the passage of time, and time is not evidence.
+    stopGenerating(live.document);
+    await settle();
+    expect(live.hook.settleCheckDueAt()).toBe(0);
+
+    live.advance(live.hook.TURN_SETTLE_MS * 3);
+    live.hook.observe();
+    await settle();
+    expect(emitted(live.sent, 'turn_end')).toHaveLength(0);
   });
 });
 

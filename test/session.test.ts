@@ -17,13 +17,17 @@ import { emptyEvidence } from '../src/main/mcp/call-context.js';
 import { getLog } from '../src/main/logger.js';
 import {
   closeConversation,
+  closeStaleObserverTurns,
+  inferDegradedCaller,
   liveConversations,
   noteChatOrigin,
+  noteConversationContact,
   recordChatObservations,
   recordToolCall,
   rebindConversation,
   resetRecorderForTests,
   sessionForConversation,
+  soleGeneratingConversation,
 } from '../src/main/session/recorder.js';
 import {
   appendEvent,
@@ -2583,5 +2587,143 @@ describe('a session store nobody has pointed anywhere', () => {
   it('refuses to read as well, instead of reporting an empty history', async () => {
     unsetSessionRootForTests();
     await expect(listSessions()).rejects.toThrow(/initSessionStore/);
+  });
+});
+
+/**
+ * The observer-staleness invariant for open turns.
+ *
+ * The turn lifecycle is built from content-script observation, and a content script can
+ * stop existing without any close signal — a discarded or frozen background tab, an
+ * orphaned isolated world, a killed browser. One live session held a turn open fifteen
+ * minutes that way. An open turn is only evidence while someone is watching the page, so
+ * after minutes of total silence the app closes it — with the honest `observer_lost`
+ * outcome, never a fabricated "completed"/"stopped" — and, because that closure was not
+ * observed on the page, it must not create a temporally unique attribution moment either.
+ */
+describe('open turns whose page observer disappeared', () => {
+  const SILENT = 6 * 60_000; // past the five-minute observer-silence window
+  const FRESH = 2 * 60_000; // inside it
+
+  it('closes a silently open turn as observer_lost, on the record', async () => {
+    const conversationId = 'conv-observer-lost-close';
+    const opened = await recordChatObservations(conversationId, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-lost-1' }
+    ]);
+    expect(await closeStaleObserverTurns(Date.now() + FRESH)).toBe(0);
+    expect(await closeStaleObserverTurns(Date.now() + SILENT)).toBe(1);
+
+    const ends = (await readEvents(opened.sessionId!, { kinds: ['turn_end'] })).filter(
+      (event) => event.kind === 'turn_end'
+    );
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.turnId).toBe('g-lost-1');
+    expect(ends[0]!.outcome).toBe('observer_lost');
+    expect(liveConversations().find((entry) => entry.conversationId === conversationId)?.generating).toBe(false);
+    // Idempotent: the projection is already closed, so the next sweep finds nothing.
+    expect(await closeStaleObserverTurns(Date.now() + SILENT * 2)).toBe(0);
+  });
+
+  it('leaves a turn alone while its page keeps making contact', async () => {
+    const conversationId = 'conv-observer-heartbeat';
+    await recordChatObservations(conversationId, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-watched-1' }
+    ]);
+    // The /activity poll heartbeat, as the bridge reports it. A throttled background tab
+    // still lands one about every minute; only genuine observer loss goes silent longer.
+    noteConversationContact(conversationId);
+    expect(await closeStaleObserverTurns(Date.now() + FRESH)).toBe(0);
+    expect(liveConversations().find((entry) => entry.conversationId === conversationId)?.generating).toBe(true);
+  });
+
+  it('does not let an observer_lost closure mint a unique moment for another chat', async () => {
+    const lost = 'conv-observer-lost-uncertain';
+    const watched = 'conv-still-watched';
+    await recordChatObservations(lost, [{ kind: 'turn_start', time: Date.now(), turnId: 'g-lost-2' }]);
+    expect(await closeStaleObserverTurns(Date.now() + SILENT)).toBe(1);
+
+    await recordChatObservations(watched, [{ kind: 'turn_start', time: Date.now(), turnId: 'g-watched-2' }]);
+    // The watched chat is the only one *observably* generating — but the lost chat's server
+    // turn may still be running with nobody watching, so no moment is provably unique and
+    // the degraded temporal tier must attribute nothing.
+    expect(soleGeneratingConversation()).toBeNull();
+    expect(inferDegradedCaller(null)).toBeNull();
+  });
+
+  it('resumes unique moments once the returned page reports the real boundary', async () => {
+    const lost = 'conv-observer-returned';
+    const watched = 'conv-watched-after-return';
+    const opened = await recordChatObservations(lost, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-returned-1' }
+    ]);
+    expect(await closeStaleObserverTurns(Date.now() + SILENT)).toBe(1);
+
+    // The tab unfreezes and its recorder reports how the turn actually ended. The observed
+    // boundary supersedes the app's staleness closure in the record — both events stand,
+    // honestly labeled — and ends the uncertainty.
+    await recordChatObservations(lost, [
+      { kind: 'turn_end', time: Date.now(), turnId: 'g-returned-1', outcome: 'completed' }
+    ]);
+    const ends = (await readEvents(opened.sessionId!, { kinds: ['turn_end'] })).filter(
+      (event) => event.kind === 'turn_end'
+    );
+    expect(ends.map((event) => event.outcome)).toEqual(['observer_lost', 'completed']);
+
+    await recordChatObservations(watched, [{ kind: 'turn_start', time: Date.now(), turnId: 'g-watched-3' }]);
+    expect(soleGeneratingConversation()).toBe(watched);
+    expect(inferDegradedCaller(null)?.conversationId).toBe(watched);
+    expect(inferDegradedCaller(null)?.method).toBe('temporal_unique');
+  });
+
+  it('lets a recovered final assistant message still close the superseded turn', async () => {
+    const lost = 'conv-observer-recovered-final';
+    const opened = await recordChatObservations(lost, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-recovered-1' }
+    ]);
+    expect(await closeStaleObserverTurns(Date.now() + SILENT)).toBe(1);
+
+    // The reloaded page discovers the finished answer cold: a final assistant message for a
+    // turn this log opened. The staleness closure deliberately keeps that turn recoverable,
+    // so the ordinary reload reconciliation still lands the real completed end.
+    await recordChatObservations(lost, [
+      {
+        kind: 'assistant_message',
+        time: Date.now(),
+        turnId: 'g-recovered-1',
+        messageId: 'm-recovered-final',
+        text: 'Here is the finished answer.',
+        final: true
+      }
+    ]);
+    const ends = (await readEvents(opened.sessionId!, { kinds: ['turn_end'] })).filter(
+      (event) => event.kind === 'turn_end'
+    );
+    expect(ends.map((event) => event.outcome)).toEqual(['observer_lost', 'completed']);
+  });
+
+  it('treats a tab detaching mid-turn as observer loss, not as proof it stopped generating', async () => {
+    const detached = 'conv-detached-mid-turn';
+    const watched = 'conv-watched-after-detach';
+    const opened = await recordChatObservations(detached, [
+      { kind: 'turn_start', time: Date.now(), turnId: 'g-detached-1' }
+    ]);
+    await closeConversation(detached);
+
+    const ends = (await readEvents(opened.sessionId!, { kinds: ['turn_end'] })).filter(
+      (event) => event.kind === 'turn_end'
+    );
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.outcome).toBe('observer_lost');
+
+    // The page is gone; ChatGPT's server turn may not be. Another chat generating alone is
+    // therefore not provably unique until the detached chat's uncertainty resolves.
+    await recordChatObservations(watched, [{ kind: 'turn_start', time: Date.now(), turnId: 'g-watched-4' }]);
+    expect(soleGeneratingConversation()).toBeNull();
+
+    // The detached chat reopens and reports its real boundary; certainty returns.
+    await recordChatObservations(detached, [
+      { kind: 'turn_end', time: Date.now(), turnId: 'g-detached-1', outcome: 'completed' }
+    ]);
+    expect(soleGeneratingConversation()).toBe(watched);
   });
 });
