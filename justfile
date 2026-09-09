@@ -122,26 +122,53 @@ state_dir := if os() == "macos" {
     env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/state"
 }
 
-# Which chats are recorded, whether each is mid-turn, and the id `say` wants
+# Which chats are recorded, what each last did, and the id `say` wants
 chats:
     #!/usr/bin/env python3
     import json, pathlib, time
 
     root = pathlib.Path("{{sessions_dir}}")
+
+    def describe(row):
+        """One line for the newest thing this chat did. `busy` alone says nothing about
+        whether work is happening — a chat mid-tool-call and a chat wedged ten minutes ago
+        both read the same — so the row carries the action and its clock instead."""
+        kind = row.get("kind", "?")
+        if kind == "tool_call":
+            call = row.get("call", {})
+            summary = (call.get("summary") or {}).get("title") or ""
+            return " ".join(x for x in (call.get("tool"), call.get("outcome"), summary) if x)
+        if kind.endswith("_message"):
+            text = (row.get("message") or {}).get("text") or ""
+            return f"{kind.removesuffix('_message')}: {' '.join(text.split())[:60]}"
+        if kind == "turn_end":
+            return f"turn_end {row.get('outcome', '')}".strip()
+        if kind == "chat_error":
+            return f"error: {' '.join(((row.get('message') or {}).get('text') or '').split())[:60]}"
+        return kind
+
     rows = []
     for meta_file in root.glob("*/meta.json"):
         meta = json.loads(meta_file.read_text())
         chat = meta.get("conversationId")
         if not chat:
             continue  # nothing to address a message to
+        session = meta_file.parent
+
+        events = [json.loads(l) for l in (session / "events.jsonl").read_text().splitlines() if l.strip()]
+        # A message is rewritten in its own shard while it streams, so the newest one is not
+        # in events.jsonl at all and is often the only thing that happened recently.
+        messages = [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
+        newest = max(events + messages, key=lambda row: row.get("time", 0), default=None)
+
         # The recorder writes turn_start when ChatGPT begins generating. Three things end that
         # turn: turn_end when it finishes, and chat_error or a wedged/closed tab when it does
         # not. Only the first is a clean ending, and a turn that died the other two ways still
         # has turn_start as its newest turn event — so reading those alone reports a dead chat
         # as busy forever, which is exactly the row nobody should be waiting on.
         state = "idle"
-        for line in reversed((meta_file.parent / "events.jsonl").read_text().splitlines()):
-            kind = json.loads(line).get("kind") if line.strip() else None
+        for row in reversed(events):
+            kind = row.get("kind")
             if kind == "chat_error":
                 state = "wedged"
                 break
@@ -152,11 +179,12 @@ chats:
         # says. ChatGPT streams continuously, so a genuinely live turn is never this quiet.
         if state == "busy" and time.time() - meta["updatedAt"] / 1000 > 300:
             state = "stalled"
-        rows.append((meta["updatedAt"], chat, state, meta["title"]))
 
-    for updated, chat, state, title in sorted(rows, reverse=True):
-        clock = time.strftime("%m-%d %H:%M", time.localtime(updated / 1000))
-        print(f"{clock}\t{chat}\t{state}\t{title}")
+        rows.append((meta["updatedAt"], chat, state, describe(newest) if newest else "-"))
+
+    for updated, chat, state, action in sorted(rows, reverse=True):
+        clock = time.strftime("%m-%d %H:%M:%S", time.localtime(updated / 1000))
+        print(f"{clock}\t{chat}\t{state}\t{action}")
 
 # Send a message to an open chat, by conversation id (see `just chats`)
 say $chat $text:
