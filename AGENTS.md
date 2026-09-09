@@ -596,12 +596,18 @@ routes: `/status`, `/events`, `/closed`, `/activity`, `/compact/claim-auto`, `/c
 `/commands/redeem`, `/commands/ack`. `/settings` is the only pair the page may write, and
 its GET exists for the one composer with no conversation to read `/activity` for: a New Chat.
 
-`/send` is the one route that does not belong to the extension. A local program — the
-justfile recipes, a script, an agent on this computer — posts `{conversationId?, text}` and
-the app types that text into that chat, or into a fresh one when no conversation is named.
-It presents the separate credential in `<userData>/state/local-token` (mode `0600`, minted
-once at bridge startup), never the extension's bearer token, because `/pair` reissues that
-one whenever the browser reconnects.
+`/send` and `GET /send/outcome` are the two routes that do not belong to the extension. A
+local program — the justfile recipes, a script, an agent on this computer — posts
+`{conversationId?, text, verifyHorizonMs?}` and the app types that text into that chat, or
+into a fresh one when no conversation is named. Queueing is not delivery and even the
+page's ACK is only a click receipt: `/send/outcome?id=` reports the typed state machine
+(`queued → delivering → typed → sent_verified`, or a terminal
+`typed_unverified`/`refused`/`draft_left_in_composer`/`no_live_composer_tab`/`expired`/
+`failed` with the concrete next action), where the sole success is a fresh `turn_start`
+observed in the recording within the horizon. Both routes present the separate credential
+in `<userData>/state/local-token` (mode `0600`, minted once at bridge startup), never the
+extension's bearer token, because `/pair` reissues that one whenever the browser
+reconnects.
 
 **Must hold.** The extension token never enters the ChatGPT page — the service worker holds
 it in extension-owned state and the app keeps its counterpart out of config and log surfaces.

@@ -1067,10 +1067,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * it landed in. Nothing here binds an agent or moves a session, so the chat this reaches is
    * an ordinary chat, and the extension records it exactly as it records the user's own.
    *
-   * Deliberately the only route on this server a local program may use. The bridge still has
-   * no route that reads a file, runs a command, or changes a permission, and this one adds
-   * none: it can put words in a chat, which is a thing the person at this keyboard can already
-   * do by typing them.
+   * One of exactly two routes on this server a local program may use — the other is the
+   * read-only GET /send/outcome below, which reports what became of a message queued here.
+   * The bridge still has no route that reads a file, runs a command, or changes a permission,
+   * and these two add none: one puts words in a chat, which the person at this keyboard can
+   * already do by typing them, and the other only reports on that.
    */
   if (route === '/send' && req.method === 'POST') {
     if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
