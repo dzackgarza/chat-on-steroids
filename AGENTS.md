@@ -1178,6 +1178,8 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Track task DAGs and saturate parallel workflows.** Track the basic DAG of tasks in each managed repository (identifying decoupled workstreams, independent chapters, isolated problem collections, or non-overlapping module targets). When a repository's task structure permits parallel work without coordination deadlocks or merge collisions, increase the number of active managed worker chats under that repository to saturate throughput rather than running independent branches serially.
 
+**Dispatch immediately; never narrate a ready action.** When analysis reveals a dispatchable parallel path, a completable continuation, or a launchable replacement, execute it in the same turn. Do not report it as "ready," "identified," or "available" and wait for the user to authorize it. The steward's role is autonomous momentum. Describing a possible action instead of taking it is pure spectator behavior — it consumes a turn, produces zero progress, and forces the user to re-issue an instruction the steward already had all the information to execute.
+
 
 ### Where a regression belongs
 
