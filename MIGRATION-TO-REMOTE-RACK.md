@@ -228,3 +228,120 @@ just new "<opening prompt>"
 # Inspect browser service
 systemctl --user status chat-on-steroids-browser.service
 ```
+
+---
+
+## 7. ChatGPT Session Resync Workflow
+
+When ChatGPT login expires on the remote server, synchronize the session from the local authenticated browser using Chrome DevTools Protocol (CDP).
+
+### Prerequisites
+
+- Local Chrome running with `--remote-debugging-port=9222` and logged into `https://chatgpt.com/`.
+- Remote Chrome running on `rack` via `chat-on-steroids-browser.service` with CDP on port `9222`.
+- `websocat` available on both hosts (`~/.local/bin/websocat`).
+
+### Step 1: Extract Session from Local Chrome
+
+Run the extraction script on the local machine:
+
+```python
+import json, subprocess, os, stat
+
+# 1. Connect to local Chrome CDP
+targets = json.loads(subprocess.run(["curl", "-s", "http://127.0.0.1:9222/json"], capture_output=True, text=True).stdout)
+target = next(t for t in targets if t.get("type") == "page" and "chatgpt.com" in t.get("url", ""))
+ws = target["webSocketDebuggerUrl"]
+
+# 2. Extract cookies
+payload_cookies = json.dumps({"id": 1, "method": "Network.getCookies", "params": {"urls": ["https://chatgpt.com"]}})
+raw_cookies = subprocess.run(["timeout", "5", "websocat", "-n1", ws], input=payload_cookies, capture_output=True, text=True).stdout
+cookies_list = json.loads(raw_cookies)["result"]["cookies"]
+cookies = {c["name"]: c["value"] for c in cookies_list}
+
+# 3. Extract access token from active page
+expr = "fetch(\"/api/auth/session\").then(r => r.json())"
+payload_session = json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
+raw_session = subprocess.run(["timeout", "5", "websocat", "-n1", ws], input=payload_session, capture_output=True, text=True).stdout
+session = json.loads(raw_session)["result"]["result"]["value"]
+
+creds = {
+    "accessToken": session.get("accessToken"),
+    "accountId": session.get("account", {}).get("id"),
+    "expires": session.get("expires"),
+    "cookies": cookies
+}
+
+# 4. Save to local config file
+path = os.path.expanduser("~/.config/chat-on-steroids/chatgpt-session.json")
+with open(path, "w") as f:
+    json.dump(creds, f, indent=2)
+os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+print(f"Extracted session for {session.get('user', {}).get('email')}, expires: {creds['expires']}")
+```
+
+### Step 2: Copy Session File to Rack
+
+Transfer the credential file securely:
+
+```bash
+scp ~/.config/chat-on-steroids/chatgpt-session.json dzack@rack:~/.config/chat-on-steroids/chatgpt-session.json
+ssh dzack@rack "chmod 600 ~/.config/chat-on-steroids/chatgpt-session.json"
+```
+
+### Step 3: Inject Cookies into Remote Headless Chrome
+
+Execute the injection script on `rack` to apply cookies via CDP and navigate to ChatGPT:
+
+```bash
+ssh dzack@rack "/usr/bin/python3 -c '
+import json, subprocess, urllib.request
+
+with open(\"/home/dzack/.config/chat-on-steroids/chatgpt-session.json\") as f:
+    creds = json.load(f)
+
+targets = json.loads(urllib.request.urlopen(\"http://127.0.0.1:9222/json\").read())
+page = next(t for t in targets if t.get(\"type\") == \"page\" and \"chatgpt.com\" in t.get(\"url\", \"\"))
+ws_url = page[\"webSocketDebuggerUrl\"]
+
+cookies_list = []
+for name, val in creds.get(\"cookies\", {}).items():
+    cookies_list.append({
+        \"name\": name,
+        \"value\": val,
+        \"url\": \"https://chatgpt.com\"
+    })
+
+# Set cookies
+payload1 = json.dumps({\"id\": 1, \"method\": \"Network.setCookies\", \"params\": {\"cookies\": cookies_list}})
+subprocess.run([\"timeout\", \"5\", \"/home/dzack/.local/bin/websocat\", \"-n1\", ws_url], input=payload1, capture_output=True, text=True)
+
+# Reload page to apply session
+payload2 = json.dumps({\"id\": 2, \"method\": \"Page.navigate\", \"params\": {\"url\": \"https://chatgpt.com/\"}})
+subprocess.run([\"timeout\", \"5\", \"/home/dzack/.local/bin/websocat\", \"-n1\", ws_url], input=payload2, capture_output=True, text=True)
+print(\"Injected cookies and reloaded remote page.\")
+'"
+```
+
+### Step 4: Verify Remote Authentication
+
+Verify authentication on `rack`:
+
+```bash
+ssh dzack@rack "/usr/bin/python3 -c '
+import json, subprocess, urllib.request, time
+
+time.sleep(3)
+targets = json.loads(urllib.request.urlopen(\"http://127.0.0.1:9222/json\").read())
+page = next(t for t in targets if t.get(\"type\") == \"page\" and \"chatgpt.com\" in t.get(\"url\", \"\"))
+ws_url = page[\"webSocketDebuggerUrl\"]
+
+expr = \"fetch(\\\"/api/auth/session\\\").then(r => r.json()).then(s => ({ email: s?.user?.email, hasToken: !!s?.accessToken, expires: s?.expires }))\"
+payload = json.dumps({\"id\": 1, \"method\": \"Runtime.evaluate\", \"params\": {\"expression\": expr, \"awaitPromise\": True, \"returnByValue\": True}})
+res = subprocess.run([\"timeout\", \"8\", \"/home/dzack/.local/bin/websocat\", \"-n1\", ws_url], input=payload, capture_output=True, text=True).stdout
+print(\"Remote auth state:\", res)
+'"
+```
+
+Successful output indicates `hasToken: true` with the authenticated email address.
+
