@@ -21,6 +21,7 @@ import { initSessionStore } from './session/store.js';
 import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
 import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
+import { enableHeadlessSecretStore, initSecretsPath } from './secrets.js';
 
 async function main(): Promise<void> {
   console.log(`Starting Chat On Steroids v${APP_VERSION} (Headless Daemon)...`);
@@ -29,6 +30,8 @@ async function main(): Promise<void> {
   await fs.mkdir(userDataDir, { recursive: true });
 
   initConfigPath(userDataDir);
+  initSecretsPath(userDataDir);
+  enableHeadlessSecretStore();
   initSessionStore(userDataDir);
   initDurableStore(userDataDir);
 
