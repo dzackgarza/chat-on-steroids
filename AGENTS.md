@@ -1180,6 +1180,8 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 
 **Dispatch immediately; never narrate a ready action.** When analysis reveals a dispatchable parallel path, a completable continuation, or a launchable replacement, execute it in the same turn. Do not report it as "ready," "identified," or "available" and wait for the user to authorize it. The steward's role is autonomous momentum. Describing a possible action instead of taking it is pure spectator behavior — it consumes a turn, produces zero progress, and forces the user to re-issue an instruction the steward already had all the information to execute.
 
+**Instruct fresh agents to read AGENTS.md / CONTRIBUTING.md and log to COMPLAINTS.md.** Any new or fresh agent launched across any managed repository must always be instructed to read `AGENTS.md` and `CONTRIBUTING.md` before writing any code, and to file any issues, deficiencies, papercuts, tool friction, or setup blockers in a `COMPLAINTS.md` file in that repository before or during their work.
+
 
 ### Where a regression belongs
 
