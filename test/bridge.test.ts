@@ -7,7 +7,9 @@
  * The happy paths matter too, but they are the cheap half.
  */
 
+import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
 import type { ContinuationSnapshot } from '../src/main/session/continuation.js';
@@ -1657,7 +1659,7 @@ describe('delivering a bootstrap', () => {
     expect(first.body).toMatchObject({ final: true, committed: true, conversationId });
     await flushDurable();
     const stored = await readDurable<{ version?: number; receipts?: Array<{ id?: string }> }>('bridge-commands');
-    expect(stored?.version).toBe(4);
+    expect(stored?.version).toBe(5);
     expect(stored?.receipts?.some((entry) => entry.id === command.id)).toBe(true);
 
     // Simulate the main-process restart after the durable commit but before the browser got
@@ -4205,5 +4207,123 @@ describe('shutting the listener down', () => {
     const restarted = await startBridge();
     expect(restarted).not.toBeNull();
     base = `http://127.0.0.1:${restarted}`;
+  });
+});
+
+/**
+ * The route a local program uses to put a message into a ChatGPT chat.
+ *
+ * This is the same transport a worker bootstrap and a revival ride on, with the agent half
+ * removed: one command, one page, one typed user message. What these tests hold to is that
+ * removing the agent half removed it everywhere — nothing here may bind a worker slot, open
+ * a run, or fence the chat it lands in — and that the credential is genuinely separate from
+ * the extension's, because /pair mints that one and would take it back.
+ */
+describe('local send', () => {
+  async function localToken(): Promise<string> {
+    const value = await fs.readFile(path.join(dir, 'state', 'local-token'), 'utf8');
+    expect(value.trim(), 'the bridge never wrote a token for local callers to present').not.toBe('');
+    return value.trim();
+  }
+
+  /** A local caller: its own credential, and no Origin header, exactly like curl. */
+  async function send(body: unknown, auth?: string): Promise<Reply> {
+    return request('POST', '/send', { origin: null, auth: auth ?? (await localToken()), body });
+  }
+
+  it('types the exact text into the chat it names, and refuses every other chat', async () => {
+    await pair();
+    const chat = '3f2a9c81-4d5e-4a7b-9c10-2b8e6f4a1d55';
+    const text = 'keep going: land the parser fix, then run the nearest test file';
+    const reply = await send({ conversationId: chat, text });
+    expect(reply.status).toBe(200);
+    const id = reply.body.command.id as string;
+
+    // The app opens that chat itself. A fresh composer would be the wrong chat entirely.
+    await waitForOpened(1);
+    expect(opened).toEqual([commandUrl(id, chat)]);
+
+    // The negative half of the same fence: a page showing a different conversation must not
+    // be able to claim this command merely by holding its marker.
+    const wrongChat = await request('POST', '/commands/redeem', {
+      body: { id, client: 'tab-elsewhere', conversationId: 'a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d' }
+    });
+    expect(wrongChat.status).toBe(409);
+
+    const boot = await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+    expect(boot.status).toBe(200);
+    // Verbatim. A worker bootstrap appends its protocol paragraph here; a local send must not.
+    expect(boot.body.command.text).toBe(text);
+    expect(boot.body.command.conversationId).toBe(chat);
+    expect(boot.body.command.agent).toBeNull();
+
+    const ack = await request('POST', '/commands/ack', {
+      body: { id, status: 'sent', conversationId: chat, client: 'tab-1' }
+    });
+    expect(ack.status).toBe(200);
+    expect(ack.body.committed).toBe(true);
+    expect(pendingCommands()).toEqual([]);
+  });
+
+  it('opens a fresh chat that belongs to no worker slot and no run', async () => {
+    await pair();
+    const reply = await send({ text: 'start on the release audit and report what you find' });
+    expect(reply.status).toBe(200);
+    const id = reply.body.command.id as string;
+
+    await waitForOpened(1);
+    // No /c/<id>: ChatGPT has not issued one yet, and that is the page's precondition.
+    expect(opened).toEqual([commandUrl(id)]);
+    const boot = await redeem(id);
+    expect(boot.conversationId).toBeNull();
+    expect(boot.agent).toBeNull();
+
+    const ack = await request('POST', '/commands/ack', {
+      body: { id, status: 'sent', conversationId: '7c4e1a92-8b3d-4f60-a5e1-9d2c3b4a5e6f', client: 'tab-1' }
+    });
+    expect(ack.status).toBe(200);
+    expect(ack.body.committed).toBe(true);
+    // The whole point of the route: what it opens is an ordinary chat. A worker bootstrap
+    // would have left an agent bound to this conversation and fenced it against the user.
+    expect(swarmState().agents).toEqual([]);
+    expect(retiredWorkerForConversation('7c4e1a92-8b3d-4f60-a5e1-9d2c3b4a5e6f')).toBeNull();
+  });
+
+  it('sends nothing and opens nothing without the local credential', async () => {
+    await pair();
+    // The extension's own bearer token is not this credential. /pair reissues that one
+    // whenever the browser reconnects, so a local caller holding it would lose the route.
+    const withExtensionToken = await send({ text: 'this must not be typed' }, token!);
+    expect(withExtensionToken.status).toBe(401);
+    const withNothing = await request('POST', '/send', {
+      origin: null,
+      auth: null,
+      body: { text: 'this must not be typed either' }
+    });
+    expect(withNothing.status).toBe(401);
+
+    expect(pendingCommands()).toEqual([]);
+    expect(opened).toEqual([]);
+  });
+
+  it('keeps two messages to one chat as two messages', async () => {
+    await pair();
+    const chat = 'b8d3f105-2c47-4e9a-8f61-3a5b7c9d1e02';
+    const first = await send({ conversationId: chat, text: 'first instruction' });
+    const second = await send({ conversationId: chat, text: 'second instruction' });
+
+    // The queue folds a repeated worker bootstrap or resume into one job, because those are
+    // one chat being opened twice. Two sends are two things the user said.
+    expect(second.body.command.id).not.toBe(first.body.command.id);
+    expect(pendingCommands()).toHaveLength(2);
+  });
+
+  it('refuses a send while the user has the browser disconnected', async () => {
+    await pair();
+    await unpair();
+    const reply = await send({ text: 'nothing can redeem this' });
+
+    expect(reply.status).toBe(409);
+    expect(opened).toEqual([]);
   });
 });

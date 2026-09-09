@@ -5,23 +5,32 @@
  * opposite requirements: the MCP endpoint refuses any browser origin on purpose,
  * while this one exists to be called by a browser extension.
  *
+ * It has a second caller. `/send` is for a program running on this computer — a script or
+ * a local agent driving the user's own chats — and it presents its own credential rather
+ * than the extension's. Everything else here belongs to the extension.
+ *
  * What keeps it safe:
  *   · 127.0.0.1 only, never 0.0.0.0
  *   · the only unauthenticated routes are /hello (a fixed identifying string) and
  *     /pair, which issues the token to a caller on 127.0.0.1 — see the route for what
  *     that deliberately does and does not buy
- *   · every other route needs the bearer token issued by /pair, compared in
+ *   · every extension route needs the bearer token issued by /pair, compared in
  *     constant time, and stored encrypted rather than in config.json
- *   · the Origin must be a chrome-extension:// origin, so a web page cannot drive it
- *   · bodies are capped and requests are rate limited
+ *   · /send needs the separate local token — see readLocalToken — and grants only what
+ *     the person at this keyboard could do by typing into the composer themselves
+ *   · the Origin must be absent or a chrome-extension:// origin, so a web page cannot
+ *     drive any of it
+ *   · bodies are capped and extension requests are rate limited
  *
  * It is deliberately not a general control API. It accepts observations about a
- * ChatGPT conversation and hands back activity summaries and queued commands. It
- * cannot read a file, run anything, or change a permission.
+ * ChatGPT conversation, hands back activity summaries and queued commands, and puts a
+ * message into a chat. It cannot read a file, run anything, or change a permission.
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import type { BridgeStatus } from '../shared/types.js';
 import type { SessionOrigin } from '../shared/session.js';
 import { getConfig, updateConfig } from './config.js';
@@ -108,7 +117,7 @@ import {
   resetContinuationsForTests
 } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
-import { readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
+import { durableRoot, readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
 import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
 import { requestCorrelation } from './session/correlation.js';
 import { bindAgentWorkspace } from './workspace.js';
@@ -163,6 +172,15 @@ const COMMAND_DEADLINE_MS = 90_000;
  */
 const COMMAND_TTL_MS = 30 * 60_000;
 const MAX_COMMANDS = 20;
+/**
+ * The longest message a local caller may have typed into a chat.
+ *
+ * The same 4000 characters a worker task, a prime->worker message and a chat goal are each
+ * bounded to. This is one user turn in a ChatGPT composer, not a document.
+ */
+const MAX_SEND_CHARS = 4_000;
+/** The file a local program reads to find the credential for POST /send. */
+const LOCAL_TOKEN_FILE = 'local-token';
 const MAX_COMMAND_RECEIPTS = 64;
 const COMMANDS_STATE = 'bridge-commands';
 /**
@@ -269,7 +287,19 @@ type CommandSpec =
    * move happened. Keyed by session, because compacting the same chat twice is one job whose
    * brief got newer — not two fresh chats, which is what keying on the handoff produced.
    */
-  | { type: 'resume'; sessionId: string; token: string };
+  | { type: 'resume'; sessionId: string; token: string }
+  /**
+   * One message, typed into a chat, on behalf of a local program.
+   *
+   * The agent-free member of this union. `conversationId` is a target when it is set and the
+   * same fence a revival gets — the page types only if it is already showing that chat — and
+   * null when the caller wants a chat that does not exist yet. Nothing here binds a worker
+   * slot or opens a run, so what it lands in is an ordinary chat the recorder sees like any
+   * other. `nonce` is what keeps two sends two sends: the queue folds a repeated worker
+   * bootstrap or resume into one job because those are one chat being opened twice, and two
+   * things the user said must never collapse that way.
+   */
+  | { type: 'send'; conversationId: string | null; text: string; nonce: string };
 
 interface Command {
   id: string;
@@ -328,7 +358,7 @@ interface DurableCommandRecord {
 }
 
 interface DurableCommandSnapshot {
-  version: 4;
+  version: 5;
   commands: DurableCommandRecord[];
   receipts: CommandReceipt[];
 }
@@ -486,6 +516,59 @@ function originOf(req: http.IncomingMessage): { ok: boolean; origin: string | nu
   if (typeof origin !== 'string' || origin === '') return { ok: true, origin: null };
   if (origin.startsWith('chrome-extension://')) return { ok: true, origin };
   return { ok: false, origin: null };
+}
+
+/**
+ * The credential a local program presents to POST /send.
+ *
+ * Deliberately not the extension's bearer token. `/pair` mints that one and reissues it
+ * whenever the browser reconnects, so a CLI holding it would silently lose the route the next
+ * time Chrome came back — and a local caller sharing the browser's credential would also be
+ * able to reach every route the browser can. This is its own secret, for the one route.
+ *
+ * It lives in a file rather than the encrypted secret store because the whole point is that a
+ * program which is not this app can read it: there is no other way to hand it over. `0600` is
+ * therefore the entire access control, and the exposure is the one `/pair` already documents —
+ * anything running as this user can obtain it. What it grants is narrower than that route's:
+ * one typed message into a ChatGPT chat, and nothing else on this machine.
+ */
+async function readLocalToken(): Promise<string | null> {
+  const root = durableRoot();
+  if (!root) return null;
+  try {
+    const raw = await fs.readFile(path.join(root, LOCAL_TOKEN_FILE), 'utf8');
+    const token = raw.trim();
+    return token === '' ? null : token;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') logWarn(`bridge: could not read the local send token — ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** Mints the local credential once, at startup, and leaves an existing one alone. */
+async function ensureLocalToken(): Promise<void> {
+  const root = durableRoot();
+  if (!root || (await readLocalToken()) !== null) return;
+  try {
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, LOCAL_TOKEN_FILE), `${randomBytes(32).toString('base64url')}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    });
+    logInfo('bridge: wrote a token for local senders');
+  } catch (err) {
+    // The bridge still starts. Without the file /send answers 401, which is the honest state.
+    logWarn(`bridge: could not write the local send token — ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function localSenderAuthorised(req: http.IncomingMessage): Promise<boolean> {
+  const expected = await readLocalToken();
+  if (!expected) return false;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  return safeEqual(header.slice(7), expected);
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -927,6 +1010,46 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     logInfo('bridge: browser extension connected and provisioned');
     changed();
     return json(res, 200, { token }, origin);
+  }
+
+  /**
+   * One message, into one chat, for a program running on this computer.
+   *
+   * Ahead of the extension's auth wall because it presents a different credential — see
+   * readLocalToken. It is otherwise the same transport a worker bootstrap rides on: the app
+   * opens the chat, the page redeems the marker, types the text and reports which conversation
+   * it landed in. Nothing here binds an agent or moves a session, so the chat this reaches is
+   * an ordinary chat, and the extension records it exactly as it records the user's own.
+   *
+   * Deliberately the only route on this server a local program may use. The bridge still has
+   * no route that reads a file, runs a command, or changes a permission, and this one adds
+   * none: it can put words in a chat, which is a thing the person at this keyboard can already
+   * do by typing them.
+   */
+  if (route === '/send' && req.method === 'POST') {
+    if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
+    let body: Record<string, unknown>;
+    try {
+      body = (await readBody(req)) as Record<string, unknown>;
+    } catch (err) {
+      if ((err as Error).message === 'body_too_large') return tooLarge(res, origin);
+      return json(res, 400, { error: 'bad_request' }, origin);
+    }
+    // Nothing can redeem a command while the user has the browser disconnected, so this would
+    // open a tab that types nothing and then fails ninety seconds later. Say so instead.
+    if (await browserDisconnected()) return json(res, 409, { error: 'browser_disconnected' }, origin);
+    const target = body['conversationId'] === undefined || body['conversationId'] === null
+      ? null
+      : conversationId(body['conversationId']);
+    if (body['conversationId'] !== undefined && body['conversationId'] !== null && !target) {
+      return json(res, 400, { error: 'bad_conversation_id' }, origin);
+    }
+    const text = typeof body['text'] === 'string' ? body['text'] : '';
+    if (!text.trim()) return json(res, 400, { error: 'no_text' }, origin);
+    if (text.trim().length > MAX_SEND_CHARS) return tooLarge(res, origin);
+    const command = queueSend(target, text);
+    if (!command) return json(res, 400, { error: 'no_text' }, origin);
+    return json(res, 200, { command }, origin);
   }
 
   // A deliberate revocation is different from a stale credential. The extension repairs a
@@ -1907,14 +2030,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       // handed a command that would put nothing, or scaffolding alone, into a real chat.
       return json(res, 404, { error: 'no_such_command' }, origin);
     }
-    if (
-      reportedConversation &&
-      (command.spec.type !== 'revive' || command.spec.conversationId !== reportedConversation)
-    ) {
-      // An existing ChatGPT page is allowed to claim exactly one kind of command: a revival
-      // naming that exact chat. This check happens before the command acquires an owner, so a
-      // copied/stale worker or resume marker cannot steal the real fresh page's lease merely by
-      // being opened inside some already-existing conversation.
+    const claimsThisChat =
+      (command.spec.type === 'revive' || command.spec.type === 'send') &&
+      command.spec.conversationId === reportedConversation;
+    if (reportedConversation && !claimsThisChat) {
+      // An existing ChatGPT page is allowed to claim exactly one thing: a command naming that
+      // exact chat — a revival, or a local send addressed to it. This check happens before the
+      // command acquires an owner, so a copied/stale worker or resume marker cannot steal the
+      // real fresh page's lease merely by being opened inside some already-existing conversation.
       return json(res, 409, { error: 'command_wrong_conversation' }, origin);
     }
     // One command, one page. `client` is the page's own per-document id, and the first one
@@ -2113,6 +2236,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
             completedAt: Date.now()
           };
         }
+      } else if (command.spec.type === 'send') {
+        // Narrowed above: a send without a chat id is retried, not committed. There is nothing
+        // else to do here — no slot to bind, no session to move — which is the whole difference
+        // between this and the three commands the app issues on a model's behalf.
+        if (!conversation) return json(res, 503, { error: 'conversation_required', retryable: true }, origin);
+        receipt = {
+          id,
+          client: client || command.owner,
+          conversationId: conversation,
+          outcome: 'committed',
+          committed: true,
+          error: null,
+          completedAt: Date.now()
+        };
       } else if (command.spec.type === 'resume') {
         // Narrowed above.
         if (!conversation) return json(res, 503, { error: 'conversation_required', retryable: true }, origin);
@@ -2637,6 +2774,9 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       // any worker chat the broker is still owed — a run restored from disk at startup
       // has nobody to ask until this moment — and queue() folds a replayed worker into
       // the restored command for the same worker rather than opening a second tab.
+      // Before anything can be queued: a local caller has to be able to read this file to
+      // reach /send at all, and it is written once and then left alone.
+      await ensureLocalToken();
       try {
         await restoreCommands();
       } catch (err) {
@@ -2794,6 +2934,7 @@ export function shutdownBridge(): Promise<void> {
 function specKey(spec: CommandSpec): string {
   if (spec.type === 'worker') return `worker:${spec.agent}`;
   if (spec.type === 'revive') return `revive:${spec.agent}`;
+  if (spec.type === 'send') return `send:${spec.conversationId ?? 'a fresh chat'}`;
   return `resume:${spec.sessionId}`;
 }
 
@@ -2805,7 +2946,9 @@ function specKey(spec: CommandSpec): string {
  * run A can be adopted by run B after a crash/restart and keep A's command id alive.
  */
 function commandKey(spec: CommandSpec): string {
-  return spec.type === 'resume' ? specKey(spec) : `${specKey(spec)}:${spec.runId}`;
+  if (spec.type === 'resume') return specKey(spec);
+  if (spec.type === 'send') return `send:${spec.nonce}`;
+  return `${specKey(spec)}:${spec.runId}`;
 }
 
 const commandPhase = (command: Command): CommandPhase => (command.claimedAt === null ? 'queued' : 'leased');
@@ -2850,7 +2993,7 @@ function commandSnapshot(options: {
     receipts = [...receipts.filter((receipt) => receipt.id !== addReceipt.id), addReceipt];
   }
   receipts = receipts.slice(-MAX_COMMAND_RECEIPTS);
-  return { version: 4, commands: records, receipts };
+  return { version: 5, commands: records, receipts };
 }
 
 function persistCommands(): void {
@@ -3288,6 +3431,28 @@ export function queueWorkerRevival(agent: string, conversationId: string): Bridg
 }
 
 /**
+ * Queues one message for a local program.
+ *
+ * The agent-free twin of the two above, and the only producer here that no model can reach.
+ * A `conversationId` continues that exact chat; null opens a fresh one. Either way the text
+ * is typed as a genuine user message and the chat is recorded like any other, which is what
+ * makes this usable for driving ordinary chats rather than workers.
+ */
+export function queueSend(conversationId: string | null, text: string): BridgeCommand | null {
+  const body = text.trim();
+  if (!body || body.length > MAX_SEND_CHARS) return null;
+  const command = queue({
+    type: 'send',
+    conversationId,
+    text: body,
+    // Two sends are two messages. See CommandSpec.
+    nonce: randomBytes(8).toString('hex')
+  });
+  void deliver();
+  return describe(command, null);
+}
+
+/**
  * Queues the replacement chat for a continuation whose brief has been captured.
  *
  * Keyed by session, and carrying the transaction's token rather than any text: the token is
@@ -3377,15 +3542,20 @@ async function deliverOne(): Promise<void> {
   changed();
   // A revival is the one command that must not open a fresh composer: it names the chat the
   // worker already has, so the page lands on it and the marker it redeems names it back.
-  const url = commandUrl(command.id, command.spec.type === 'revive' ? command.spec.conversationId : null);
+  const url = commandUrl(
+    command.id,
+    command.spec.type === 'revive' || command.spec.type === 'send' ? command.spec.conversationId : null
+  );
   // The recorder can see a brand-new ChatGPT conversation before that page's content script has
   // redeemed this command. Arm the session-transfer gate before the browser gets any chance to
   // create B, otherwise that early observation invents a shadow session for B and the real A→B
   // commit quite correctly refuses to overwrite it. The later durable redeem refreshes the same
   // gate; commit/abort/drop clears it through the continuation state machine.
   if (command.spec.type === 'resume') noteResumeOpening(command.spec.token);
+  const intoExistingChat =
+    command.spec.type === 'revive' || (command.spec.type === 'send' && command.spec.conversationId !== null);
   logInfo(
-    command.spec.type === 'revive'
+    intoExistingChat
       ? `bridge: reopening the ChatGPT chat of ${specKey(command.spec)}`
       : `bridge: opening a fresh ChatGPT chat for ${specKey(command.spec)}`
   );
@@ -3532,6 +3702,10 @@ function retire(command: Command, why: string): void {
  * anything at all.
  */
 function bootstrapText(spec: CommandSpec, summary: string): string {
+  // Verbatim, and deliberately with nothing added. The other three kinds are the app talking
+  // to a model on somebody's behalf; this one is a local program's own words, and a paragraph
+  // of scaffolding appended to them would be the app putting words in its mouth.
+  if (spec.type === 'send') return spec.text;
   if (spec.type === 'revive') {
     // Written by the broker, out of that worker's own inbox, at the moment the page asks.
     // Empty means the broker no longer considers this worker to be waking, and an empty
@@ -3591,10 +3765,11 @@ function describe(command: Command, client: string | null, claimedSummary?: stri
     kind: 'open-chat',
     type: spec.type,
     text,
-    agent: spec.type === 'resume' ? null : spec.agent,
-    // The fence the page enforces before it types. Only a revival has one: the other two
-    // kinds open a chat that does not exist yet, so there is nothing to compare against.
-    conversationId: spec.type === 'revive' ? spec.conversationId : null
+    agent: spec.type === 'resume' || spec.type === 'send' ? null : spec.agent,
+    // The fence the page enforces before it types. A revival always names its chat and a
+    // send may; the two bootstraps open a chat that does not exist yet, so there is nothing
+    // for them to compare against.
+    conversationId: spec.type === 'revive' || spec.type === 'send' ? spec.conversationId : null
   };
 }
 
@@ -3670,7 +3845,7 @@ function tidyCommands(): void {
   const wakingWorkers = new Set(pendingWorkerRevivals().map((revival) => revival.id));
   for (const command of [...commands]) {
     const workerAgent = command.spec.type === 'worker' ? command.spec.agent : null;
-    if (command.spec.type !== 'resume' && command.spec.runId !== runId) {
+    if ((command.spec.type === 'worker' || command.spec.type === 'revive') && command.spec.runId !== runId) {
       // Run turnover is an identity boundary. A command from the retired incarnation is not
       // evidence that the same friendly worker id in the current run is already opening.
       retire(command, `its worker run ${command.spec.runId} is no longer current`);
@@ -3745,6 +3920,9 @@ function commandOrigin(id: string): SessionOrigin | null {
   // worker chat when it was first opened, and rewriting that origin now would only overwrite
   // the task this worker was actually created for with whatever it is being asked next.
   if (spec.type === 'revive') return null;
+  // Same reasoning for a send: the chat it opens is nobody's worker and nobody's replacement,
+  // so it is recorded as what it is rather than being labelled after the command that opened it.
+  if (spec.type === 'send') return null;
   return { kind: 'resume', fromSessionId: spec.sessionId, agentId: null, task: '' };
 }
 
@@ -3867,6 +4045,30 @@ function restoredCommandSpec(version: number, raw: Partial<CommandSpec>): Comman
     return { type: 'revive', agent: revive.agent, conversationId: revive.conversationId, runId: revive.runId };
   }
   if (
+    version >= 5 &&
+    raw.type === 'send' &&
+    typeof (raw as Partial<Extract<CommandSpec, { type: 'send' }>>).text === 'string' &&
+    typeof (raw as Partial<Extract<CommandSpec, { type: 'send' }>>).nonce === 'string' &&
+    ((raw as Partial<Extract<CommandSpec, { type: 'send' }>>).conversationId === null ||
+      typeof (raw as Partial<Extract<CommandSpec, { type: 'send' }>>).conversationId === 'string')
+  ) {
+    const local = raw as Extract<CommandSpec, { type: 'send' }>;
+    const text = local.text.trim();
+    // An empty message is never typed, here as everywhere else in this file.
+    if (!text) return null;
+    // A target that no longer validates makes this command a different command — one that
+    // opens a fresh chat instead of continuing the one the caller named. Drop it rather than
+    // let a corrupt row become an unexpected new chat after a restart.
+    const target = local.conversationId === null ? null : conversationId(local.conversationId);
+    if (local.conversationId !== null && !target) return null;
+    return {
+      type: 'send',
+      conversationId: target,
+      text: text.slice(0, MAX_SEND_CHARS),
+      nonce: local.nonce.slice(0, 64)
+    };
+  }
+  if (
     raw.type === 'resume' &&
     typeof (raw as Partial<Extract<CommandSpec, { type: 'resume' }>>).sessionId === 'string' &&
     typeof (raw as Partial<Extract<CommandSpec, { type: 'resume' }>>).token === 'string'
@@ -3886,7 +4088,7 @@ function restoredCommandSnapshot(
   now: number
 ): DurableCommandSnapshot {
   return {
-    version: 4,
+    version: 5,
     commands: plannedCommands.map(durableCommand),
     receipts: plannedReceipts
       .filter((receipt) => now - receipt.completedAt <= COMMAND_TTL_MS)
@@ -3907,7 +4109,7 @@ function planCommandRestore(
   now: number
 ): CommandRestorePlan | null {
   const version = saved.version;
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 || !Array.isArray(saved.commands)) return null;
+  if (!(version !== undefined && version >= 1 && version <= 5) || !Array.isArray(saved.commands)) return null;
 
   const plannedCommands = [...commands];
   const plannedReceipts = commandReceipts
