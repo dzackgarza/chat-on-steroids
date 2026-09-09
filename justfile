@@ -573,20 +573,53 @@ _send $chat $text:
             id=$(jq -r '.command.id' <<<"$accepted")
             pending=$(jq -r '.pendingTools' <<<"$accepted")
 
-            # Accepting the message only queues it. The browser still has to open the chat,
-            # find a composer it may type into, and send — and it fails outright if that chat
-            # is mid-turn. Reporting "sent" at the queue is how a caller ends up believing a
-            # message landed when nothing was typed, so wait for the real outcome instead.
-            # Wait for the receipt the browser writes once it has actually typed. Waiting for
-            # the command to leave the queue instead looks equivalent and is not: the queue is
-            # persisted a moment after the POST returns, so a command that has not been written
-            # yet is indistinguishable from one already finished, and every send reports failure.
-            # The app gives up on a command after 90s, so no receipt by then means it never sent.
+            # Accepting the message only queues it, and even a page click receipt is not
+            # delivery: in a background tab the send button reports enabled and the click
+            # silently no-ops. The only success is the app confirming a fresh turn_start in
+            # the recording, which is what GET /send/outcome reports — poll it to terminal.
+            horizon=$(jq -r '.verifyHorizonMs // 90000' <<<"$accepted")
+            if [[ "$pending" != "0" && "$pending" != "null" ]]; then
+                echo "note: $pending local tool call(s) in flight; the page will not type until they settle." >&2
+            fi
+            probe=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:$port/send/outcome?id=$id" -H "authorization: Bearer $token" || echo 000)
+            if [[ "$probe" == "200" ]]; then
+                deadline=$(( $(date +%s) + 90 + horizon / 1000 + 30 ))
+                while :; do
+                    out=$(curl -fsS -m 10 "http://127.0.0.1:$port/send/outcome?id=$id" \
+                        -H "authorization: Bearer $token" || echo '{}')
+                    state=$(jq -r '.state // empty' <<<"$out")
+                    case "$state" in
+                        sent_verified)
+                            conv=$(jq -r '.conversationId' <<<"$out")
+                            ts=$(( $(jq -r '.turnStartTs' <<<"$out") / 1000 ))
+                            echo "delivered to $conv — turn_start at $(date -d "@$ts" +%H:%M:%S 2>/dev/null || echo "$ts")"
+                            exit 0 ;;
+                        queued|delivering|typed|"")
+                            ;;
+                        *)
+                            # Terminal without proof of delivery. The app states the cause and
+                            # the concrete next action; relay both instead of a bare failure.
+                            echo "$state: $(jq -r '.reason // .message // empty' <<<"$out")" >&2
+                            hint=$(jq -r '.message // empty' <<<"$out")
+                            [[ -n "$hint" ]] && echo "$hint" >&2
+                            exit 1 ;;
+                    esac
+                    if (( $(date +%s) >= deadline )); then
+                        echo "gave up polling in state '${state:-unknown}'. $(jq -r '.message // empty' <<<"$out")" >&2
+                        exit 1
+                    fi
+                    sleep 1
+                done
+            fi
+            # The running app predates /send/outcome (it activates on its next restart).
+            # Fall back to the receipt the browser writes once it has actually typed — the
+            # old contract: no receipt within the 90s command deadline means it never sent.
             state="{{state_dir}}/bridge-commands.json"
             for _ in $(seq 1 180); do
                 landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null || true)
                 if [[ -n "$landed" ]]; then
-                    echo "typed into $landed"
+                    echo "typed into $landed (unverified: this app build cannot confirm turn_start; restart onto the new build for verified sends)"
                     exit 0
                 fi
                 sleep 1

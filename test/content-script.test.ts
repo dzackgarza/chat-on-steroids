@@ -8408,6 +8408,207 @@ describe('the fresh chat the app opened', () => {
     expect(acks[0]!.error).toBe('the composer already holds something the user was writing');
     expect(live.sent.filter((message) => message.type === 'redeem')).toHaveLength(1);
   });
+
+  it('activates its tab after redeeming and before driving the composer', async () => {
+    live = await harness(
+      'https://chatgpt.com/?clf=cmd-activate',
+      {
+        redeem: () => ({
+          ok: true,
+          command: { id: 'cmd-activate', type: 'resume', text: 'the carried handoff', agent: null }
+        }),
+        activate_tab: () => ({ ok: true, focused: true }),
+        ack: () => ({ ok: true })
+      },
+      (document, dom) => {
+        document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+          dom.reconfigure({ url: 'https://chatgpt.com/c/31313131-4242-4353-8464-757575757575' });
+        });
+      }
+    );
+    await settle(400);
+
+    // In a background tab the send button reports enabled and the click silently no-ops, so
+    // activation must come after ownership is proven (redeem) and before anything drives the
+    // composer — every time, not only when something looks wrong.
+    const types = live.sent.map((message) => message.type);
+    const redeemAt = types.indexOf('redeem');
+    const activateAt = types.indexOf('activate_tab');
+    const ackAt = types.indexOf('ack');
+    expect(redeemAt).toBeGreaterThanOrEqual(0);
+    expect(activateAt).toBeGreaterThan(redeemAt);
+    expect(ackAt).toBeGreaterThan(activateAt);
+    expect(live.sent.filter((message) => message.type === 'ack')[0]).toMatchObject({ status: 'sent' });
+  });
+
+  it('sends the draft an earlier silent no-op left behind instead of stacking a duplicate', async () => {
+    const text = 'Continue the previous ChatGPT session. Handoff: h-9';
+    let clicked = 0;
+    live = await harness(
+      'https://chatgpt.com/?clf=cmd-retry',
+      {
+        redeem: () => ({
+          ok: true,
+          command: { id: 'cmd-retry', type: 'resume', text, agent: null }
+        }),
+        ack: () => ({ ok: true })
+      },
+      (document, dom) => {
+        // The wedge: a previous attempt at this exact push typed the text and its send click
+        // silently no-oped, so the words are already sitting in the composer.
+        document.querySelector('#prompt-textarea')!.textContent = text;
+        document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+          clicked++;
+          dom.reconfigure({ url: 'https://chatgpt.com/c/32323232-4343-4454-8565-767676767676' });
+        });
+      }
+    );
+    await settle(400);
+
+    const acks = live.sent.filter((message) => message.type === 'ack');
+    expect(acks.map((ack) => ack.status)).toEqual(['sent']);
+    expect(clicked).toBe(1);
+    // One copy of the words, not two: the pre-existing draft was submitted, never re-inserted.
+    expect(composerText(live.document).replace(/\s+/g, '')).toBe(text.replace(/\s+/g, ''));
+  });
+
+  it('clears a ledger-proven app draft and types the new push in its place', async () => {
+    const submitted: string[] = [];
+    live = await harness(
+      'https://chatgpt.com/?clf=cmd-clear-wedge',
+      {
+        redeem: () => ({
+          ok: true,
+          command: {
+            id: 'cmd-clear-wedge',
+            type: 'resume',
+            text: 'the new handoff',
+            agent: null,
+            // The bridge's ledger: squeezed texts the app itself previously asked to type here.
+            staleDrafts: ['theoldwedge']
+          }
+        }),
+        ack: () => ({ ok: true })
+      },
+      (document, dom) => {
+        document.querySelector('#prompt-textarea')!.textContent = 'the old wedge';
+        document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+          submitted.push(composerText(document));
+          dom.reconfigure({ url: 'https://chatgpt.com/c/33333333-4444-4555-8666-777777777777' });
+        });
+      }
+    );
+    await settle(400);
+
+    const acks = live.sent.filter((message) => message.type === 'ack');
+    expect(acks.map((ack) => ack.status)).toEqual(['sent']);
+    // The app-manufactured wedge went away and only the new push was submitted.
+    expect(submitted.map((value) => value.replace(/\s+/g, ''))).toEqual(['thenewhandoff']);
+  });
+
+  it('preserves a draft the ledger does not claim, even when a ledger is present', async () => {
+    live = await harness(
+      'https://chatgpt.com/?clf=cmd-guarded',
+      {
+        redeem: () => ({
+          ok: true,
+          command: {
+            id: 'cmd-guarded',
+            type: 'resume',
+            text: 'the push that must not type',
+            agent: null,
+            staleDrafts: ['someotherwedge']
+          }
+        }),
+        ack: () => ({ ok: true })
+      },
+      (document) => {
+        document.querySelector('#prompt-textarea')!.textContent = 'a poem the user was writing';
+      }
+    );
+    await settle(400);
+
+    const acks = live.sent.filter((message) => message.type === 'ack');
+    expect(acks.map((ack) => ack.status)).toEqual(['failed']);
+    expect(acks[0]!.error).toBe('the composer already holds something the user was writing');
+    expect(composerText(live.document)).toBe('a poem the user was writing');
+  });
+
+  it('takes its own text back out when ChatGPT never accepts the send, leaving no wedge', async () => {
+    live = await harness('https://chatgpt.com/?clf=cmd-noop', {
+      redeem: () => ({
+        ok: true,
+        command: { id: 'cmd-noop', type: 'resume', text: 'text nothing will accept', agent: null }
+      }),
+      ack: () => ({ ok: true })
+      // Deliberately no send-button listener: the click runs and nothing on the page reacts,
+      // which is exactly the background-tab silent no-op shape.
+    });
+    await settle(600);
+
+    const acks = live.sent.filter((message) => message.type === 'ack');
+    expect(acks.map((ack) => ack.status)).toEqual(['failed']);
+    expect(acks[0]!.error).toBe('ChatGPT did not accept the bootstrap send');
+    // The old behavior left the inserted text as an unsent draft — the wedge that then
+    // blocked every later push into this chat. The composer must be clean.
+    expect(composerText(live.document)).toBe('');
+  });
+
+  it('ends a revival wait wedged behind the app’s own draft once /activity names it, then clears and types', async () => {
+    const chat = '34343434-4545-4656-8767-787878787878';
+    const submitted: string[] = [];
+    live = await harness(
+      `https://chatgpt.com/c/${chat}?clf=cmd-wedged-revival#clf=cmd-wedged-revival`,
+      {
+        redeem: () => ({
+          ok: true,
+          command: {
+            id: 'cmd-wedged-revival',
+            type: 'send',
+            text: 'the follow-up push',
+            agent: null,
+            conversationId: chat,
+            staleDrafts: ['Continue']
+          }
+        }),
+        activate_tab: () => ({ ok: true, focused: true }),
+        ack: () => ({ ok: true }),
+        activity: () => ({
+          ok: true,
+          data: {
+            entries: [],
+            stream: [],
+            nextSince: 0,
+            pendingTools: 0,
+            staleDrafts: ['Continue'],
+            job: null,
+            bootstrap: null
+          }
+        })
+      },
+      (document) => {
+        // The wedge a background-tab stall recovery manufactured earlier: "Continue", typed
+        // by the app, never sent, blocking the submit-ready wait.
+        document.querySelector('#prompt-textarea')!.textContent = 'Continue';
+        document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+          const composer = document.querySelector('#prompt-textarea')!;
+          submitted.push((composer.textContent || '').trim());
+          composer.textContent = '';
+        });
+      }
+    );
+    await settle(300);
+
+    // The ledger arrives on the feed this tab already polls; matching it is what ends the wait.
+    await live.hook.pullActivity();
+    await settle(800);
+
+    const acks = live.sent.filter((message) => message.type === 'ack');
+    expect(acks).toContainEqual(
+      expect.objectContaining({ id: 'cmd-wedged-revival', status: 'sent', conversationId: chat })
+    );
+    expect(submitted).toEqual(['the follow-up push']);
+  });
 });
 
 /**

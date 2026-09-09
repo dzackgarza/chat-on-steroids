@@ -1229,6 +1229,105 @@ describe('extension revival delivery', () => {
     expect(worker.windowsUpdate).not.toHaveBeenCalled();
   });
 
+  it('recycles a frozen first copy of the chat once a live second copy claims the wake', async () => {
+    const worker = loadWorker({
+      local: new FakeStorageArea(paired),
+      session: new FakeStorageArea(),
+      fetch: quiet(),
+      tabsGet: vi.fn(async (tabId: number) => ({ id: tabId, url: `https://chatgpt.com/c/${CHAT}` }))
+    });
+    worker.tabsQuery.mockResolvedValue([
+      { id: 4, windowId: 7, url: `https://chatgpt.com/c/${CHAT}` },
+      { id: 5, windowId: 8, url: `https://chatgpt.com/c/${CHAT}` }
+    ]);
+    worker.tabsSendMessage.mockImplementation((id: number, message: { type: string }) => {
+      // Chromium froze tab 4 wholesale: the message neither resolves nor rejects. Only the
+      // bounded ping race can classify this — a rejection would mean a dead-but-recoverable
+      // content script instead, which is preserved.
+      if (id === 4) return new Promise(() => undefined);
+      return Promise.resolve(
+        message.type === 'clf-recorder-ping' ? { ok: true, recorderVersion: 10 } : { ok: true, claimed: true }
+      );
+    });
+
+    await worker.createTab({ id: 12, pendingUrl: REVIVAL_URL });
+
+    // The live copy gets the command, the fallback closes after the claim, and the frozen
+    // duplicate is recycled — the conversation stays open in the claimant.
+    await vi.waitFor(
+      () => {
+        expect(worker.tabsSendMessage).toHaveBeenCalledWith(5, {
+          type: 'clf-run-command',
+          id: 'cmd-wake',
+          conversationId: CHAT
+        });
+        expect(worker.tabsRemove).toHaveBeenCalledWith(12);
+        expect(worker.tabsRemove).toHaveBeenCalledWith(4);
+      },
+      { timeout: 10_000 }
+    );
+    expect(worker.tabsRemove).not.toHaveBeenCalledWith(5);
+  });
+
+  it('closes an all-frozen copy set and clears the preference so the app-opened tab proceeds', async () => {
+    const session = new FakeStorageArea();
+    const worker = loadWorker({
+      local: new FakeStorageArea(paired),
+      session,
+      fetch: quiet(),
+      tabsGet: vi.fn(async (tabId: number) => ({ id: tabId, url: `https://chatgpt.com/c/${CHAT}` }))
+    });
+    worker.tabsQuery.mockResolvedValue([{ id: 4, windowId: 7, url: `https://chatgpt.com/c/${CHAT}` }]);
+    worker.tabsSendMessage.mockImplementation(() => new Promise(() => undefined));
+
+    await worker.createTab({ id: 12, pendingUrl: REVIVAL_URL });
+
+    await vi.waitFor(() => expect(worker.tabsRemove).toHaveBeenCalledWith(4), { timeout: 10_000 });
+    // The fallback is the one working tab holding this conversation now; it must neither be
+    // closed nor left deferring to a preference naming a tab that can never answer.
+    expect(worker.tabsRemove).not.toHaveBeenCalledWith(12);
+    await vi.waitFor(() =>
+      expect((session.data.revivalPreferences ?? {})['cmd-wake' as keyof object]).toBeUndefined()
+    );
+  });
+
+  it('preserves a dead-but-recoverable copy: rejection is not freeze, and costs no tab', async () => {
+    const worker = loadWorker({
+      local: new FakeStorageArea(paired),
+      session: new FakeStorageArea(),
+      fetch: quiet()
+    });
+    worker.tabsQuery.mockResolvedValue([{ id: 4, windowId: 7, url: `https://chatgpt.com/c/${CHAT}` }]);
+    // An extension reload leaves no receiver: sendMessage rejects immediately. That tab may
+    // remount and recover, so it keeps both its tab and the revival preference.
+    worker.tabsSendMessage.mockRejectedValue(new Error('Could not establish connection'));
+
+    await worker.createTab({ id: 12, pendingUrl: REVIVAL_URL });
+
+    expect(worker.tabsRemove).not.toHaveBeenCalled();
+  });
+
+  it('activates the sender tab and focuses its window on activate_tab', async () => {
+    const worker = loadWorker({ local: new FakeStorageArea(paired), session: new FakeStorageArea(), fetch: quiet() });
+    await worker.registerTab(4, 'doc-4');
+
+    const reply = await worker.send({ type: 'activate_tab' }, 4, 'doc-4');
+
+    expect(reply).toEqual({ ok: true, focused: true });
+    expect(worker.tabsUpdate).toHaveBeenCalledWith(4, { active: true });
+    expect(worker.windowsUpdate).toHaveBeenCalledWith(7, { focused: true });
+  });
+
+  it('reports focus_failed instead of failing the drive when the browser refuses activation', async () => {
+    const worker = loadWorker({ local: new FakeStorageArea(paired), session: new FakeStorageArea(), fetch: quiet() });
+    await worker.registerTab(4, 'doc-4');
+    worker.tabsUpdate.mockRejectedValue(new Error('window is closing'));
+
+    const reply = await worker.send({ type: 'activate_tab' }, 4, 'doc-4');
+
+    expect(reply).toEqual({ ok: false, error: 'focus_failed' });
+  });
+
   it('reuses a supported legacy chat.openai.com worker tab', async () => {
     const worker = loadWorker({ local: new FakeStorageArea(paired), session: new FakeStorageArea(), fetch: quiet() });
     worker.tabsQuery.mockResolvedValue([{ id: 4, windowId: 7, url: `https://chat.openai.com/c/${CHAT}` }]);
