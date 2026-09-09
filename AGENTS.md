@@ -1166,6 +1166,11 @@ That is the whole role, and its boundaries are hard:
 
 Point, send, and continue until the task is done, the chat is wedged, or its context is full.
 
+**Never leave a worker asleep or idle.** A sleeping or stalled chat produces zero progress; nothing restarts on its own. The steward does not wait for work to begin spontaneously. When a worker finishes a turn, stalls, or dies to an error (such as a delivery timeout), the steward must act immediately: push `Continue` if viable, or launch a replacement with `just new` and a brief handoff.
+
+**Do not dig into a managed repository's specifics to perform its orchestration.** Inspecting source files, internal status ledgers, git history, or memory vaults to decide domain-level work violates delegation. The managed chat owns the work and the traversal in its repository; the steward only provides the ambient pointer and maintains momentum.
+
+
 ### Where a regression belongs
 
 49 suites, named for the subsystem they cover. Vitest uses real filesystem, real processes
