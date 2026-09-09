@@ -217,10 +217,12 @@ _send $chat $text:
         # /hello is unauthenticated and names the app, so it is how a local caller finds
         # which of the five candidate ports this app actually bound.
         if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
-            id=$(curl -fsS -m 10 "http://127.0.0.1:$port/send" \
+            accepted=$(curl -fsS -m 10 "http://127.0.0.1:$port/send" \
                 -H "authorization: Bearer $token" \
                 -H 'content-type: application/json' \
-                --data-binary "$body" | jq -r '.command.id')
+                --data-binary "$body")
+            id=$(jq -r '.command.id' <<<"$accepted")
+            pending=$(jq -r '.pendingTools' <<<"$accepted")
 
             # Accepting the message only queues it. The browser still has to open the chat,
             # find a composer it may type into, and send — and it fails outright if that chat
@@ -240,7 +242,8 @@ _send $chat $text:
                 fi
                 sleep 1
             done
-            echo "queued but never typed: the browser did not send it (chat mid-turn, or no tab)" >&2
+            echo "queued but never typed. $pending local tool call(s) were running when it was queued;" >&2
+            echo "the page refuses to type while any are, and an unattributed call counts against every chat." >&2
             exit 1
         fi
     done

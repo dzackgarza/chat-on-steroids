@@ -1049,7 +1049,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (text.trim().length > MAX_SEND_CHARS) return tooLarge(res, origin);
     const command = queueSend(target, text);
     if (!command) return json(res, 400, { error: 'no_text' }, origin);
-    return json(res, 200, { command }, origin);
+    // The page refuses to type while this is above zero, and an unattributed call is charged
+    // to every chat until its owner is proven — so a caller whose message is never typed needs
+    // this number to tell "that chat is busy" from "some other chat's call is blocking it".
+    return json(res, 200, { command, pendingTools: runningToolCalls(target) }, origin);
   }
 
   // A deliberate revocation is different from a stale credential. The extension repairs a
