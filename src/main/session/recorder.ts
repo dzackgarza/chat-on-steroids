@@ -2312,6 +2312,10 @@ export function resetRecorderForTests(): void {
   resetCorrelationRegistryForTests();
   conversations.clear();
   detachedWhileGenerating.clear();
+  // The progress clock outlives its conversation entry on purpose (a slept chat still has
+  // one), so it has to be cleared explicitly here or a reset test inherits the previous
+  // test's "the recording last changed just now" and passes for the wrong reason.
+  lastStored.clear();
   observationChains.clear();
   sessionInitializations.clear();
   pendingOrigins.clear();
