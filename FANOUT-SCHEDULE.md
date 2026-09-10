@@ -20,6 +20,16 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
+**Width is capped by what the control path can actually feed, not by the work
+available.** A stream that cannot be reached is not a stream. Every send opens a command
+tab and counts against every other chat's `pendingTools`, so pushing harder across more
+streams makes the composer refuse more often rather than less: on 2026-09-10 fifteen
+streams driven by four concurrent senders delivered fewer messages than one serial
+driver over six, and workers sat idle the better part of an hour while the steward's own
+retries saturated the gate they were waiting on. Set the count from the observed
+delivery rate — if one pass cannot reach every stream inside the time a worker takes to
+finish a turn, there are too many streams. Park the excess rather than launching more.
+
 **Messaging a worker goes through the app:** `just say` → `POST /send` → poll
 `/send/outcome` to `sent_verified`, then the sleep/wake contract in AGENTS.md §14.
 The app owns the browser, so it holds the send registry, the draft ledger,
