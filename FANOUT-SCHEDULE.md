@@ -85,6 +85,17 @@ the partition below.
 | S7 RA audit+small | RA audit sweep (464 files) + JHU, INTEGRAL-PRACTICE, UGA-PRELIM, SS03/SMI | 464 |
 | S8 alg-redo | the 502 Gemini-authored files (explicit file list, not directories) | 402 |
 
+**No worktrees, no branches — streams work directly on `main`.** Authoring a solution
+creates prose in a card file that no other stream owns; two streams writing different
+cards cannot conflict, so there is nothing for a branch to isolate. The worktree-and-
+branch apparatus this repo accumulated bought nothing and cost a great deal: 37
+worktrees, 31 duplicated virtualenvs, 15 GB, a full volume, and — worst — roughly
+1,800 commits of finished solutions stranded on branches that were never merged, so
+`main` did not have the work. Commit straight to `main`; git already serialises
+concurrent commits to disjoint files. Reserve a branch for something that genuinely
+needs isolation, such as a sweeping change to shared tooling, and merge it the same
+day.
+
 **Contention rule:** streams never touch `queues/C-unsolved-cards.md`; each derives
 its worklist with `just unsolved-in <collection>`. S1/S8 and S3/S8 share directories
 but are provably file-disjoint (unsolved vs Gemini-solved); S8's claim boundary is
