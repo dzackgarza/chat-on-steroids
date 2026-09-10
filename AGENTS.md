@@ -1459,6 +1459,20 @@ workers were fine. What had stopped was the steward's ability to push, and it ne
 checked the difference. **"I cannot reach a worker" and "the fleet is stopped" are
 different claims and need different evidence.**
 
+**Never tell a worker its process is dead on the strength of missing artifacts.** The
+liveness test is the process, and specifically whether a child's cumulative CPU is
+advancing between two samples — not whether files have appeared. Long stages write
+nothing for many minutes: a Lean exporter or axiom audit can run for the better part of
+an hour with zero writes under `.lake/build` while doing real work. On 2026-09-10 a
+steward saw no artifacts in five minutes, told a worker its build was gone and to stop
+re-running it, and the build was in fact alive and had simply moved to a stage that
+writes nothing — the message was a instruction to abandon work in progress. Sample
+`/usr/bin/ps -o pid,times,pcpu --ppid <pid>` twice, twenty seconds apart, and read
+`times`; only "no process at all" is death. **And a false statement to a worker has to be
+retracted immediately and confirmed landed** — it will act on the wrong fact within one
+turn, and the chat is usually busy doing exactly that, so the retraction must be retried
+until it delivers rather than left for the next tick.
+
 **Check the substrate before you blame the app.** `df -h`, `uptime`, `/usr/bin/ps` — a
 few seconds, before any theory about attribution tiers or gates. A full volume does not
 present as a disk error; it presents as killed processes, dying `exec_command` sessions
