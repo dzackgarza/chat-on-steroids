@@ -579,8 +579,9 @@ state chat:
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
     for port in 8765 8766 8767 8768 8769; do
-        if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
-            curl -fsS -m 10 -G "http://127.0.0.1:$port/conversation/status" \
+        # A stalled bridge is not an absent one; see the note in `_send`.
+        if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+            curl -fsS --connect-timeout 5 -m 45 -G "http://127.0.0.1:$port/conversation/status" \
                 --data-urlencode "conversationId={{chat}}" \
                 -H "authorization: Bearer $token" | jq .
             exit 0
@@ -605,7 +606,17 @@ _send $chat $text mode="refuse" reload="false":
     for port in 8765 8766 8767 8768 8769; do
         # /hello is unauthenticated and names the app, so it is how a local caller finds
         # which of the five candidate ports this app actually bound.
-        if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+        #
+        # Split into a connect deadline and a response deadline, because the two failures are
+        # nothing alike. A port nothing is listening on refuses the connection in under a
+        # millisecond, so hunting the other four costs nothing. A port this app *is* bound to
+        # can take far longer than a second to answer: sampled 2026-09-10, 60 consecutive
+        # /hello probes against a healthy daemon returned a median of ~100ms, one at 6.3s and
+        # one that never answered inside 30s. Under the old flat `-m 1` those stalls fell out
+        # of the loop as if no app were listening, and `say` reported "is the app running?"
+        # about a running app — four times in five on an idle chat. A false liveness verdict
+        # is worse than a slow one: it is the reading that makes the send path look dead.
+        if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
             # A sleep-managed chat answers 409 with a typed reason, a next-check hint and the
             # concrete next action. `curl -f` threw all three away and left the caller a bare
             # `curl: (22)` — indistinguishable from a dead app, a bad token or a wedged
@@ -618,13 +629,27 @@ _send $chat $text mode="refuse" reload="false":
             # stuck rather than busy and the steward is told to go look.
             waited=0
             while :; do
-                answer=$(curl -sS -m 10 -w '\n%{http_code}' "http://127.0.0.1:$port/send" \
+                # Same split, and the transport failure is retried rather than fatal: the app
+                # stalling for longer than this deadline is a slow app, not a refused send, and
+                # aborting the whole push on one slow response threw away a message the bridge
+                # had every intention of accepting.
+                answer=$(curl -sS --connect-timeout 5 -m 60 -w '\n%{http_code}' "http://127.0.0.1:$port/send" \
                     -H "authorization: Bearer $token" \
                     -H 'content-type: application/json' \
-                    --data-binary "$body")
+                    --data-binary "$body" || printf '\n000')
                 code=$(tail -n1 <<<"$answer")
                 accepted=$(sed '$d' <<<"$answer")
                 if [[ "$code" == "200" ]]; then break; fi
+                if [[ "$code" == "000" ]]; then
+                    if (( waited >= 1500 )); then
+                        echo "gave up after ${waited}s: the app never answered POST /send inside its deadline." >&2
+                        exit 1
+                    fi
+                    echo "note: the app did not answer POST /send in time; it is stalled rather than gone. Retrying." >&2
+                    sleep 10
+                    waited=$(( waited + 10 ))
+                    continue
+                fi
                 reason=$(jq -r '.reason // .error // empty' <<<"$accepted" 2>/dev/null || true)
                 if [[ "$code" != "409" || ( "$reason" != "sleeping" && "$reason" != "waking" ) ]]; then
                     echo "the app refused this send (HTTP $code): ${reason:-no reason given}" >&2
@@ -661,12 +686,14 @@ _send $chat $text mode="refuse" reload="false":
                 jq -r '.inFlightCalls[]? | "      \(.tool) \((.ageMs / 1000) | floor)s \(.attribution) \(.conversationId // "unplaced")"' \
                     <<<"$accepted" >&2 2>/dev/null || true
             fi
-            probe=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
+            probe=$(curl -sS --connect-timeout 5 -m 45 -o /dev/null -w '%{http_code}' \
                 "http://127.0.0.1:$port/send/outcome?id=$id" -H "authorization: Bearer $token" || echo 000)
             if [[ "$probe" == "200" ]]; then
                 deadline=$(( $(date +%s) + 90 + horizon / 1000 + 30 ))
                 while :; do
-                    out=$(curl -fsS -m 10 "http://127.0.0.1:$port/send/outcome?id=$id" \
+                    # A slow answer is not a lost send: an empty reply keeps the poll in its
+                    # current state and tries again, which is what the deadline below is for.
+                    out=$(curl -fsS --connect-timeout 5 -m 45 "http://127.0.0.1:$port/send/outcome?id=$id" \
                         -H "authorization: Bearer $token" || echo '{}')
                     state=$(jq -r '.state // empty' <<<"$out")
                     case "$state" in
