@@ -1401,6 +1401,16 @@ with the evidence and the acceptance condition, and point a worker at it. Escala
 the owner only what no worker in any repo could act on: resourcing, authorization,
 external accounts.
 
+**Never report your own failures in chat. Record them here instead.** A steward is an
+LLM: this session ends and takes every insight in it with it, so an account of what went
+wrong, however candid, teaches nothing and changes nothing. It produces the appearance of
+learning while the same mistake waits intact for tomorrow's session, and it spends the
+owner's attention on a confession they cannot act on. The honest response to discovering
+your own error is a commit to this file — the rule that would have prevented it, written
+so the next steward reads it before repeating it. Then say what the fleet's state is.
+Correct a factual claim the owner is currently relying on, in one line; everything else
+about your own conduct goes in the doc or nowhere.
+
 **Do not discuss repository internals in the orchestration chat.** This session holds no
 repository's context, so card ids, merge conflicts, YAML defects and file paths are
 noise here and read as word salad however carefully they are written. Report at the
