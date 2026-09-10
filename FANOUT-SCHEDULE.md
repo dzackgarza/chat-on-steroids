@@ -20,50 +20,28 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
-**Degraded-control brake:** stream targets assume a working control path (pushes
-land, attribution works, worker state is observable). When the push path is
-degraded — composer refusals, broken tool-call attribution, missing per-chat
-evidence channels — **pause new stream launches and hold current width**: added
-throughput is worthless if a stalled worker cannot be reached, and each extra
-stream consumes the quiet windows recovery pushes need. Keep existing streams
-running, run a state-driven push loop against the stalest idle stream, and resume
-launching toward targets only after the control path is verified healthy again.
+**Messaging a worker goes through the app:** `just say` → `POST /send` → poll
+`/send/outcome` to `sent_verified`, then the sleep/wake contract in AGENTS.md §14.
+The app owns the browser, so it holds the send registry, the draft ledger,
+single-driver enforcement, sleep/wake state, and send-correlated attribution; a
+send it did not make leaves all of that wrong, and it records any such send as
+`sendOrigin: out_of_band`. A nonzero out-of-band counter means something is
+driving a composer behind the app — treat it as an incident and find it.
 
-**The app's send path is the only way to message a worker. There is no sanctioned
-alternative.** `just say` → `POST /send` → poll `/send/outcome` to `sent_verified`,
-with the sleep/wake contract in AGENTS.md §14. Driving a chat's composer directly
-over CDP — `pusher2.sh`, `cdp_push.py`, or anything like them — is prohibited, not
-merely discouraged: it bypasses the send registry, the draft ledger, single-driver
-enforcement, sleep/wake state, and send-correlated attribution, so the app is left
-believing a conversation is idle while it is generating, two drivers can type into
-one composer, and a failed silent click leaves a draft that wedges the next real
-send. The app detects and counts such sends (`sendOrigin: out_of_band`); a nonzero
-counter is an incident, not a metric.
+**A broken send path is a P0 defect in tooling we own — fix it.** That is what the
+degraded-control brake buys time for: hold width, keep existing streams running,
+and repair the app. Repair is also the faster path. The attribution outage that
+took the send path down was root-caused and fixed in hours once someone looked at
+it, and the day spent working beside it instead cost a fleet-wide bookkeeping
+blackout, a wedged-composer failure class, and a day of unattributed calls.
 
-**When the send path is down, that is a P0 defect in tooling we own — fix it.** Do
-not route around it. This is exactly the case the degraded-control brake is for:
-hold width, keep existing streams running, and repair the app. Today's evidence
-says that is the faster path anyway — the attribution outage that "justified" the
-CDP scripts was root-caused and fixed in hours once someone actually looked at it,
-while the workaround silently cost a day of unattributed calls, a wedged composer
-class, and a fleet-wide bookkeeping blackout. A workaround that hides a defect in
-shared infrastructure leaves it live for every other consumer.
-
-*Status 2026-09-09: brake LIFTED ~11:57. The attribution defect itself is
-unresolved and upstream — the connector transport stopped sending `x-request-id`,
-so every call is filed unattributed and the composer's charge-against-every-chat
-rule keeps `just say` refusing under load. Control was restored by a different
-route: a CDP push that types into the page composer directly, using
-`extension/chatgpt-dom.js`'s own selectors and acceptance test. Two things it
-requires, both learned the expensive way — the tab must be activated first (in a
-background tab the send button reports enabled and the click silently no-ops,
-leaving an unsent draft that then blocks the app's path too), and every tab
-matching the conversation must be tried, since the browser routinely holds two or
-three per chat and only one carries a live composer. A tab that times out on
-`Runtime.evaluate` is frozen: close it and reopen the conversation (`/json/new` is
-PUT-only since Chrome M111). Evidence for the lift: a 26-minute stall, two frozen
-tabs, and one wedged chat all recovered and observed at `turn_start` within 90s.
-new-qual-site is launching S6 and S8 to reach its 8-stream target.*
+*Status 2026-09-10: brake lifted. The transport stopped sending `x-request-id`, so
+the app now attributes connector calls by evidence — session keys bound at moments
+the app can prove — and the charge-against-every-chat rule narrows per worker as
+each key binds. Sends, tab recovery, and sleep/wake all run through the app; §14
+holds the contract and the browser behaviors it handles (activation before typing,
+duplicate and frozen tabs, draft recovery, turn_start verification). new-qual-site
+is at its 8-stream target.*
 
 While attribution is broken, per-chat `tool_call` recency is unavailable as an
 evidence channel — every call lands in one unattributed session. Stream state
