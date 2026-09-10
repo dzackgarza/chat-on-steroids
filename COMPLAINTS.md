@@ -74,6 +74,13 @@ was done about it.
   load below the core count; a `git worktree` at a fixed commit removes the moving-tree
   variable (the shared tree is dirty by design — see AGENTS.md §19). Under load, treat a
   session-suite failure list as unreliable until it reproduces twice with the same members.
+  Raising the timeout does **not** buy a verdict under load, which was measured too: at
+  `--testTimeout=120000` (4x the configured 30s) with load ~23, the suite ran **over 90
+  minutes without completing** and was abandoned, against ~10 minutes at the default. Tests
+  blocking until a long timeout rather than failing an assertion is exactly the shape a
+  descheduled real-timer suite has, and it is further reason to read the failure lists above
+  as environment noise — but it is indirect, so it settles nothing on its own. Wait for an
+  idle machine instead of trying to out-configure the load.
 - **Behavior change to the sleep/wake contract, deliberate.** Page evidence of a fresh
   turn in a slept conversation used to be released quietly as
   `woke_unconfirmed` ("a tab this app did not open is observing the chat"). Under the
