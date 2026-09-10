@@ -32,7 +32,15 @@ launching toward targets only after the control path is verified healthy again.
 A degraded app-side push path does not have to mean degraded control. The brake
 lifts when *some* verified control path exists, not when the original one is
 repaired: the test is whether a stalled, wedged, or frozen stream can be brought
-back and observed executing, by any route.
+back and observed executing, by any route. **But an alternate route is break-glass,
+not a new normal: it is authorized only while the app path is verifiably down, its
+every use must be paired with fixing or filing the app defect that forced it, and
+it retires the moment the app path is repaired.** As of the Sep 10 restart the app
+path (`just say` → `POST /send` → `sent_verified`, sleep/wake contract in
+AGENTS.md §14) is the sole normal control surface; direct-CDP composer drives
+(`pusher2.sh`, `cdp_push.py`) are emergency tooling only — they bypass the send
+registry, the draft ledger, single-driver enforcement, sleep/wake, and
+push-correlated attribution, and the app now surfaces such bypasses loudly.
 
 *Status 2026-09-09: brake LIFTED ~11:57. The attribution defect itself is
 unresolved and upstream — the connector transport stopped sending `x-request-id`,
