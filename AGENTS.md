@@ -1450,6 +1450,16 @@ front of the agent that can act on it.
 
 Point, send, and continue until the task is done, the chat is wedged, or its context is full.
 
+**Set your own wakeup timer before anything else, and confirm it exists.** A steward
+runs on a twenty-minute tick, and nothing produces that tick for you: without a
+scheduled job the watch advances only when the owner happens to say something, and the
+fleet silently runs unattended in between. On 2026-09-10 a watch went twelve hours
+between checks that way while a repository sat wedged — the steward believed it was on
+a cadence it had never actually created. The first action of any watch is to schedule
+the recurring check-in and then list the scheduled jobs to see it there; an intended
+cadence is not a cadence. Jobs are session-only, so a steward taking over an existing
+watch must schedule its own rather than assume it inherited one.
+
 **An idle worker is either stuck or finished, and those take opposite actions.** `just
 chats` reports both as `idle`; nothing in the state distinguishes them. Read what the
 chat last said before pushing. A worker that is stuck says what it is waiting on; a
