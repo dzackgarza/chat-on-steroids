@@ -547,29 +547,104 @@ who chat:
 
 # Send a message to an open chat, by conversation id (see `just chats`)
 say $chat $text:
-    @just -f {{justfile()}} _send "$chat" "$text"
+    @just -f {{justfile()}} _send "$chat" "$text" refuse false
 
 # Start a new chat with this opening message
 new $text:
-    @just -f {{justfile()}} _send "" "$text"
+    @just -f {{justfile()}} _send "" "$text" refuse false
+
+# The composer refuses while a turn is in flight, so a turn that will never finish makes the
+# chat unreachable by anything; this is the one thing that gets past it. It also destroys
+# whatever that turn was producing, which is why it is its own verb and never something `say`
+# decides to do — a chat that is merely working is a chat to leave alone. Read
+# `just state <chat>` first: it says how long the turn has been open, and when the recording
+# last actually changed.
+
+# Stop the turn that chat is running, then send this message — for a turn that will not end
+interrupt $chat $text:
+    @just -f {{justfile()}} _send "$chat" "$text" stop_first false
+
+# For a document alive enough to poll but stuck behind a turn its renderer will never resolve:
+# the state where a person would press reload. The reload is offered once, before the message
+# is typed, and only while nothing has claimed the send yet. A renderer frozen hard enough not
+# to poll at all is not reachable this way; the extension recycles those tabs itself.
+
+# Reload that chat's page, then send this message — for a tab that is stuck rather than busy
+revive $chat $text:
+    @just -f {{justfile()}} _send "$chat" "$text" refuse true
+
+# What that chat's turn is doing right now, from the live recorder rather than from disk
+state chat:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    token=$(cat "{{state_dir}}/local-token")
+    for port in 8765 8766 8767 8768 8769; do
+        if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+            curl -fsS -m 10 -G "http://127.0.0.1:$port/conversation/status" \
+                --data-urlencode "conversationId={{chat}}" \
+                -H "authorization: Bearer $token" | jq .
+            exit 0
+        fi
+    done
+    echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
+    exit 1
 
 # POST one message to the running app's bridge. Empty chat means a fresh one.
-_send $chat $text:
+#
+# `mode` is what the send may do to a turn already running: `refuse` never interrupts one and
+# is what every ordinary push uses; `stop_first` presses Stop first. `reload` reloads the page
+# holding the chat once before typing. Both extras need a named chat.
+_send $chat $text mode="refuse" reload="false":
     #!/usr/bin/env bash
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
     # Built by jq, never by string interpolation: a message is arbitrary prose and will
     # contain the quotes, newlines and backslashes that hand-built JSON gets wrong.
-    body=$(jq -nc --arg c "$chat" --arg t "$text" \
-        'if $c == "" then { text: $t } else { conversationId: $c, text: $t } end')
+    body=$(jq -nc --arg c "$chat" --arg t "$text" --arg m "{{mode}}" --argjson r {{reload}} \
+        'if $c == "" then { text: $t } else { conversationId: $c, text: $t, ifGenerating: $m, reloadFirst: $r } end')
     for port in 8765 8766 8767 8768 8769; do
         # /hello is unauthenticated and names the app, so it is how a local caller finds
         # which of the five candidate ports this app actually bound.
         if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
-            accepted=$(curl -fsS -m 10 "http://127.0.0.1:$port/send" \
-                -H "authorization: Bearer $token" \
-                -H 'content-type: application/json' \
-                --data-binary "$body")
+            # A sleep-managed chat answers 409 with a typed reason, a next-check hint and the
+            # concrete next action. `curl -f` threw all three away and left the caller a bare
+            # `curl: (22)` — indistinguishable from a dead app, a bad token or a wedged
+            # composer, which is exactly the blindness that sent a steward off to drive
+            # composers over CDP. Read the body, relay what it says, and honour the documented
+            # contract by waiting for the wake instead of failing the push.
+            #
+            # Bounded, because waiting forever is its own kind of lie: 25 minutes is longer
+            # than the app's own fallback wake horizon, so a chat still refusing past it is
+            # stuck rather than busy and the steward is told to go look.
+            waited=0
+            while :; do
+                answer=$(curl -sS -m 10 -w '\n%{http_code}' "http://127.0.0.1:$port/send" \
+                    -H "authorization: Bearer $token" \
+                    -H 'content-type: application/json' \
+                    --data-binary "$body")
+                code=$(tail -n1 <<<"$answer")
+                accepted=$(sed '$d' <<<"$answer")
+                if [[ "$code" == "200" ]]; then break; fi
+                reason=$(jq -r '.reason // .error // empty' <<<"$accepted" 2>/dev/null || true)
+                if [[ "$code" != "409" || ( "$reason" != "sleeping" && "$reason" != "waking" ) ]]; then
+                    echo "the app refused this send (HTTP $code): ${reason:-no reason given}" >&2
+                    jq -r '.message // empty' <<<"$accepted" 2>/dev/null >&2 || true
+                    exit 1
+                fi
+                if (( waited == 0 )); then
+                    echo "note: that chat is $reason — the app discarded its tab after the last verified push and is the only driver allowed to type into it. Waiting." >&2
+                fi
+                if (( waited >= 1500 )); then
+                    echo "gave up after ${waited}s: the chat is still '$reason', which is longer than a healthy sleep lasts." >&2
+                    echo "Read GET /sleep/status — if its nextCheckAt keeps moving away while lastCallAt keeps advancing, its session key is bound to another chat's call stream." >&2
+                    exit 1
+                fi
+                hint=$(jq -r '((.nextCheckHintMs // 15000) / 1000) | floor' <<<"$accepted")
+                if (( hint > 30 )); then hint=30; fi
+                if (( hint < 5 )); then hint=5; fi
+                sleep "$hint"
+                waited=$(( waited + hint ))
+            done
             id=$(jq -r '.command.id' <<<"$accepted")
             pending=$(jq -r '.pendingTools' <<<"$accepted")
 
@@ -580,6 +655,11 @@ _send $chat $text:
             horizon=$(jq -r '.verifyHorizonMs // 90000' <<<"$accepted")
             if [[ "$pending" != "0" && "$pending" != "null" ]]; then
                 echo "note: $pending local tool call(s) in flight; the page will not type until they settle." >&2
+                # Which calls, and how old. A call a few seconds in is an agent working and the
+                # wait is correct; a call an hour in is a fact only the steward can act on, and
+                # a bare count hides the difference. `unplaced` is the one charged to every chat.
+                jq -r '.inFlightCalls[]? | "      \(.tool) \((.ageMs / 1000) | floor)s \(.attribution) \(.conversationId // "unplaced")"' \
+                    <<<"$accepted" >&2 2>/dev/null || true
             fi
             probe=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
                 "http://127.0.0.1:$port/send/outcome?id=$id" -H "authorization: Bearer $token" || echo 000)
