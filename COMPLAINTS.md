@@ -162,4 +162,7 @@ another worker, so nothing here is waiting on a restart.
   If this shows up, the next step is requiring the window to see exactly one first-sighting
   before it binds anything, rather than claiming on the first.
 - `verify:privacy` fails on two 2026-08-28 merge commits from an external contributor
-  (`totec448@gmail.com`, PRs #19/#20). They are not ancestors of HEAD. Pre-existing.
+  (a private, non-noreply mailbox; PRs #19/#20). They are not ancestors of HEAD.
+  Pre-existing. The address itself is deliberately not written here: this is a public
+  repository, and quoting the value is what `verify:privacy` exists to prevent — naming
+  it turned a two-finding baseline into a three-finding one until it was redacted.
