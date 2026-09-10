@@ -86,6 +86,17 @@ concurrent commits to disjoint files. Reserve a branch for something that genuin
 needs isolation, such as a sweeping change to shared tooling, and merge it the same
 day.
 
+**It recurred, because this paragraph is not where the workers look.** The rule lived
+here; `new-qual-site/AGENTS.md` had a full `# Worktrees` chapter telling every stream
+to open one under `.worktrees/`, and `CONTRIBUTING.md` carried it as `QUAL-09`. Workers
+read their own repository, so the fleet rebuilt 27 worktrees and filled the volume again
+on 2026-09-10 — 353 MB of tracked `assets/` copied into each, 10.5 GB, holding 44 changed
+files between them. Both documents now state the rule (`new-qual-site@7757a6177`), the
+worktrees are reaped and their solutions landed on `main` (`2191ef397`), and
+`just test-commit` refuses while any worktree exists (`a35065545`). Writing a fleet rule
+only here has now failed twice: put it in the repository the workers read, and give it an
+enforcement point in that repository's commit gate.
+
 **Contention rule:** streams never touch `queues/C-unsolved-cards.md`; each derives
 its worklist with `just unsolved-in <collection>`. S1/S8 and S3/S8 share directories
 but are provably file-disjoint (unsolved vs Gemini-solved); S8's claim boundary is
