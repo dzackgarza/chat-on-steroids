@@ -690,8 +690,27 @@ events}` with typed events `slept`, `sleep_cancelled`, `sleep_failed`, `wake_sta
 graceMs, quietMs, fallbackWakeMs, correlationWindowMs}`; changes take effect at the next
 daemon restart, like every other config edit the daemon reads at startup.
 
+**Send origin, and the bypass ledger — `session/send-origin.ts`.** Every observed
+`turn_start` is stored with an honest `sendOrigin`: `app` when a registered app send (POST
+`/send`, a worker bootstrap, a revival offer, a resume handoff, a goal draft) explains it,
+`out_of_band` when nothing does — something other than the app typed into that composer —
+and `unknown` for real evidence gaps (the three-minute startup window, an `observer_lost`
+or detached-mid-turn remount, a `waking` remount, a command still in flight whose page
+typed before it ACKed). It never guesses `app`, and the page never supplies the field. An
+out-of-band send is a warn line naming the conversation, a typed `out_of_band_send` event,
+and a per-conversation tally; landing in a *slept* conversation it is an error line plus
+`sleep_cancelled(out_of_band_send)`, because two drivers on one chat means the state
+machine no longer describes it. It also closes any open correlation window: the app sent
+nothing, so nothing may bind `push_correlated` off it. `GET /sleep/status` carries the
+ledger as `sendOrigin: {outOfBandSends: {total, byConversation}, events}`, and the tally
+survives restarts — that number is how the fleet's migration onto the app send path is
+measured, rather than by grepping the journal. Break-glass direct-CDP tooling still works;
+it just cannot be quiet about it.
+
 **Tests.** `bridge.test.ts`, `extension.test.ts`; sleep/wake in `sleep-wake.test.ts` and
-the `sleep/wake over the push path` describe of `bridge.test.ts`.
+the `sleep/wake over the push path` describe of `bridge.test.ts`; send origin in the
+`send origin and the bypass ledger` describe of `sleep-wake.test.ts` and the `out-of-band
+send detection over the push path` describe of `bridge.test.ts`.
 
 ## 15. Compact & Resume — `session/continuation.ts`
 
@@ -1286,6 +1305,16 @@ That is the whole role, and its boundaries are hard:
 
 Point, send, and continue until the task is done, the chat is wedged, or its context is full.
 
+**An idle worker is either stuck or finished, and those take opposite actions.** `just
+chats` reports both as `idle`; nothing in the state distinguishes them. Read what the
+chat last said before pushing. A worker that is stuck says what it is waiting on; a
+worker that is finished says so plainly — "all unsolved Algebra cards have been
+completed and committed", "there is no remaining TODO in the collection-defined scope
+for this stream" — and pushing `Continue` at it returns "nothing further to execute
+within the assigned scope" for as long as you keep asking. That is not a stalled chat
+to nudge, it is a finished one to re-scope or retire, and treating it as the former
+burns the stream and reads as a fleet-wide stall that is really a planning gap.
+
 **Never leave a worker asleep or idle.** A sleeping or stalled chat produces zero progress; nothing restarts on its own. The steward does not wait for work to begin spontaneously. When a worker finishes a turn, stalls, or dies to an error (such as a delivery timeout), the steward must act immediately: push `Continue` if viable, or launch a replacement with `just new` and a brief handoff.
 
 **Do not invent phantom constraints or delay dispatch on hypothetical risks.** Never delay replacing or continuing an idle worker out of speculative worry about rate limits, bursts, or unobserved barriers. Act on observable state: if a worker is asleep, dispatch its continuation or replacement immediately. Address limits only when an actual error or throttle arrives. If rate limits are hit, retry dispatch at stepped intervals: 30s, 1m, 2m, and 5m. Defer until the next tick only when repeated limits persist across those retries.
@@ -1299,6 +1328,22 @@ Point, send, and continue until the task is done, the chat is wedged, or its con
 **Verify every recovery action on a 30–90s horizon; never bridge to the next tick.** The 20-minute check-in is purely a reporting cadence to the user, not an operational sleep timer, and an unverified intervention earns no grace period from it. The asymmetry is decisive: verification costs 30–90 seconds (live turn gaps run 8.2s median, 26s p90 — inactivity past 90 seconds is a stall), while a wrong success assumption costs the full 20-minute tick per stream, which is exactly how measured fleet duty cycle collapses. So after any recovery action: wait the short horizon, observe worker state, and only then either move on or escalate — probe the browser, kill frozen tabs, launch a fresh replacement with `just new` and a clean handoff. When an intervention fails, the next step is observing the worker and escalating, **not debugging the intervention tooling**: rewriting nudge scripts and installing libraries while the worker sits unverified is effort substituting for effectiveness — fix the machinery only after every stream is verifiably executing or has a replacement dispatched.
 
 **Recovering a stalled worker is a call to the app's send path**, which owns the browser behaviors that make a send land: it activates the tab before typing (a background tab reports its send button enabled, no-ops the click, and leaves a draft that wedges the next send), selects the live tab among the two or three the browser holds per conversation, recycles a frozen one, resolves any pre-existing draft by authorship, and reports success only on a fresh `turn_start` in the recording. Send, then read the outcome — `sent_verified` is the evidence, and the typed refusals name their own next action.
+
+**Check that the partition still covers the work before adding streams.** A fan-out
+plan names scopes, and scopes run out. new-qual-site was fanned to eight streams against
+a partition naming eight collections out of the 392 in its corpus: the streams finished
+their assignments and went quiet with 3,232 unsolved cards sitting in collections nobody
+had been given. Stream count was never the limit and adding streams would not have
+helped. When several workers in one repository go idle near each other, suspect an
+exhausted partition before suspecting the workers, and measure remaining work against
+the whole corpus rather than against the slice the plan happened to name.
+
+**Measure output where the work lands, not where you expect it.** Counting commits on
+`main` is only a throughput measure if the workers commit to `main`. When they work on
+branches, `main` undercounts the fleet by however much is unmerged — here, about 1,800
+commits of finished solutions — and the steward reads a productive fleet as a failing
+one, or the reverse. Check what is unmerged (`git rev-list --count main..<branch>` across
+every branch) before believing any number derived from `main`.
 
 **Track task DAGs and saturate parallel workflows.** Track the basic DAG of tasks in each managed repository (identifying decoupled workstreams, independent chapters, isolated problem collections, or non-overlapping module targets). When a repository's task structure permits parallel work without coordination deadlocks or merge collisions, increase the number of active managed worker chats under that repository to saturate throughput rather than running independent branches serially.
 
