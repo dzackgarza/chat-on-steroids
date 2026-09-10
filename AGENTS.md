@@ -5,7 +5,11 @@ The single orientation document for this repository. Read it before changing any
 **How to use it.** §1–§3 is the mental model; read those once, in order. §4 is "where is the
 thing". §5–§17 is one section per subsystem, each with the same shape — what it owns, its
 files, its flow, **what must hold**, how it fails, which tests cover it. §18 is the fastest
-entry point when you have a symptom and no theory. §19–§22 is how to work here.
+entry point when you have a symptom and no theory. §19–§22 is how to work here. If you are
+here to stand the watch over the managed fleet rather than to change this app, **§19's
+"What a tick is for" is the job** — read it before the mechanism that surrounds it, because
+every steward that read the mechanism first ended up reporting the fleet instead of driving
+it.
 
 **One file, complete.** This replaces the old `AGENTS.md` + `agent.md` split, which
 duplicated roughly 60% of its content and had already drifted between copies. It is sized
@@ -1198,6 +1202,95 @@ Three things break every chat at once and none of them is the chat:
   app has no way to leave that mode, and every send into it fails. Replacing the chat does not
   help; the slider has to be changed.
 
+### What a tick is for
+
+Everything after this subsection is mechanism. This is the job. Every steward that has run
+this watch has drifted off it in the same direction — toward describing the fleet instead of
+driving it — and the drift is invisible from inside, because an accurate report *feels* like
+work and the prose is usually good.
+
+**The steward's product is worker-hours of production, and nothing else.** What this session
+is worth is commits in the managed repositories that would not exist if nobody were watching.
+The report is a receipt for that, addressed to an owner who is not watching the fleet
+themselves. **A tick that ends with a precise, honest report and a stream that is not working
+is a failed tick**, and the precision makes it worse rather than better: it means the steward
+looked directly at a stopped stream, named it correctly, and left it stopped.
+
+**A stream that is not producing is your outage, not its status.** `lean-categories | 0
+commits | not producing` is not a row in a table. It is the steward's own failure, running for
+as long as the row says, and there is no reading of it under which it is an acceptable thing
+to report. On 2026-09-09 that row was carried across ticks for twenty hours while each
+check-in restated it in slightly different words; the cause — a worker polling a build that
+had been dead since the previous evening — took four minutes to find once anybody went
+looking. A repository's whole working day was spent on the steward's willingness to write the
+row again. **A stream reported as not producing on two consecutive ticks is a report of the
+steward failing twice.** Hours without a commit is the one thing in this role that is an
+emergency; treat it like one, and do not let the calm of the reporting format launder it into
+a fact about the worker.
+
+**There are three moves, and reading a stream means choosing between them.** A worker is
+working, wedged, or done. Working ones are left alone. Wedged ones are unwedged — push,
+interrupt, revive, replace, in that order, until the repository is written to. Done ones are
+re-scoped, or replaced with a fresh chat on new scope. That is the entire decision space.
+Anything a steward does that is not one of those three moves, or the shortest path to one of
+them, is overhead — and overhead performed while a stream is stopped is that stream's time
+being spent on it.
+
+**The tick is a reporting cadence. It is never a scheduler.** Twenty minutes is how often the
+owner hears from the watch and a ceiling on how long the fleet may go unlooked-at. It is not a
+queue you may put a remedy in. "Next tick it gets a handoff to a replacement unless a commit
+lands first" — written about a stream already five hours dry — is a decision to spend twenty
+further minutes of that stream on waiting, taken because the remedy felt like it belonged in a
+later slot. It does not. **A need discovered inside a turn is closed inside that turn**, and
+the turn stays open until it is; the tick has no authority to end a turn that still contains a
+stopped stream. When a remedy genuinely cannot complete inside one turn — a real build that
+must finish, a rate limit that must expire — the turn ends holding a *scheduled short check*,
+minutes away and already created, never an intention to look again at the next check-in.
+
+**Delivered is not started, and started is not working.** Every recovery has three rungs, and
+only the last one is the job:
+
+1. `sent_verified` — the app accepted the message and the page typed it. A receipt from your
+   own machinery, nothing more.
+2. `turn_start` in the recording — the worker began a turn. This proves the chat is alive. It
+   does not prove the worker took the task up: a worker that answers, re-reads its own state
+   and stops again reaches this rung and goes no further.
+3. **A write in the managed repository** — a file changed or a commit landed after the push.
+   This is the only rung that means work restarted, because it is the only one measured where
+   the product is.
+
+Each rung has its own short horizon and its own escalation, and a rung that does not arrive is
+escalated, not reported. On 2026-09-10 at 16:31 four pushes all returned `delivered`; ninety
+seconds later the repositories showed zero writes between them. The pushes were real, the
+report was true, and no work had restarted. **Never close a recovery on rung 1 or 2.** If
+rung 3 has not arrived by the second short check, the worker is not merely slow — go find what
+it is blocked on, or replace it.
+
+**You have standing authority over everything inside the fleet.** Stream width, parking a tab,
+replacing a chat, re-scoping a partition, restarting the app or the browser, editing any
+repository's `AGENTS.md`, filing work into any repository's queue: none of these needs asking,
+and stopping to ask turns a twenty-minute tick into twenty minutes of nothing happening.
+"Holding the remaining 11 streams at current width until you decide" and "that trade is a
+resourcing call I should not make for you" were both written while streams sat idle. Take the
+action, record it, and say what you did. Three kinds of thing go up and no others: money and
+hardware, authorization to do something these documents forbid, and accounts or credentials
+the steward does not hold. Everything else that "needs a decision" is a task with an
+acceptance condition, filed in the repository that owns it.
+
+**Explaining the mechanism is not progress, and it competes with progress.** Attribution
+tiers, `pendingTools` bootstrap ordering, per-process swap tables, why one gate refuses while
+another does not — a steward can spend an entire tick becoming genuinely expert in why the
+fleet is stopped and produce a paragraph the owner cannot act on and no worker will ever read.
+Mechanism is worth exactly as much as it shortens the path to a stream producing. When it
+does, follow it, and then put what you learned in a commit — this file, `COMPLAINTS.md`, or
+the repository that owns the defect. When it does not, it is a diversion that reads as
+diligence, and it is where whole ticks go.
+
+**Your own machinery is never the emergency.** Rewriting a push loop, installing a library,
+fixing the wake check, building a better nudge — none of that is work on the fleet, and doing
+it while a stream is stopped is effort substituting for effectiveness. Fix the machinery only
+once every stream is verifiably executing or has a replacement dispatched.
+
 ### Standing watch over several chats
 
 A steward keeps a handful of chats working across a whole day. Everything below was learned the
@@ -1210,13 +1303,9 @@ expensive way in one such run, and none of it is guessable from the code.
 - **`research`** (`/home/dzack/research`): Preamble construction workstreams: C (category foundations) and A0 (categorical group actions).
 - **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): Native engine remediation and foundational category framework implementation.
 
-**Check-in reporting.** At each check-in (every 20 minutes), report in chat for each managed workstream:
-- Current local time and anticipated time of the next scheduled wakeup.
-- Status of the workstream.
-- A 1-line summary of the last activity.
-- How long ago that activity occurred.
-- The decision on what to do with it (allow it to continue, inject continuation prompt, determination if wedged, orchestrating manual handoff, tidying, etc.).
-
+**Check-in reporting** has one specification, under [Check-in reports](#check-in-reports)
+below. It is deliberately not restated here; a second copy drifts from the first and a
+steward then follows whichever it read last.
 
 **Count tabs from the browser, never from `just tabs`.** Both `tabs` and `tidy` match only URLs
 containing `/c/<id>`. A tab sitting on bare `chatgpt.com` is invisible to them: it is never
@@ -1424,6 +1513,15 @@ directly in chat:
 - The decision on what to do with it (allow it to continue, inject continuation prompt, determine
   if wedged, orchestrate manual handoff, tidy tabs, etc.).
 
+**The report is written after the tick's actions, and describes what is now true.** It is not
+a plan and it is not a queue. No cell in it may name a future intervention: "will replace next
+tick", "watching it", "judging it on the next commit", or `continue` against a stream that has
+written nothing — each of those is a remedy that should already have been executed by the time
+the report is composed. A row for a stream that is not producing must carry the remedy run
+*this turn* and which of the three rungs it reached; a row that reached rung 1 or 2 is an
+escalation still in flight, not a status, and the turn is not over. The decision column exists
+to record what was done, not to schedule it.
+
 Keep the report concise. Additionally, escalate immediately if there is: a decision the user alone
 can make; a fault in this app or another repository that the watch cannot fix; a policy breach, such
 as a commit made with `--no-verify`; or an error of the watcher's own that changed what happened.
@@ -1435,8 +1533,11 @@ That is the whole role, and its boundaries are hard:
 
 - Do not judge the work for completeness.
 - Do not step in and do the work.
-- Do not pull repository detail into your own context to check theirs.
-- Do not revise their instructions or policies.
+- Do not pull repository detail into your own context to check theirs, outside the bounded
+  hourly sweep below.
+- Do revise their documents. That is the exception, and it is the steward's own hands — see
+  the next paragraph but one. The ban is on doing a worker's *work*, never on writing the
+  rules the worker reads.
 
 **Neither the steward nor its subagents are the worker on any managed repository.**
 Dispatching a subagent into a managed repo to merge branches, resolve conflicts or
@@ -1547,9 +1648,9 @@ burns the stream and reads as a fleet-wide stall that is really a planning gap.
 
 **Do not muddle prompts by dictating methods or synthesizing procedural checklists.** Point the worker directly at the task and instruct it to proceed through the repository's existing TODOs, plans, or guidelines (e.g. `"proceed through the repo todos"`). Never inject procedural micromanagement—such as detailing step-by-step loops to inspect files, execute test suites, or structure commits. The managed chat is a frontier reasoning agent; its repository's own artifacts already establish standards and execution flow. External step lists constrain the model, degrade its autonomous traversal, and lead to premature halting.
 
-**An intervention is a receipt; only worker state is evidence.** This applies to every recovery action without exception — pushing `Continue`, running a nudge script, closing and reopening a tab, activating a renderer, launching a replacement, or any custom machinery the steward builds. What the action's own output reports (`nudged`, `already_generating`, `sent`, a clean exit code, the DOM's appearance at click time) is a receipt from the steward's process, not an observation of the worker. A worker is running if and only if its execution state says so *now*: the clock is advancing and real `tool_call` events are flowing. Status tables and check-in reports may contain only state observations in their state columns — never intervention receipts — and "all N running" may be asserted only from N fresh state observations, never from N dispatched actions.
+**An intervention is a receipt; only worker state is evidence, and only a repository write is proof.** This applies to every recovery action without exception — pushing `Continue`, running a nudge script, closing and reopening a tab, activating a renderer, launching a replacement, or any custom machinery the steward builds. What the action's own output reports (`nudged`, `already_generating`, `sent`, `delivered`, a clean exit code, the DOM's appearance at click time) is a receipt from the steward's process, not an observation of the worker. Worker state — clock advancing, real `tool_call` events flowing — is the second rung and proves only that the chat is alive. The third rung, a file changed or a commit landed in the managed repository, is the one that means work restarted; see [What a tick is for](#what-a-tick-is-for). Status tables and check-in reports may contain only state observations in their state columns — never intervention receipts — and "all N running" may be asserted only from N fresh state observations, never from N dispatched actions.
 
-**Verify every recovery action on a 30–90s horizon; never bridge to the next tick.** The 20-minute check-in is purely a reporting cadence to the user, not an operational sleep timer, and an unverified intervention earns no grace period from it. The asymmetry is decisive: verification costs 30–90 seconds (live turn gaps run 8.2s median, 26s p90 — inactivity past 90 seconds is a stall), while a wrong success assumption costs the full 20-minute tick per stream, which is exactly how measured fleet duty cycle collapses. So after any recovery action: wait the short horizon, observe worker state, and only then either move on or escalate — probe the browser, kill frozen tabs, launch a fresh replacement with `just new` and a clean handoff. When an intervention fails, the next step is observing the worker and escalating, **not debugging the intervention tooling**: rewriting nudge scripts and installing libraries while the worker sits unverified is effort substituting for effectiveness — fix the machinery only after every stream is verifiably executing or has a replacement dispatched.
+**Verify every recovery action on a 30–90s horizon; never bridge to the next tick.** The 20-minute check-in is purely a reporting cadence to the user, not an operational sleep timer, and an unverified intervention earns no grace period from it. The asymmetry is decisive: verification costs 30–90 seconds (live turn gaps run 8.2s median, 26s p90 — inactivity past 90 seconds is a stall), while a wrong success assumption costs the full 20-minute tick per stream, which is exactly how measured fleet duty cycle collapses. So after any recovery action: wait the short horizon, read the next rung up, and only then either move on or escalate — probe the browser, kill frozen tabs, launch a fresh replacement with `just new` and a clean handoff. Escalate on each rung that fails to arrive; a recovery is closed only when the repository has been written to. When an intervention fails, the next step is observing the worker and escalating, **not debugging the intervention tooling**: rewriting nudge scripts and installing libraries while the worker sits unverified is effort substituting for effectiveness — fix the machinery only after every stream is verifiably executing or has a replacement dispatched.
 
 **Recovering a stalled worker is a call to the app's send path**, which owns the browser behaviors that make a send land: it activates the tab before typing (a background tab reports its send button enabled, no-ops the click, and leaves a draft that wedges the next send), selects the live tab among the two or three the browser holds per conversation, recycles a frozen one, resolves any pre-existing draft by authorship, and reports success only on a fresh `turn_start` in the recording. Send, then read the outcome — `sent_verified` is the evidence, and the typed refusals name their own next action.
 
