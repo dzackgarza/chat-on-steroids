@@ -137,29 +137,65 @@ export function runInCallContext<T>(context: CallContext, fn: () => T): T {
  * it must not make every chat wait ~15 seconds before a compaction may describe an otherwise
  * settled machine.
  *
- * Both states are charged per conversation. An unproven owner is conservatively visible to
- * every chat until attribution lands; a proven worker never blocks an unrelated prime.
+ * Both states are charged per conversation. A proven worker never blocks an unrelated prime;
+ * an unproven owner is charged to every chat that could have issued the call, which without
+ * an injected {@link UnattributedChargeScope} means every chat there is.
  */
 const running = new Set<CallContext>();
 const settling = new Set<CallContext>();
 let inFlightRequests = 0;
 
-function countFor(calls: Iterable<CallContext>, conversationId: string | null): number {
+/**
+ * Whether a conversation could be the origin of an unplaced call that arrived at `arrivedAt`.
+ *
+ * Injected rather than imported: this module is the one every tool surface depends on, and
+ * the evidence lives in the session recorder, which depends on *it*. The composition root
+ * (bridge.ts) owns the wiring; passing nothing keeps the original charge-every-chat answer,
+ * which is what the pure unit tests of this module measure.
+ *
+ * See `mayOwnUnattributedCall` in session/recorder.ts for the evidence behind a `false`.
+ */
+export type UnattributedChargeScope = (conversationId: string, arrivedAt: number) => boolean;
+
+function countFor(
+  calls: Iterable<CallContext>,
+  conversationId: string | null,
+  scope: UnattributedChargeScope | null
+): number {
   let count = 0;
   for (const call of calls) {
-    // An exact owner scopes the charge; a degraded-evidence inferred owner scopes it too —
-    // that is the point of the 2026-09 tiers: the blast radius shrinks exactly where
-    // evidence exists. Only the truly ambiguous call (no exact and no inferred owner)
-    // keeps the conservative charge-against-every-chat behaviour.
-    const owner = call.caller.conversationId ?? call.caller.inferredConversationId ?? null;
-    if (conversationId === null || owner === null || owner === conversationId) count += 1;
+    if (charged(call, conversationId, scope)) count += 1;
   }
   return count;
 }
 
+/**
+ * Whether `call` counts against `conversationId` (or, for a null id, against the fleet).
+ *
+ * An exact owner scopes the charge; a degraded-evidence inferred owner scopes it too — that
+ * is the point of the 2026-09 tiers: the blast radius shrinks exactly where evidence exists.
+ * The truly ambiguous call — no exact and no inferred owner — is the one that used to be
+ * charged against every chat unconditionally, which deadlocked the control path at fleet
+ * width. It is now charged against every chat that could actually have issued it, which is
+ * still every chat whenever the app has no evidence to the contrary.
+ */
+function charged(
+  call: CallContext,
+  conversationId: string | null,
+  scope: UnattributedChargeScope | null
+): boolean {
+  if (conversationId === null) return true;
+  const owner = call.caller.conversationId ?? call.caller.inferredConversationId ?? null;
+  if (owner !== null) return owner === conversationId;
+  return scope === null || scope(conversationId, call.startedAt);
+}
+
 /** Requests still inside dispatch, and therefore still potentially doing tool work. */
-export function runningToolCalls(conversationId: string | null = null): number {
-  return countFor(running, conversationId);
+export function runningToolCalls(
+  conversationId: string | null = null,
+  scope: UnattributedChargeScope | null = null
+): number {
+  return countFor(running, conversationId, scope);
 }
 
 /** One in-flight call, as a steward reading a refusal needs to see it. */
@@ -182,16 +218,21 @@ export interface InFlightCall {
  * or sweeps a call: a long call is a fact about the fleet, and the agent driving the fleet
  * is the one placed to know whether it is plausible.
  *
- * `conversationId === null` is the case that costs everyone: an unplaced call is charged
- * against every conversation, so it is the number to watch when an idle chat is refused.
+ * A row whose `conversationId` is null is an unplaced call: it is charged against every
+ * conversation the scope predicate cannot rule out, so it is the row to watch when an idle
+ * chat is refused.
  */
-export function inFlightCallCensus(conversationId: string | null = null, limit = 20): InFlightCall[] {
+export function inFlightCallCensus(
+  conversationId: string | null = null,
+  limit = 20,
+  scope: UnattributedChargeScope | null = null
+): InFlightCall[] {
   const now = Date.now();
   const rows: InFlightCall[] = [];
   for (const call of running) {
+    if (!charged(call, conversationId, scope)) continue;
     const exact = call.caller.conversationId ?? null;
     const owner = exact ?? call.caller.inferredConversationId ?? null;
-    if (!(conversationId === null || owner === null || owner === conversationId)) continue;
     rows.push({
       tool: call.tool,
       ageMs: Math.max(0, now - call.startedAt),
@@ -204,8 +245,11 @@ export function inFlightCallCensus(conversationId: string | null = null, limit =
 }
 
 /** Finished tool work whose unattributed durable record is still landing. */
-export function settlingToolCalls(conversationId: string | null = null): number {
-  return countFor(settling, conversationId);
+export function settlingToolCalls(
+  conversationId: string | null = null,
+  scope: UnattributedChargeScope | null = null
+): number {
+  return countFor(settling, conversationId, scope);
 }
 
 /**
@@ -213,11 +257,14 @@ export function settlingToolCalls(conversationId: string | null = null): number 
  * A context can briefly appear in both sets during the handoff to recorder settling, so count
  * the union rather than summing the two public projections.
  */
-export function inFlightToolCalls(conversationId: string | null = null): number {
+export function inFlightToolCalls(
+  conversationId: string | null = null,
+  scope: UnattributedChargeScope | null = null
+): number {
   const seen = new Set<CallContext>();
   for (const call of running) seen.add(call);
   for (const call of settling) seen.add(call);
-  return countFor(seen, conversationId);
+  return countFor(seen, conversationId, scope);
 }
 
 /**

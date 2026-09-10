@@ -52,6 +52,7 @@ import {
   closeStaleObserverTurns,
   conversationTurnState,
   liveConversations,
+  mayOwnUnattributedCall,
   noteChatOrigin,
   noteConversationContact,
   recordAgentMessage,
@@ -68,7 +69,13 @@ import {
   readRecentEvents,
   sessionDurableModifiedAt
 } from './session/store.js';
-import { inFlightCallCensus, inFlightMcpRequests, runningToolCalls, settlingToolCalls } from './mcp/call-context.js';
+import {
+  inFlightCallCensus,
+  inFlightMcpRequests,
+  runningToolCalls,
+  settlingToolCalls,
+  type InFlightCall
+} from './mcp/call-context.js';
 import { nativeHandoffPrompt } from './session/handoff-prompt.js';
 import { briefShortfall, resumeBootstrapText } from './session/handoff.js';
 import {
@@ -131,6 +138,27 @@ import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
 import { requestCorrelation } from './session/correlation.js';
 import { bindAgentWorkspace } from './workspace.js';
 import { MAX_GOAL_OBJECTIVE_CHARS } from '../shared/goal.js';
+
+/**
+ * The in-flight tool-call charge, as every surface of this app reports it.
+ *
+ * `call-context.ts` cannot import the recorder — everything imports call-context — so the
+ * evidence that scopes an *unplaced* call is injected here, at the one place that already
+ * holds both. Always go through these three wrappers: a raw `runningToolCalls(id)` reverts
+ * to charging every unattributed call against every chat, which is the fleet-width deadlock
+ * (see `mayOwnUnattributedCall`), and it would revert silently.
+ */
+function pendingToolsFor(conversationId: string | null): number {
+  return runningToolCalls(conversationId, mayOwnUnattributedCall);
+}
+
+function settlingToolsFor(conversationId: string | null): number {
+  return settlingToolCalls(conversationId, mayOwnUnattributedCall);
+}
+
+function inFlightCallsFor(conversationId: string | null, limit = 20): InFlightCall[] {
+  return inFlightCallCensus(conversationId, limit, mayOwnUnattributedCall);
+}
 
 /** Fixed candidates so the extension can find the app without being told a port. */
 export const DEFAULT_PORTS = [8765, 8766, 8767, 8768, 8769];
@@ -1238,10 +1266,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       200,
       {
         command,
-        pendingTools: runningToolCalls(target),
+        pendingTools: pendingToolsFor(target),
         // Which calls, and how old. A bare count cannot be told apart from a wedged app, and
         // that ambiguity is what sent a steward to the composer instead of here.
-        inFlightCalls: inFlightCallCensus(target),
+        inFlightCalls: inFlightCallsFor(target),
         verifyHorizonMs: horizon,
         // Echoed rather than assumed. A caller that meant to interrupt and did not say so
         // should see `refuse` here and not discover the difference from a silent expiry.
@@ -1341,7 +1369,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const pending = commands.find((command) => command.id === id) ?? null;
     if (pending) {
       const conversation = pending.spec.type === 'send' || pending.spec.type === 'revive' ? pending.spec.conversationId : null;
-      const inFlight = runningToolCalls(conversation);
+      const inFlight = pendingToolsFor(conversation);
       return json(
         res,
         200,
@@ -1350,7 +1378,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           commandId: id,
           conversationId: conversation,
           pendingTools: inFlight,
-          inFlightCalls: inFlightCallCensus(conversation),
+          inFlightCalls: inFlightCallsFor(conversation),
           // What this send was asked to do to the page, and what the target chat looks like
           // now. A `stop_first` send that is still queued has either not been picked up by a
           // page yet or is waiting on a turn that has not gone down; `conversation` is how a
@@ -1412,8 +1440,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         ...state,
         // The same two numbers the send path answers with, so a caller deciding whether to
         // push does not have to queue a message to find out what is in the way.
-        pendingTools: runningToolCalls(id),
-        inFlightCalls: inFlightCallCensus(id),
+        pendingTools: pendingToolsFor(id),
+        inFlightCalls: inFlightCallsFor(id),
         // Sleep/wake owns this conversation while it is slept or waking, and a push would be
         // refused. Null when the feature is off or this chat is not managed.
         sleeping: sendRefusalFor(id)
@@ -1447,7 +1475,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       {
         ...sleepWakeStatus(),
         sendOrigin: sendOriginStatus(),
-        inFlightCalls: inFlightCallCensus(null, 50)
+        inFlightCalls: inFlightCallsFor(null, 50)
       },
       origin
     );
@@ -1929,7 +1957,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // intentionally separate below: once the handler/result have returned, waiting up to
         // REQUEST_ID_GRACE_MS to file its history cannot change the workspace and must not add
         // a cross-chat 15-second tax to the machine-settle barrier.
-        pendingTools: runningToolCalls(live.conversationId),
+        pendingTools: pendingToolsFor(live.conversationId),
         // Whitespace-squeezed texts this app itself asked to be typed into this chat. The
         // page's revival/send waiter compares a blocking composer draft against these: a
         // match is the app's own wedge (a background-tab send click that silently no-oped)
@@ -1945,7 +1973,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // Diagnostic only. A finished unattributed call is still being placed into durable
         // history; unknown ownership is conservatively projected onto every chat until that
         // attribution finishes, but this number never gates the compaction prompt.
-        settlingTools: settlingToolCalls(live.conversationId),
+        settlingTools: settlingToolsFor(live.conversationId),
         // The generation this chat currently has open, if it has one. A content script that
         // has just been reloaded into a turn already in flight adopts this instead of
         // minting a second id for the same run. See liveConversations().
@@ -4509,7 +4537,7 @@ function drop(command: Command, why: string): boolean {
   // outside: the in-flight tool-call charge rule, which is the ordinary reason a page
   // refused to type for the whole deadline.
   if (command.spec.type === 'send') {
-    const inFlight = runningToolCalls(command.spec.conversationId);
+    const inFlight = pendingToolsFor(command.spec.conversationId);
     const cause = inFlight > 0 ? `${why}; ${inFlight} tool call(s) in flight` : why;
     const dropReceipt: CommandReceipt = {
       id: command.id,

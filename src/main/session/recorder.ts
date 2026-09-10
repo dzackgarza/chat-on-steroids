@@ -126,6 +126,22 @@ interface LiveConversation {
    * unique moment for some other chat. Cleared by fresh page lifecycle evidence.
    */
   observerLostAt: number | null;
+  /**
+   * When this conversation was last *observed* to have no turn running, or null if this app
+   * has never seen one of its turns end.
+   *
+   * ChatGPT issues connector tool calls only from inside a turn, so a conversation that was
+   * observably quiescent at the moment a call arrived cannot be that call's origin. That is
+   * the fact `mayOwnUnattributedCall()` needs, and nothing else in the recorder held it: the
+   * live entry says whether a turn is open *now*, which cannot answer a question about a
+   * call that arrived four minutes ago.
+   *
+   * Set only from observed ends (`turn_end`, or a completion recovered from a final
+   * assistant message). An `observer_lost` closure is deliberately *not* quiescence — the
+   * page stopped watching, ChatGPT did not stop generating — so it leaves this null and the
+   * uncertainty ceiling accounts for the conversation instead.
+   */
+  quiescentSince: number | null;
 }
 
 /**
@@ -411,7 +427,13 @@ async function initializeSessionForConversation(
     // restored-but-never-revisited open turn from hours ago still closes after the normal
     // silence window rather than instantly on pickup.
     lastContactAt: Date.now(),
-    observerLostAt: null
+    observerLostAt: null,
+    // A restored conversation whose durable history ends on an observed turn end is
+    // quiescent as of pickup. Everything else — a restored open turn, or a chat with no
+    // recorded lifecycle at all — stays null, which charges it conservatively until this
+    // process sees one of its turns finish for itself.
+    quiescentSince:
+      history.activeTurnStartedAt === null && history.knownTurnEnds.size > 0 ? Date.now() : null
   });
   if (!known) {
     await appendEvent(summary.id, {
@@ -816,6 +838,49 @@ export function soleGeneratingConversation(): string | null {
     sole = entry.conversationId;
   }
   return sole;
+}
+
+/**
+ * Whether `conversationId` could be the origin of an unattributed call that arrived at
+ * `arrivedAt`.
+ *
+ * This is the charge scope for the one call the attribution tiers could not place. Those
+ * calls used to be charged against *every* conversation, and at fleet width that is a
+ * deadlock rather than caution: a handful of workers tool-looping means one unplaced call
+ * is essentially always in flight, the page refuses to type into any chat while a call is
+ * charged to it, and the only way to tell a worker to stop is to type into its chat. The
+ * gate could then only be cleared by the workers finishing, and the workers could not be
+ * told to finish (measured 2026-09-10 08:47–09:03: four repositories, no file written for
+ * ten minutes, every push ending `gave up polling in state 'queued'`).
+ *
+ * The narrowing rests on one fact about the platform rather than on a timer: ChatGPT issues
+ * connector tool calls only from inside a turn. A conversation this app *observed* to have
+ * no turn running at the moment the call arrived therefore cannot be its origin, and
+ * charging it is a false positive. Everything short of that observation still charges:
+ *
+ * - a conversation with an open turn — it may well be the caller;
+ * - a conversation whose turn was open at any point since the call arrived, which is what
+ *   keeps the ChatGPT-native compaction barrier correct: interrupting a turn does not stop
+ *   the `exec_command` already running inside this process, and that call must go on
+ *   holding its own chat busy after the turn it came from has ended;
+ *   {@link inFlightToolCalls}
+ * - a conversation with unobserved closure uncertainty (`observer_lost`, or a tab that
+ *   detached mid-turn) inside the ceiling — the same fail-closed rule
+ *   {@link soleGeneratingConversation} uses, for the same reason;
+ * - a conversation this app has no live entry for, or has never seen a turn end in. No
+ *   evidence is not evidence of quiescence.
+ */
+export function mayOwnUnattributedCall(conversationId: string, arrivedAt: number, now = Date.now()): boolean {
+  const entry = conversations.get(conversationId);
+  if (!entry) return true;
+  if (entry.turnStartedAt !== null) return true;
+  const detachedAt = detachedWhileGenerating.get(conversationId);
+  if (detachedAt !== undefined && now - detachedAt < OBSERVER_LOST_UNCERTAINTY_MS) return true;
+  if (entry.observerLostAt !== null && now - entry.observerLostAt < OBSERVER_LOST_UNCERTAINTY_MS) return true;
+  if (entry.quiescentSince === null) return true;
+  // `>=` because the boundary itself is ambiguous: a call stamped at the same millisecond
+  // the turn was observed to end may perfectly well be that turn's last call.
+  return entry.quiescentSince >= arrivedAt;
 }
 
 /**
@@ -1899,6 +1964,10 @@ async function recordChatObservationsNow(
               live.turnStartedAt = null;
               live.turnId = null;
             }
+            // A recovered completion is observed evidence that the turn is over, so it is
+            // quiescence exactly as an explicit turn_end is — but only once nothing else is
+            // still open in this conversation.
+            if (live.turnStartedAt === null) live.quiescentSince = item.time;
           }
           if (live) {
             live.knownTurnEnds.add(item.turnId);
@@ -1965,6 +2034,9 @@ async function recordChatObservationsNow(
           live.turnStartedAt = item.time;
           live.turnId = item.turnId;
           live.openTurns.add(item.turnId);
+          // Generating again: this conversation can own an arriving call from here until
+          // its next observed end, so it stops being exempt from the unattributed charge.
+          live.quiescentSince = null;
           // The page is observably generating again: fresh first-hand lifecycle evidence
           // ends any observer-lost uncertainty for this conversation.
           live.observerLostAt = null;
@@ -2017,6 +2089,9 @@ async function recordChatObservationsNow(
             live.turnStartedAt = null;
             live.turnId = null;
           }
+          // The page watched this turn end. That is the one piece of evidence that lets a
+          // later unattributed call be scoped away from this conversation.
+          if (live.turnStartedAt === null) live.quiescentSince = item.time;
         }
         // Sleep/wake: a page-observed end settles a waking conversation's turn. Inert
         // while no conversation is sleep-managed.
@@ -2267,7 +2342,10 @@ export function rebindConversation(sessionId: string, fromConversationId: string
     knownTurnEnds: new Set<string>(),
     pageTools: new Map(),
     lastContactAt: Date.now(),
-    observerLostAt: null
+    observerLostAt: null,
+    // Chat B has no observed lifecycle of its own yet, and its bootstrap turn is about to
+    // start. Null is the conservative answer and the correct one.
+    quiescentSince: null
   });
   lastActiveSessionId = sessionId;
   notifyChanged();

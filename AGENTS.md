@@ -481,8 +481,14 @@ and charge-scoping evidence only:
 Both are honestly labeled in `attribution`/`attributionMethod` and never masquerade as
 `request_id`. They never grant agent identity, inbox delivery, or workspace authority —
 those still require the exact chain, which resumes automatically if `x-request-id` ever
-returns. Truly ambiguous calls keep the conservative Unattributed / charge-against-all
-behaviour.
+returns. Truly ambiguous calls stay Unattributed, and are charged against every conversation
+the app cannot *observe* to have been quiescent when the call arrived
+(`recorder.ts::mayOwnUnattributedCall`). ChatGPT issues connector calls only from inside a
+turn, so a chat whose turn was watched to end before the call arrived cannot be its origin;
+everything else — an open turn, a turn open at any point since the call arrived, an
+unobserved closure inside its uncertainty ceiling, a chat with no recorded lifecycle at all —
+is still charged. Charging the whole fleet unconditionally is what deadlocked the control
+path at fleet width; see §18 for the symptom and what to read off a refusal.
 
 Both tiers are only as strong as the turn-lifecycle evidence beneath them, so that
 lifecycle carries a **staleness invariant**: an open turn is evidence only while its page
@@ -1225,17 +1231,22 @@ Blank tabs should stay near zero, since the service worker closes a command tab 
 never acknowledged. Dozens of them means that has regressed. Close a tab directly through
 `http://127.0.0.1:9222/json/close/<target id>`.
 
-**An idle chat can be unpushable while its neighbours work, and no amount of retrying frees
-it.** `just say` queues the message, the browser opens a command tab, nothing is ever typed, and
-after ninety seconds `say` reports "queued but never typed. 0 local tool call(s) were running".
-The reported count is the app's, sampled once at the POST; the gate that actually refuses is the
-content script's own `pendingTools`, refreshed on its activity loop. `countFor` in
-`src/main/mcp/call-context.ts` charges a call whose `caller.conversationId` is `null` against
-**every** conversation, so two chats running `exec_command` back to back can hold a third
-permanently unreachable. The chat is alive: its page has a live composer, an enabled
-`send-button` and no stop button. Do not replace it — a replacement needs the same send path,
-and the chat has real in-flight work. Dismissing the app's own error notice does not help, and
-neither does reloading the tab. Wait for the busy neighbours to go quiet, and push then.
+**An idle chat refused while its neighbours work is now a bug, not the design.** The gate that
+refuses is the content script's own `pendingTools`, refreshed on its activity loop; the count
+`just say` prints is the app's, sampled once at the POST, so the two can disagree. Until
+2026-09-10 `countFor` in `src/main/mcp/call-context.ts` charged a call with no `conversationId`
+against **every** conversation, so two chats running `exec_command` back to back held a third
+unreachable — and at fleet width one unplaced call was always in flight, which closed the
+control path entirely (four repositories idle for ten minutes, no chat reachable, and no way
+in: the gate cleared only when the workers it was waiting on finished by themselves). An
+unplaced call is now charged only against conversations the app cannot observe to have been
+quiescent when it arrived (`recorder.ts::mayOwnUnattributedCall`, §11), which is evidence
+rather than a timer and leaves the compaction barrier's own chat charged exactly as before.
+If an observably idle chat is refused again, read `inFlightCalls` off the refusal: an
+`unattributed` row against an idle chat means the recorder never watched that chat's last turn
+end, which is the fact to go and fix. Do not replace the chat — a replacement needs the same
+send path, and the chat has real in-flight work — and neither dismissing the app's error notice
+nor reloading the tab does anything.
 
 **Most chat deaths are ChatGPT's, not this app's.** A steward watching several chats will see
 them go cold one after another and reach for a local cause. Check who wrote the error string
