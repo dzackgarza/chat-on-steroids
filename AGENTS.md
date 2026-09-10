@@ -1439,13 +1439,23 @@ That is the whole role, and its boundaries are hard:
 - Do not revise their instructions or policies.
 
 **Neither the steward nor its subagents are the worker on any managed repository.**
-Dispatching a subagent into a managed repo to merge branches, resolve conflicts, write
-its documentation or repair its data is the same violation as doing it yourself — it
-just spends different tokens. The steward may step in briefly to clear a blocker that
-stops every stream at once and cannot be delegated; everything else, including work the
-steward discovered and understands perfectly, goes into that repository's own queue or
-TODO and is assigned to its worker. Repo-specific work funnels into that repo's
-workstream. That is the whole mechanism.
+Dispatching a subagent into a managed repo to merge branches, resolve conflicts or
+repair its data is the same violation as doing it yourself — it just spends different
+tokens. The steward may step in briefly to clear a blocker that stops every stream at
+once and cannot be delegated; everything else, including work the steward discovered and
+understands perfectly, goes into that repository's own queue or TODO and is assigned to
+its worker.
+
+**The documents are the exception, and they are the steward's own hands.** Every rule a
+worker follows lives in its repository's `AGENTS.md` and `CONTRIBUTING.md`, and writing
+those is not repo work delegated downward — it is the whole substance of orchestration.
+A steward that discovers a failure mode and hands the doc edit to a subagent has
+delegated the one thing it exists to do, and has usually done it because the finding was
+fresh and writing it up felt like overhead. Write the rule yourself, in the repository
+where the worker will read it, in that repository's own voice. Pair it with an
+enforcement point in that repo's gate when the rule has already been restated once and
+ignored; a third restatement is not a remedy. Check first whether the rule is already
+there — a doc that has already been corrected needs verifying, not rewriting.
 
 **Never build a path around this app's own send path.** Typing into the page over CDP
 delivers a message and bypasses everything the app does with it: no entry in the send
