@@ -1202,6 +1202,23 @@ with outcome `unknown` or `failed` and no `tool_call` between them. A brand-new 
 calls yet is not stale, and neither is asking a chat to run a shell command to prove itself: it
 answers from its own sandbox, and only the recording settles it.
 
+**A worker polling a dead process defeats that test, so check the host too.** The one state
+the recording cannot distinguish is a chat waiting on a long-running `exec_command` session
+that has already been killed — by a daemon restart, or by the OOM killer on a loaded box. Its
+calls keep flowing because polling *is* a call, the transcript stays specific and plausible,
+and the progress figure it quotes is real but frozen. Nothing inside the chat can see that the
+process is gone. So when a chat says it is waiting on a build, a hook or a test run, confirm
+from outside that the thing exists — the process, and fresh writes to whatever it produces:
+
+```bash
+/usr/bin/ps -eo pid,etime,pcpu,args | grep -iE 'lake|lean|sage-eval|pytest' | grep -v grep
+find <repo>/<build dir> -newermt '30 minutes ago' -type f | wc -l
+```
+
+No process and no new artifacts means the wait will never end. Tell the chat plainly — that is
+external context it cannot obtain, not a hint about method — and say what the host looks like
+now, so it does not relaunch a multi-thousand-job build into a machine that cannot carry one.
+
 **`say`'s verdict is not evidence; the chat's clock is.** It reports failure whenever no receipt
 arrives inside its window, and under the send gate above most pushes report refused and land
 anyway. Always re-read `just chats` afterwards and judge by whether the clock moved. When a push
@@ -1322,6 +1339,17 @@ anything:
    kin) with no named discharge contract.
 5. **Idle capacity** — hours-on-task, not pace, is the loss. Signature: no writes for an
    extended stretch in a repository with open plan nodes and a live worker attached.
+6. **Waiting on a dead process** — a worker blocks on a long-running `exec_command`
+   session that has already been killed, and cannot see that from inside the chat, so it
+   polls forever and reports itself busy the entire time. Signature: the chat emits rows
+   and describes a build, hook or test it is waiting on, while no such process exists on
+   the host and the artifacts it would write have not changed. This is the most expensive
+   mode in the catalogue because every surface a steward normally trusts says the worker
+   is fine: the clock advances, the transcript is coherent and specific, and the named
+   progress figure is real — it is simply frozen. It cost lean-categories a full working
+   day in 2026-09 waiting on an aggregate build stopped at 4760/4761 that no longer
+   existed. Daemon restarts kill every exec session, and so does the OOM killer on a
+   loaded host, so suspect it after either.
 
 **Every hour, sweep every managed repository for these signatures.** The sweep is
 state-level and cheap — `git log`/`status` timestamps across branches and worktrees,
