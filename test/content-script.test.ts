@@ -134,6 +134,7 @@ interface Hook {
   /** Test seam for the no-visible-progress fallback. */
   STALL_MS: number;
   ERROR_RECOVERY_RETRY_MS: number;
+  STOP_FOR_PUSH_RETRY_MS: number;
   /** Test-only gate; production defaults ON while the harness starts presentation OFF. */
   setRenderStream(on: boolean): void;
   renderStreamEnabled(): boolean;
@@ -4721,10 +4722,11 @@ describe('a stop button that goes missing while the turn is still running', () =
     // ChatGPT ignores the first press often enough that one attempt is not a stop. While the
     // same instruction stands and the turn is still up, the page tries again — but on its own
     // cadence, not once per poll.
-    startGenerating(live.document);
-    live.document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+    const page = live.document;
+    startGenerating(page);
+    page.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
       stopClicks++;
-      stopGenerating(live.document);
+      stopGenerating(page);
     });
     await live.hook.pullActivity();
     await settle();
