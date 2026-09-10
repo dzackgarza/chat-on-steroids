@@ -1399,6 +1399,25 @@ for a day because its recovery tooling was routing around the mechanism that wou
 fixed it. If `/send` cannot deliver, that is a defect to file against this repository
 with the terminal state it returned. It is never a reason to type into the page.
 
+**The steward is an agent in a session. Never replace it with a loop.** Using `/send`
+correctly is not enough: a `while true` that pushes a fixed string into every idle chat
+uses the sanctioned path and still bypasses the whole workflow, because the thing being
+bypassed is the *judgment* between pushes. A steward reads what a worker said, decides
+whether it is finished, stuck, wrong, or asking for something, and sends the message that
+situation needs. A loop cannot do any of that and does not know it cannot.
+
+One was found on 2026-09-10 after running seven hours: `steward-loop.sh`, `sleep 20`, the
+literal word `Continue` to every chat `just chats` did not report busy. Its parent was
+PID 1, so it had been detached from the session that made it; its script and log had been
+moved to Trash, so that session had tried to clean up and the process outlived the
+cleanup. Nothing could stop it, nothing was reading its output, and it went on driving the
+fleet long after its author was gone.
+
+If a stream needs feeding on a cadence, that cadence is a scheduled *agent* turn, not a
+detached shell process. A loop that survives its session is unattended automation nobody
+owns: it cannot be corrected, it cannot notice it is wrong, and killing it is the only
+control anyone still has over it.
+
 **Treat the disappearance of your own tooling as a signal, not an accident.** A steward
 whose scripts vanish should find out who removed them and why before recreating them —
 the same rule that applies to every other artifact of unknown provenance. Restoring a
