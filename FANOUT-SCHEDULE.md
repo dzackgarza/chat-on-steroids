@@ -29,18 +29,25 @@ stream consumes the quiet windows recovery pushes need. Keep existing streams
 running, run a state-driven push loop against the stalest idle stream, and resume
 launching toward targets only after the control path is verified healthy again.
 
-A degraded app-side push path does not have to mean degraded control. The brake
-lifts when *some* verified control path exists, not when the original one is
-repaired: the test is whether a stalled, wedged, or frozen stream can be brought
-back and observed executing, by any route. **But an alternate route is break-glass,
-not a new normal: it is authorized only while the app path is verifiably down, its
-every use must be paired with fixing or filing the app defect that forced it, and
-it retires the moment the app path is repaired.** As of the Sep 10 restart the app
-path (`just say` → `POST /send` → `sent_verified`, sleep/wake contract in
-AGENTS.md §14) is the sole normal control surface; direct-CDP composer drives
-(`pusher2.sh`, `cdp_push.py`) are emergency tooling only — they bypass the send
-registry, the draft ledger, single-driver enforcement, sleep/wake, and
-push-correlated attribution, and the app now surfaces such bypasses loudly.
+**The app's send path is the only way to message a worker. There is no sanctioned
+alternative.** `just say` → `POST /send` → poll `/send/outcome` to `sent_verified`,
+with the sleep/wake contract in AGENTS.md §14. Driving a chat's composer directly
+over CDP — `pusher2.sh`, `cdp_push.py`, or anything like them — is prohibited, not
+merely discouraged: it bypasses the send registry, the draft ledger, single-driver
+enforcement, sleep/wake state, and send-correlated attribution, so the app is left
+believing a conversation is idle while it is generating, two drivers can type into
+one composer, and a failed silent click leaves a draft that wedges the next real
+send. The app detects and counts such sends (`sendOrigin: out_of_band`); a nonzero
+counter is an incident, not a metric.
+
+**When the send path is down, that is a P0 defect in tooling we own — fix it.** Do
+not route around it. This is exactly the case the degraded-control brake is for:
+hold width, keep existing streams running, and repair the app. Today's evidence
+says that is the faster path anyway — the attribution outage that "justified" the
+CDP scripts was root-caused and fixed in hours once someone actually looked at it,
+while the workaround silently cost a day of unattributed calls, a wedged composer
+class, and a fleet-wide bookkeeping blackout. A workaround that hides a defect in
+shared infrastructure leaves it live for every other consumer.
 
 *Status 2026-09-09: brake LIFTED ~11:57. The attribution defect itself is
 unresolved and upstream — the connector transport stopped sending `x-request-id`,
