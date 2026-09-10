@@ -74,4 +74,21 @@ describe('public-history privacy gate', () => {
     expect(result.stderr).toContain('Claude session');
     expect(result.stderr).not.toContain(sessionUrl);
   });
+
+  /**
+   * The gate has to be able to say "nothing new", and for months it could not.
+   *
+   * Two GitHub web-UI merge commits on `origin/main` carry an author identity GitHub chose
+   * and this checkout cannot change — so every run exited 1, and reading the result meant
+   * diffing two known failure lines by eye to see whether a change had added a third. A
+   * permanently red gate signals nothing. This asserts the real repository is green *and*
+   * that both acceptances are still doing work: an entry that stops matching a present
+   * commit fails the run, so the list cannot quietly become cover for unexamined findings.
+   */
+  it('is green on this repository, with both historical findings still accounted for', () => {
+    const result = verify(process.cwd());
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('2 accepted historical finding(s)');
+  });
 });

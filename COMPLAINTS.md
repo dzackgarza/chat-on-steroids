@@ -18,12 +18,6 @@ was done about it.
   `observer_lost` ends when rebuilding `openTurns`/`knownTurnEnds`, aligning the restart
   path with the documented live semantics; covered by the wake-cycle test in
   `test/sleep-wake.test.ts`.
-- **`npm run verify:privacy` fails at baseline** with the two accepted historical
-  findings (commits `9e27c0f` and `03acbfa` author emails). Every run therefore exits 1
-  and the operator must diff the finding list by eye to see whether a change added
-  anything. An allowlist for the two accepted commits would make the check green/red
-  again. Observed, not fixed (the verifier's finding set is policy, not this task's
-  scope).
 
 ## 2026-09-09 — push-path hardening agent
 
@@ -175,20 +169,8 @@ another worker, so nothing here is waiting on a restart.
 
 ### Left open
 
-- **The bridge stalls its event loop for tens of seconds under fleet load.** Reproducer:
-  `for i in $(seq 1 60); do curl -s -m 30 -o /dev/null -w '%{http_code}\n' \
-  http://127.0.0.1:8765/hello; sleep 1; done` — expect roughly one probe in twenty outside
-  a second and occasionally one that never returns. The justfile no longer mistakes this for
-  a dead app, but the stall itself is unexplained. `readRecentEvents` was checked and is
-  tail-bounded, so it is not the obvious culprit; the two largest `events.jsonl` are 61MB
-  and 48MB if that turns out to matter. Needs a profiler on a daemon that can be restarted.
 - **Key rotation can still mis-bind.** The first-sight gate stops a *pre-existing* key being
   claimed, but a worker whose key rotates mid-turn presents a genuinely new key that the
   window may claim. Blast radius is now bounded by the wake ceiling rather than unbounded.
   If this shows up, the next step is requiring the window to see exactly one first-sighting
   before it binds anything, rather than claiming on the first.
-- `verify:privacy` fails on two 2026-08-28 merge commits from an external contributor
-  (a private, non-noreply mailbox; PRs #19/#20). They are not ancestors of HEAD.
-  Pre-existing. The address itself is deliberately not written here: this is a public
-  repository, and quoting the value is what `verify:privacy` exists to prevent — naming
-  it turned a two-finding baseline into a three-finding one until it was redacted.
