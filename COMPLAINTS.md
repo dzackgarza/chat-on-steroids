@@ -175,6 +175,26 @@ another worker, so nothing here is waiting on a restart.
 
 ### Left open
 
+- **The unattributed-call gate makes the control path unusable at fleet width, and there
+  is no app-side way in.** With unattributed calls charged against every conversation, a
+  handful of workers each running `exec_command` means at least one call is essentially
+  always in flight, so `/send` never gets a window: every push ends `gave up polling in
+  state 'queued'. N local tool call(s) are in flight`. `just new` is blocked by the same
+  rule, so a steward cannot even open a replacement chat. Reproducer: run four or more
+  workers doing ordinary tool-looping work, then `just say <any chat> Continue` — observe
+  it queue and never type while the journal shows `request attribution: call arrived with
+  no x-request-id … the degraded temporal/session tiers could not place the call`.
+  Observed 2026-09-10 08:47–09:03 with the whole fleet stopped: no file written in any of
+  the four managed repositories for ten minutes, no commits for twenty, and no chat
+  reachable. Reducing the steward's own concurrency does not help, because the in-flight
+  calls belong to the workers, not to the pushes. The degraded tiers are what the fleet
+  now rests on and they cannot place a call when several conversations are generating at
+  once, which is exactly when the gate matters. Whatever the remedy — a per-conversation
+  charge, a bounded age after which an unattributed call stops counting, or an
+  out-of-band route that does not need the composer — the current behaviour has a
+  deadlock in it: the gate that protects attribution can only be cleared by workers
+  finishing, and workers cannot be told to finish.
+
 - **The bridge stalls its event loop for tens of seconds under fleet load.** Reproducer:
   `for i in $(seq 1 60); do curl -s -m 30 -o /dev/null -w '%{http_code}\n' \
   http://127.0.0.1:8765/hello; sleep 1; done` — expect roughly one probe in twenty outside
