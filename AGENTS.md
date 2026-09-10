@@ -746,26 +746,26 @@ events}` with typed events `slept`, `sleep_cancelled`, `sleep_failed`, `wake_sta
 graceMs, quietMs, fallbackWakeMs, correlationWindowMs}`; changes take effect at the next
 daemon restart, like every other config edit the daemon reads at startup.
 
-**Send origin, and the bypass ledger — `session/send-origin.ts`.** Every observed
+**Send origin — `session/send-origin.ts`.** Every observed
 `turn_start` is stored with an honest `sendOrigin`: `app` when a registered app send (POST
 `/send`, a worker bootstrap, a revival offer, a resume handoff, a goal draft) explains it,
 `out_of_band` when nothing does — something other than the app typed into that composer —
 and `unknown` for real evidence gaps (the three-minute startup window, an `observer_lost`
 or detached-mid-turn remount, a `waking` remount, a command still in flight whose page
-typed before it ACKed). It never guesses `app`, and the page never supplies the field. An
-out-of-band send is a warn line naming the conversation, a typed `out_of_band_send` event,
-and a per-conversation tally; landing in a *slept* conversation it is an error line plus
-`sleep_cancelled(out_of_band_send)`, because two drivers on one chat means the state
-machine no longer describes it. It also closes any open correlation window: the app sent
-nothing, so nothing may bind `push_correlated` off it. `GET /sleep/status` carries the
-ledger as `sendOrigin: {outOfBandSends: {total, byConversation}, events}`, and the tally
-survives restarts — that number is how the fleet's migration onto the app send path is
-measured, rather than by grepping the journal. Break-glass direct-CDP tooling still works;
-it just cannot be quiet about it.
+typed before it ACKed). It never guesses `app`, and the page never supplies the field. The
+field is an observation, not an accusation: the app keeps no record against whoever drove
+the composer. What it does keep is its own state consistent. A turn the app did not send is
+a log line saying so and a typed `out_of_band_send` event describing what the app corrected;
+landing in a *slept* conversation it is an error line plus
+`sleep_cancelled(out_of_band_send)`, because the app cannot know what was sent and its state
+machine no longer describes that chat. It also closes any open correlation window: the app
+sent nothing, so nothing may bind `push_correlated` off it. `GET /sleep/status` carries
+`sendOrigin: {events}` — a bounded in-memory ring of the recent ones, reporting current app
+state rather than a running total. Break-glass direct-CDP tooling still works.
 
 **Tests.** `bridge.test.ts`, `extension.test.ts`; sleep/wake in `sleep-wake.test.ts` and
 the `sleep/wake over the push path` describe of `bridge.test.ts`; send origin in the
-`send origin and the bypass ledger` describe of `sleep-wake.test.ts` and the `out-of-band
+`send origin and self-consistency` describe of `sleep-wake.test.ts` and the `out-of-band
 send detection over the push path` describe of `bridge.test.ts`.
 
 ## 15. Compact & Resume — `session/continuation.ts`

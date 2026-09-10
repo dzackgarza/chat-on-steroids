@@ -53,7 +53,6 @@ import {
   STARTUP_GRACE_MS,
   noteAppOriginatedSend,
   resetSendOriginForTests,
-  restoreSendOrigin,
   sendOriginStatus,
   setAppSendInFlightProvider
 } from '../src/main/session/send-origin.js';
@@ -132,8 +131,9 @@ async function recordedOrigin(conversationId: string): Promise<string | undefine
   return starts.at(-1)?.sendOrigin;
 }
 
-function outOfBandCount(conversationId: string): number {
-  return sendOriginStatus().outOfBandSends.byConversation.find((row) => row.conversationId === conversationId)?.count ?? 0;
+/** Recent `out_of_band_send` events reported for one conversation on GET /sleep/status. */
+function outOfBandEvents(conversationId: string): Array<{ conversationId: string; sleepCancelled: boolean }> {
+  return sendOriginStatus().events.filter((event) => event.conversationId === conversationId);
 }
 
 /** Verified push, grace elapsed, tab discarded, extension reported the tab gone. */
@@ -507,24 +507,22 @@ describe('the wake detector', () => {
 // ------------------------------------------------------------------ push origin
 
 /**
- * Bypass detection (session/send-origin.ts).
+ * Send-origin attribution and the app's own self-consistency (session/send-origin.ts).
  *
- * Doctrine (FANOUT-SCHEDULE.md) demoted direct-CDP composer drives to break-glass; this is
- * the enforcement half. Break-glass stays *possible* — nothing here blocks a push — so what
- * is proven is that it cannot happen quietly: every turn carries an honest origin, every
- * out-of-band send is counted, and the dangerous slept case is loud.
+ * Every turn carries an honest origin — an observation, never a record kept against whoever
+ * drove the composer — and when a turn the app did not send lands in a chat the app was
+ * managing, the app repairs its own bookkeeping for that chat and says what it did.
  */
-describe('send origin and the bypass ledger', () => {
-  it("marks a turn the app's own send registry explains as origin app, and counts no bypass", async () => {
+describe('send origin and self-consistency', () => {
+  it("marks a turn the app's own send registry explains as origin app, and reports nothing", async () => {
     const chat = 'conv-origin-app';
     await verifiedPush(chat);
 
     expect(await recordedOrigin(chat)).toBe('app');
-    expect(sendOriginStatus().outOfBandSends.total).toBe(0);
     expect(sendOriginStatus().events).toEqual([]);
   });
 
-  it('marks a turn no registered send explains as out-of-band, with an event and a counter', async () => {
+  it('marks a turn no registered send explains as out-of-band, and reports what the app did', async () => {
     const chat = 'conv-origin-out-of-band';
     // No notePushTyped, no noteAppOriginatedSend: exactly what a pusher2.sh/cdp_push.py
     // drive over port 9222 looks like from the evidence layer — the composer moved and the
@@ -533,27 +531,15 @@ describe('send origin and the bypass ledger', () => {
 
     expect(await recordedOrigin(chat)).toBe('out_of_band');
     const status = sendOriginStatus();
-    expect(status.outOfBandSends.total).toBe(1);
-    expect(status.outOfBandSends.byConversation).toEqual([
-      { conversationId: chat, count: 1, lastAt: expect.any(Number) }
-    ]);
     expect(status.events).toHaveLength(1);
     expect(status.events[0]).toMatchObject({ kind: 'out_of_band_send', conversationId: chat, sleepCancelled: false });
-    // Warn, not error: an out-of-band send into an unmanaged chat is a bypass to account for, not
-    // the two-drivers collision.
+    // Warn, not error: the app held no sleep state for this chat, so nothing of its own
+    // needed correcting.
     expect(
-      getLog().some((entry) => entry.level === 'warn' && entry.message.includes(`no matching app send`))
+      getLog().some(
+        (entry) => entry.level === 'warn' && entry.message.includes('a turn started that this app did not send')
+      )
     ).toBe(true);
-  });
-
-  it('tallies repeat bypasses per conversation and in total, so migration is a number', async () => {
-    await startTurn('conv-bypass-a');
-    await startTurn('conv-bypass-a', 'g-bypass-a-2');
-    await startTurn('conv-bypass-b');
-
-    expect(sendOriginStatus().outOfBandSends.total).toBe(3);
-    expect(outOfBandCount('conv-bypass-a')).toBe(2);
-    expect(outOfBandCount('conv-bypass-b')).toBe(1);
   });
 
   it('consumes one registered send per turn, so a second send inside the horizon is still out-of-band', async () => {
@@ -564,7 +550,7 @@ describe('send origin and the bypass ledger', () => {
     // The app pushed once. A second turn inside the same verify horizon is somebody else's.
     await startTurn(chat, 'g-second-driver');
     expect(await recordedOrigin(chat)).toBe('out_of_band');
-    expect(outOfBandCount(chat)).toBe(1);
+    expect(outOfBandEvents(chat)).toHaveLength(1);
   });
 
   it('arms no push_correlated binding for an out-of-band send', async () => {
@@ -598,7 +584,6 @@ describe('send origin and the bypass ledger', () => {
     expect(await recordedOrigin(chat)).toBe('out_of_band');
     const event = sendOriginStatus().events.find((entry) => entry.conversationId === chat);
     expect(event).toMatchObject({ kind: 'out_of_band_send', conversationId: chat, sleepCancelled: true });
-    expect(outOfBandCount(chat)).toBe(1);
     // The state machine no longer describes that chat, so it is cancelled rather than left
     // waiting to wake into a turn the app never sent.
     const cancelled = events().find((entry) => entry.kind === 'sleep_cancelled');
@@ -613,8 +598,8 @@ describe('send origin and the bypass ledger', () => {
   /**
    * The evidence gaps. Each of these is a moment where the app genuinely cannot tell who
    * pushed, and the rule is that it must say so rather than guess — in either direction. A
-   * false `out_of_band` is as dishonest as a false `app`, and it would make the bypass counter
-   * worthless as the migration metric.
+   * false `out_of_band` is as dishonest as a false `app`, and it would have the app correcting
+   * state that was never wrong.
    */
   describe('evidence gaps are unknown, never out-of-band', () => {
     it('answers unknown inside the restart window, when the send registry is not yet warm', async () => {
@@ -624,7 +609,6 @@ describe('send origin and the bypass ledger', () => {
       await startTurn(chat);
 
       expect(await recordedOrigin(chat)).toBe('unknown');
-      expect(sendOriginStatus().outOfBandSends.total).toBe(0);
       expect(sendOriginStatus().events).toEqual([]);
     });
 
@@ -645,7 +629,7 @@ describe('send origin and the bypass ledger', () => {
 
       await startTurn(chat, 'g-after-observer-lost');
       expect(await recordedOrigin(chat)).toBe('unknown');
-      expect(sendOriginStatus().outOfBandSends.total).toBe(0);
+      expect(sendOriginStatus().events).toEqual([]);
     });
 
     it('answers unknown while a command could still be typing into the chat', async () => {
@@ -656,7 +640,7 @@ describe('send origin and the bypass ledger', () => {
       await startTurn(chat);
 
       expect(await recordedOrigin(chat)).toBe('unknown');
-      expect(sendOriginStatus().outOfBandSends.total).toBe(0);
+      expect(sendOriginStatus().events).toEqual([]);
     });
 
     it('does not let one pending fresh-chat command excuse a bypass in a chat with history', async () => {
@@ -668,7 +652,7 @@ describe('send origin and the bypass ledger', () => {
 
       await startTurn(chat, 'g-not-the-first-turn');
       expect(await recordedOrigin(chat)).toBe('out_of_band');
-      expect(outOfBandCount(chat)).toBe(1);
+      expect(outOfBandEvents(chat)).toHaveLength(1);
     });
 
     it('answers unknown for a remount that shows a waking turn still generating', async () => {
@@ -681,22 +665,8 @@ describe('send origin and the bypass ledger', () => {
       await startTurn(chat, 'g-remount-still-generating');
       expect(await recordedOrigin(chat)).toBe('unknown');
       expect(eventKinds()).toContain('resleep_still_generating');
-      expect(sendOriginStatus().outOfBandSends.total).toBe(0);
+      expect(sendOriginStatus().events).toEqual([]);
     });
-  });
-
-  it('keeps the tally across a restart, because migration is measured over days', async () => {
-    await startTurn('conv-tally-survives');
-    expect(sendOriginStatus().outOfBandSends.total).toBe(1);
-    await flushDurable();
-
-    // The daemon restarts. The send registry is deliberately lost; the ledger is not.
-    resetSendOriginForTests(Date.now());
-    expect(sendOriginStatus().outOfBandSends.total).toBe(0);
-    await restoreSendOrigin();
-
-    expect(sendOriginStatus().outOfBandSends.total).toBe(1);
-    expect(outOfBandCount('conv-tally-survives')).toBe(1);
   });
 });
 

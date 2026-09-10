@@ -124,7 +124,6 @@ import { notePushTyped, sendRefusalFor, sleepWakeStatus } from './session/sleep-
 import {
   noteAppOriginatedSend,
   sendOriginStatus,
-  restoreSendOrigin,
   setAppSendInFlightProvider
 } from './session/send-origin.js';
 import { durableRoot, readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
@@ -1435,9 +1434,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    */
   if (route === '/sleep/status' && req.method === 'GET') {
     if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
-    // The sendOrigin sibling is the bypass ledger (session/send-origin.ts): out-of-band send
-    // counts per conversation plus the typed out_of_band_send events, so a steward can query
-    // how much composer driving is happening outside the app send path.
+    // The sendOrigin sibling (session/send-origin.ts) is the recent `out_of_band_send` ring:
+    // turns the app did not send, each saying what the app did to its own bookkeeping in
+    // response, so a steward can see what the app currently believes about those chats.
     // `inFlightCalls` is the whole fleet's in-flight set with ages, oldest first. It is the
     // one place a steward can see a call that has been open far longer than the work plausibly
     // takes; the app reports it and never judges it, because whether a long call is plausible
@@ -2284,7 +2283,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (acknowledged) {
       // A goal-draft ACK is the page reporting the app's own draft typed — or abandoned;
       // the ledger cannot tell which. Register it as an app-originated send either way so
-      // a goal-driven turn is never miscounted as an out-of-band send; an abandoned draft costs
+      // a goal-driven turn is never misattributed as an out-of-band send; an abandoned draft costs
       // at most one verify-horizon window in a chat the goal loop already owns.
       noteAppOriginatedSend(id, Date.now(), SEND_VERIFY_HORIZON_MS);
     }
@@ -3252,10 +3251,8 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       rearmRetainedCommandDeadlines();
       // Send-origin wiring (session/send-origin.ts): the recorder needs to know whether a
       // queued/leased command could still explain an observed turn_start (the page can
-      // report the turn before the ACK that registers the send lands), and the durable
-      // out-of-band-send tally must survive restarts to stay a meaningful migration metric.
+      // report the turn before the ACK that registers the send lands).
       setAppSendInFlightProvider(appSendInFlight);
-      await restoreSendOrigin();
       dropSpawnRequestListener?.();
       dropSpawnRequestListener = onSpawnRequest((workers) => {
         for (const worker of workers) queueWorkerBootstrap(worker.id, worker.task);

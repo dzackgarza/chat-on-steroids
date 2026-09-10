@@ -10,9 +10,9 @@
  * (`pusher2.sh`, `cdp_push.py` against port 9222) drives the composer without telling the
  * app: it bypasses the send registry, the draft ledger, single-driver enforcement,
  * sleep/wake, and the `push_correlated` attribution tier (which correlates a connector
- * session key to an app-originated *send*). That tooling is break-glass only now. This
- * module is the enforcement half of the demotion: it does not make bypass impossible —
- * break-glass must remain possible — it makes bypass *observed, attributed and counted*.
+ * session key to an app-originated *send*). This module is how the app stays consistent
+ * with a composer it did not drive: it observes the turn, attributes it honestly, and
+ * repairs its own bookkeeping for that conversation.
  *
  * The evidence layer: the recorder sees every page-observed `turn_start`; the bridge
  * reports every app-originated send here at its committed ACK. A turn_start that no
@@ -22,37 +22,34 @@
  * - `app`         — a registered app send (or sleep/wake's own pending-send registry, which
  *                   is fed from the same ACKs) explains this start.
  * - `out_of_band` — nothing explains it: something other than the app typed into the chat.
- *                   One warn line per occurrence, a typed `out_of_band_send` event, and a
- *                   durable per-conversation tally, all served on GET /sleep/status — so
- *                   "how much bypass is happening" is a queryable number, not a journal grep.
+ *                   One log line per occurrence plus a typed `out_of_band_send` event on the
+ *                   bounded recent-events ring GET /sleep/status serves, describing what the
+ *                   app did to its own state in response.
  * - `unknown`     — an evidence gap: the startup grace window (the send registry is RAM and
  *                   a message sent before a restart can verify after it), an observer-lost
  *                   or detached-mid-turn remount re-observing a generation it never saw
  *                   end, a conversation whose opening send is still in flight (the page can
  *                   report the turn before the ACK that registers the send lands). Never
- *                   guessed to `app`, never counted as out-of-band.
+ *                   guessed to `app`.
  *
  * An out-of-band send must never create `push_correlated` bindings — the app did not send
  * anything, so correlating a key to that conversation would poison the strongest degraded
  * tier. That holds structurally: the correlation window in sleep-wake.ts only ever opens
  * when a *pending app send* is verified by its turn_start, and this module never touches it.
  *
- * Layering: imports durable + logger + shared types only. The recorder classifies through
+ * Layering: imports logger + shared types only. The recorder classifies through
  * it; the bridge feeds the registry and injects the in-flight-command probe. Sleep-wake
  * state is passed in by the recorder rather than imported, and the dangerous
  * out-of-band-into-slept transition is owned by sleep-wake.ts (`noteOutOfBandSend`).
  */
 
-import { readDurable, writeDurableSoon } from '../durable.js';
 import { logError, logWarn } from '../logger.js';
 import type { SendOrigin } from '../../shared/session.js';
 
 /** Mirrors sleep-wake's verification tolerance for a turn_start observed just before the ACK lands. */
 const TYPED_MATCH_EARLY_MS = 2_000;
 const MAX_REGISTERED_SENDS = 64;
-const MAX_COUNTED_CONVERSATIONS = 200;
 const MAX_EVENTS = 128;
-const DURABLE_STATE = 'send-origin';
 
 /**
  * How long after a process start a turn_start with no registered send stays `unknown`
@@ -86,17 +83,9 @@ export interface TurnStartEvidence {
   firstTurnForConversation: boolean;
 }
 
-interface DurableSendOrigin {
-  version: 1;
-  total: number;
-  byConversation: Record<string, { count: number; lastAt: number }>;
-}
-
 let startedAt = Date.now();
 /** conversation -> the newest committed app-originated send, awaiting its turn_start. */
 const appSends = new Map<string, { typedAt: number; horizonMs: number }>();
-let outOfBandTotal = 0;
-const outOfBandByConversation = new Map<string, { count: number; lastAt: number }>();
 const events: OutOfBandSendEvent[] = [];
 /**
  * Injected by the bridge: whether a queued/leased command could still type into this
@@ -104,7 +93,6 @@ const events: OutOfBandSendEvent[] = [];
  * opener is in flight — its conversation id does not exist until the page ACKs).
  */
 let inFlightProvider: ((conversationId: string, firstTurnForConversation: boolean) => boolean) | null = null;
-let restored = false;
 
 export function setAppSendInFlightProvider(
   provider: ((conversationId: string, firstTurnForConversation: boolean) => boolean) | null
@@ -150,7 +138,7 @@ function consumeMatchingAppSend(conversationId: string, at: number): boolean {
  *    verified is running, so a second turn starting in that window is a second message, not
  *    an artifact of the app's own bookkeeping.
  * 4. Every remaining in-flight send, restart window, or observation gap is `unknown` —
- *    never guessed to `app`, never counted as out-of-band.
+ *    never guessed to `app`, and never reported as out-of-band.
  */
 export function classifySendOrigin(conversationId: string, at: number, evidence: TurnStartEvidence): SendOrigin {
   // Both registries are consumed, never short-circuited. The bridge feeds sleep/wake's
@@ -169,99 +157,33 @@ export function classifySendOrigin(conversationId: string, at: number, evidence:
 }
 
 /**
- * Counts one out-of-band send and says so where a steward will see it: a journal line per
- * occurrence (error level when it landed in a slept conversation — the two-drivers case),
- * a typed event, and the durable tally GET /sleep/status serves.
+ * Records that a turn started which this app did not send, and says what the app did about
+ * it: a journal line per occurrence (error level when the app had to cancel a sleep — it can
+ * no longer describe that conversation) plus a typed event on the bounded recent-events ring.
+ * Both describe the app's own bookkeeping; neither is a record kept against the steward.
  */
 export function recordOutOfBandSend(conversationId: string, at: number, sleepCancelled: boolean): void {
-  outOfBandTotal += 1;
-  const held = outOfBandByConversation.get(conversationId);
-  outOfBandByConversation.set(conversationId, { count: (held?.count ?? 0) + 1, lastAt: at });
-  while (outOfBandByConversation.size > MAX_COUNTED_CONVERSATIONS) {
-    let oldestKey: string | null = null;
-    let oldestAt = Infinity;
-    for (const [key, entry] of outOfBandByConversation) {
-      if (entry.lastAt < oldestAt) {
-        oldestAt = entry.lastAt;
-        oldestKey = key;
-      }
-    }
-    if (oldestKey === null) break;
-    outOfBandByConversation.delete(oldestKey);
-  }
-  // Say what actually happened, in terms a steward can act on. The parenthetical names the
-  // machinery that was skipped, because that is the cost of the bypass and the reason the
-  // app path is the normal surface.
-  const bypassed =
-    'direct-CDP steward tooling bypasses the send registry, draft ledger, single-driver enforcement, sleep/wake, and push-correlated attribution';
+  // Say what the app changed about its own state, so a steward reading this knows what the
+  // app now believes about the conversation rather than being told off for driving it.
   const detail = sleepCancelled
-    ? `a message was typed into this chat by something other than the app while the app had the chat asleep — two drivers on one conversation; the sleep state was cancelled because the app cannot know what was sent (${bypassed})`
-    : `a message was typed into this chat by something other than the app (${bypassed})`;
+    ? `a turn started that this app did not send; the app cannot know what was sent, so it cancelled the pending sleep for ${conversationId} and closed its correlation window`
+    : `a turn started that this app did not send; the app holds no sleep state for ${conversationId}, so nothing of its own needed correcting — the send registry, draft ledger and push-correlated attribution simply do not describe this turn`;
   events.push({ kind: 'out_of_band_send', conversationId, at, sleepCancelled, detail });
   while (events.length > MAX_EVENTS) events.shift();
-  const line =
-    `send-origin: turn started in conversation ${conversationId} at ${new Date(at).toISOString()} ` +
-    `with no matching app send — ${detail}`;
+  const line = `send-origin: ${new Date(at).toISOString()} — ${detail}`;
   if (sleepCancelled) logError(line);
   else logWarn(line);
-  persist();
-}
-
-function persist(): void {
-  const snapshot: DurableSendOrigin = {
-    version: 1,
-    total: outOfBandTotal,
-    byConversation: Object.fromEntries(outOfBandByConversation)
-  };
-  writeDurableSoon(DURABLE_STATE, outOfBandTotal > 0 ? snapshot : null);
 }
 
 /** The steward-facing projection, served as the `sendOrigin` sibling on GET /sleep/status. */
-export function sendOriginStatus(): {
-  outOfBandSends: {
-    /** Every out-of-band send ever counted on this install; the tally survives restarts. */
-    total: number;
-    byConversation: Array<{ conversationId: string; count: number; lastAt: number }>;
-  };
-  events: OutOfBandSendEvent[];
-} {
-  return {
-    outOfBandSends: {
-      total: outOfBandTotal,
-      byConversation: [...outOfBandByConversation.entries()]
-        .map(([conversationId, entry]) => ({ conversationId, count: entry.count, lastAt: entry.lastAt }))
-        .sort((a, b) => b.lastAt - a.lastAt)
-    },
-    events: [...events]
-  };
-}
-
-/**
- * Restores the durable tally across a restart. The migration metric only means something
- * if it survives daemon restarts; the send registry itself deliberately does not (see
- * STARTUP_GRACE_MS).
- */
-export async function restoreSendOrigin(): Promise<void> {
-  if (restored) return;
-  restored = true;
-  if (outOfBandTotal > 0) return;
-  const stored = await readDurable<DurableSendOrigin>(DURABLE_STATE);
-  if (!stored || stored.version !== 1 || typeof stored.total !== 'number') return;
-  outOfBandTotal = stored.total;
-  for (const [conversationId, entry] of Object.entries(stored.byConversation ?? {})) {
-    if (typeof entry?.count !== 'number' || typeof entry?.lastAt !== 'number') continue;
-    outOfBandByConversation.set(conversationId, { count: entry.count, lastAt: entry.lastAt });
-    if (outOfBandByConversation.size >= MAX_COUNTED_CONVERSATIONS) break;
-  }
+export function sendOriginStatus(): { events: OutOfBandSendEvent[] } {
+  return { events: [...events] };
 }
 
 export function resetSendOriginForTests(startedAtOverride: number = Date.now()): void {
   startedAt = startedAtOverride;
   appSends.clear();
-  outOfBandTotal = 0;
-  outOfBandByConversation.clear();
   events.length = 0;
-  restored = false;
   // The in-flight provider is deliberately kept: the bridge wires it once at startup and
   // suites reset per-test state without restarting the bridge.
 }

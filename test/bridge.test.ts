@@ -4880,7 +4880,7 @@ describe('out-of-band send detection over the push path', () => {
     resetSendOriginForTests();
   });
 
-  it('marks a turn from a real POST /send as app-originated and counts no bypass', async () => {
+  it('marks a turn from a real POST /send as app-originated and reports nothing', async () => {
     const chat = 'c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
     const reply = await request('POST', '/send', {
       origin: null,
@@ -4897,11 +4897,10 @@ describe('out-of-band send detection over the push path', () => {
 
     expect(await storedOrigins(chat)).toEqual(['app']);
     const status = await sleepStatus();
-    expect(status.sendOrigin.outOfBandSends).toMatchObject({ total: 0, byConversation: [] });
     expect(status.sendOrigin.events).toEqual([]);
   });
 
-  it('marks a turn nothing sent as out-of-band, and serves the count on /sleep/status', async () => {
+  it('marks a turn nothing sent as out-of-band, and serves the event on /sleep/status', async () => {
     // No POST /send, no ACK: the composer moved and the app was never told. This is what a
     // direct-CDP drive against port 9222 looks like from the evidence layer.
     const chat = 'd2e3f4a5-6b7c-4d8e-9f0a-1b2c3d4e5f6a';
@@ -4909,21 +4908,20 @@ describe('out-of-band send detection over the push path', () => {
 
     expect(await storedOrigins(chat)).toEqual(['out_of_band']);
     const status = await sleepStatus();
-    expect(status.sendOrigin.outOfBandSends.total).toBe(1);
-    expect(status.sendOrigin.outOfBandSends.byConversation).toMatchObject([{ conversationId: chat, count: 1 }]);
     expect(status.sendOrigin.events).toMatchObject([
       { kind: 'out_of_band_send', conversationId: chat, sleepCancelled: false }
     ]);
-    // The steward reads what happened in plain terms, not a code they have to look up.
-    expect(status.sendOrigin.events[0].detail).toContain('typed into this chat by something other than the app');
+    // The steward reads what the app did in plain terms, not a code they have to look up.
+    expect(status.sendOrigin.events[0].detail).toContain('a turn started that this app did not send');
   });
 
-  it('keeps the bypass ledger on the same credential as the rest of the route', async () => {
-    await turnStart('e3f4a5b6-7c8d-4e9f-8a0b-2c3d4e5f6a7b', 'turn-credential-check');
+  it('keeps the send-origin events on the same credential as the rest of the route', async () => {
+    const chat = 'e3f4a5b6-7c8d-4e9f-8a0b-2c3d4e5f6a7b';
+    await turnStart(chat, 'turn-credential-check');
     const withExtensionToken = await request('GET', '/sleep/status', { origin: null, auth: token! });
     expect(withExtensionToken.status).toBe(401);
-    // The tally is fleet-control state, not page state: it rides the local-caller credential
-    // exactly like /send and /send/outcome, and the extension's token cannot read it.
-    expect((await sleepStatus()).sendOrigin.outOfBandSends.total).toBe(1);
+    // App state, not page state: it rides the local-caller credential exactly like /send and
+    // /send/outcome, and the extension's token cannot read it.
+    expect((await sleepStatus()).sendOrigin.events).toMatchObject([{ conversationId: chat }]);
   });
 });
