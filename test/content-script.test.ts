@@ -4669,6 +4669,107 @@ describe('a stop button that goes missing while the turn is still running', () =
   });
 
   /**
+   * The stall recovery above decides for itself, on a ten-minute clock, and is right to be
+   * that cautious — it is guessing. A local caller asking to interrupt is not guessing: it
+   * looked at the chat and decided the turn should end. That instruction arrives on the same
+   * /activity feed the page already reads, carrying the id of the send it belongs to.
+   *
+   * The composer refuses while a turn is in flight, so this press is the whole reason a
+   * `stop_first` send can ever be typed. Pressing has to come first, and it has to come from
+   * inside the page: nothing outside it can reach a chat with a turn running.
+   */
+  it('presses Stop for a queued message that asked to interrupt the turn, before anything is typed', async () => {
+    let stopClicks = 0;
+    const submitted: string[] = [];
+    live = await harness(undefined, undefined, (document) => {
+      startGenerating(document);
+      document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+        stopClicks++;
+        stopGenerating(document);
+      });
+      document.querySelector('[data-testid="send-button"]')!.addEventListener('click', () => {
+        const composer = document.querySelector('#prompt-textarea')!;
+        submitted.push((composer.textContent || '').trim());
+        composer.textContent = '';
+      });
+    });
+    assistantTurn(live.document, 'turn-interrupted-on-request', []);
+    live.hook.observe();
+    await settle();
+
+    // Nothing has asked for anything yet, and the turn is nowhere near the stall bar: the
+    // page must be leaving this chat completely alone.
+    await live.hook.pullActivity();
+    await settle();
+    expect(stopClicks).toBe(0);
+
+    live.reply.set('activity', () => ({ ok: true, data: { entries: [], job: null, stopTurn: 'cmd-interrupt' } }));
+    await live.hook.pullActivity();
+    await settle(300);
+
+    expect(stopClicks).toBe(1);
+    // The press and only the press. The send waiting behind it owns the text and owns the
+    // draft-by-authorship rules; this must never type or clear anything on its own.
+    expect(submitted).toEqual([]);
+    expect(live.document.querySelector('#prompt-textarea')!.textContent).toBe('');
+    // Recorded, because ending a turn that was producing work is not something that should
+    // exist only in the caller's memory.
+    expect(emitted(live.sent, 'chat_error').map((entry) => entry.event.text)).toContain(
+      'The app stopped this turn because a queued message asked to interrupt it.'
+    );
+
+    // ChatGPT ignores the first press often enough that one attempt is not a stop. While the
+    // same instruction stands and the turn is still up, the page tries again — but on its own
+    // cadence, not once per poll.
+    startGenerating(live.document);
+    live.document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+      stopClicks++;
+      stopGenerating(live.document);
+    });
+    await live.hook.pullActivity();
+    await settle();
+    expect(stopClicks).toBe(1);
+    live.advance(live.hook.STOP_FOR_PUSH_RETRY_MS + 1);
+    await live.hook.pullActivity();
+    await settle(300);
+    expect(stopClicks).toBe(2);
+  });
+
+  /**
+   * The default push must be bit-identical to what it has always been. A stream mid-turn is
+   * producing work and interrupting it destroys that work, so the guardrail is that the page
+   * reaches for the Stop control only where a caller typed the word — never on a feed that
+   * merely carries a chat with a turn running.
+   */
+  it('never touches the Stop control for an ordinary queued message', async () => {
+    let stopClicks = 0;
+    live = await harness(undefined, undefined, (document) => {
+      startGenerating(document);
+      document.querySelector('[data-testid="stop-button"]')!.addEventListener('click', () => {
+        stopClicks++;
+        stopGenerating(document);
+      });
+    });
+    assistantTurn(live.document, 'turn-left-alone', []);
+    live.hook.observe();
+    await settle();
+
+    // Everything an ordinary /activity answer carries, and nothing that asks for a stop.
+    live.reply.set('activity', () => ({
+      ok: true,
+      data: { entries: [], job: null, stopTurn: null, reloadPage: null, staleDrafts: [] }
+    }));
+    await live.hook.pullActivity();
+    await settle(300);
+    live.advance(live.hook.STOP_FOR_PUSH_RETRY_MS + 1);
+    await live.hook.pullActivity();
+    await settle(300);
+
+    expect(stopClicks).toBe(0);
+    expect(live.document.querySelector('[data-testid="stop-button"]')).not.toBeNull();
+  });
+
+  /**
    * The user pressing stop is not a signal that needs corroborating, and a composer that
    * stays disabled for four more seconds because the app is being careful is its own bug.
    */

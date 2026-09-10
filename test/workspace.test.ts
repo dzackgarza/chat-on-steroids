@@ -48,6 +48,7 @@ let roots: Root[] = [];
 function asAgent(agent: string | null): CallContext {
   return {
     startedAt: Date.now(),
+    tool: 'read_file',
     transportKey: null,
     agent,
     caller: { transportKey: null, secret: null, requestId: null, conversationId: null },

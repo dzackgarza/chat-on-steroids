@@ -3341,6 +3341,7 @@ describe('the outcome a shell command is recorded with', () => {
   ) => {
     const context: CallContext = {
       startedAt: Date.now(),
+      tool: 'exec_command',
       transportKey: null,
       agent: null,
       caller: { transportKey: null, requestId: null, conversationId: null },
@@ -3376,6 +3377,7 @@ describe('the outcome a shell command is recorded with', () => {
   it('does not let the guard downgrade a command error back to ok', () => {
     const context: CallContext = {
       startedAt: Date.now(),
+      tool: 'exec_command',
       transportKey: null,
       agent: null,
       caller: { transportKey: null, requestId: null, conversationId: null },

@@ -401,6 +401,7 @@ async function dispatch(
   // opens with the request and closes with it.
   const context: CallContext = {
     startedAt: Date.now(),
+    tool: name,
     transportKey,
     agent: null,
     caller: {

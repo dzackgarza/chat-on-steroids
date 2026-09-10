@@ -76,6 +76,8 @@ export interface CallCaller {
 export interface CallContext {
   /** Wall-clock start of this MCP request, shared by identity-sensitive handlers. */
   startedAt: number;
+  /** MCP tool name, so an in-flight call can be named in a refusal without a second lookup. */
+  tool: string;
   /** Stable per-conversation key when the transport offers one, else null. */
   transportKey: string | null;
   /** Resolved agent id in multi-agent mode, else null. */
@@ -158,6 +160,47 @@ function countFor(calls: Iterable<CallContext>, conversationId: string | null): 
 /** Requests still inside dispatch, and therefore still potentially doing tool work. */
 export function runningToolCalls(conversationId: string | null = null): number {
   return countFor(running, conversationId);
+}
+
+/** One in-flight call, as a steward reading a refusal needs to see it. */
+export interface InFlightCall {
+  tool: string;
+  ageMs: number;
+  /** The conversation this call is charged to, or null when nothing has placed it yet. */
+  conversationId: string | null;
+  /** How that owner was established; `unattributed` is the charge-everyone case. */
+  attribution: 'exact' | 'push_correlated' | 'temporal_unique' | 'connector_session' | 'unattributed';
+}
+
+/**
+ * The calls a refusal is actually about, oldest first.
+ *
+ * A bare "3 tool calls in flight" is what drove the composer workaround: it cannot be told
+ * apart from a wedged app, so a steward reading it has no next action. The same refusal
+ * carrying "exec_command, 62 minutes, unattributed" is a decision the steward can make —
+ * which is why the app reports the set and never judges it. Nothing here expires, abandons
+ * or sweeps a call: a long call is a fact about the fleet, and the agent driving the fleet
+ * is the one placed to know whether it is plausible.
+ *
+ * `conversationId === null` is the case that costs everyone: an unplaced call is charged
+ * against every conversation, so it is the number to watch when an idle chat is refused.
+ */
+export function inFlightCallCensus(conversationId: string | null = null, limit = 20): InFlightCall[] {
+  const now = Date.now();
+  const rows: InFlightCall[] = [];
+  for (const call of running) {
+    const exact = call.caller.conversationId ?? null;
+    const owner = exact ?? call.caller.inferredConversationId ?? null;
+    if (!(conversationId === null || owner === null || owner === conversationId)) continue;
+    rows.push({
+      tool: call.tool,
+      ageMs: Math.max(0, now - call.startedAt),
+      conversationId: owner,
+      attribution: exact ? 'exact' : (call.caller.inferredMethod ?? 'unattributed')
+    });
+  }
+  rows.sort((left, right) => right.ageMs - left.ageMs);
+  return rows.slice(0, limit);
 }
 
 /** Finished tool work whose unattributed durable record is still landing. */

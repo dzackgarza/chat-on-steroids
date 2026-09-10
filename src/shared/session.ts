@@ -211,6 +211,20 @@ export interface ToolCallRecord {
 
 export type MessageState = 'streaming' | 'final';
 
+/**
+ * Which driver typed the message that started a turn. ("Send" here means a message typed
+ * into a ChatGPT composer; nothing about this field concerns git.)
+ *
+ * `app` — a send this app typed and registered itself: a local /send, a worker bootstrap,
+ * a revival offer, a resume handoff, a goal draft. `out_of_band` — page evidence of a new
+ * turn that no registered app send explains: something other than the app typed into the
+ * chat (a human at the keyboard, or direct-CDP steward tooling). `unknown` — an evidence
+ * gap: a restart window, an observer-lost remount, or a send still in flight, where honesty
+ * forbids either claim. The classifier never guesses `app`; the page never supplies this
+ * field. See session/send-origin.ts.
+ */
+export type SendOrigin = 'app' | 'out_of_band' | 'unknown';
+
 interface BaseEvent {
   /** 1-based, strictly increasing within a session. Ordering never relies on time. */
   seq: number;
@@ -279,7 +293,7 @@ export type SessionEvent =
    * for readers working from a cursor that has already consumed it.
    */
   | (BaseEvent & { kind: 'page_tool'; messageId: string; label: string; origin?: number })
-  | (BaseEvent & { kind: 'turn_start' })
+  | (BaseEvent & { kind: 'turn_start'; sendOrigin?: SendOrigin })
   | (BaseEvent & { kind: 'turn_end'; outcome: TurnOutcome; detail?: string })
   | (BaseEvent & { kind: 'chat_error'; message: StoredText })
   | (BaseEvent & { kind: 'tool_call'; call: ToolCallRecord })

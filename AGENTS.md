@@ -618,20 +618,76 @@ routes: `/status`, `/events`, `/closed`, `/activity`, `/compact/claim-auto`, `/c
 `/commands/redeem`, `/commands/ack`. `/settings` is the only pair the page may write, and
 its GET exists for the one composer with no conversation to read `/activity` for: a New Chat.
 
-`/send`, `GET /send/outcome` and `GET /sleep/status` are the three routes that do not
+`/send`, `GET /send/outcome`, `GET /conversation/status` and `GET /sleep/status` are the
+four routes that do not
 belong to the extension. A
 local program — the justfile recipes, a script, an agent on this computer — posts
-`{conversationId?, text, verifyHorizonMs?}` and the app types that text into that chat, or
+`{conversationId?, text, verifyHorizonMs?, ifGenerating?, reloadFirst?}` and the app types
+that text into that chat, or
 into a fresh one when no conversation is named. Queueing is not delivery and even the
 page's ACK is only a click receipt: `/send/outcome?id=` reports the typed state machine
 (`queued → delivering → typed → sent_verified`, or a terminal
 `typed_unverified`/`refused`/`draft_left_in_composer`/`no_live_composer_tab`/`expired`/
 `failed` with the concrete next action), where the sole success is a fresh `turn_start`
-observed in the recording within the horizon. `/sleep/status` is the read-only sleep/wake
-fleet projection (below). All three routes present the separate credential
+observed in the recording within the horizon. `/conversation/status?conversationId=` is one
+chat's turn state (below) and `/sleep/status` is the read-only sleep/wake
+fleet projection (below). All four routes present the separate credential
 in `<userData>/state/local-token` (mode `0600`, minted once at bridge startup), never the
 extension's bearer token, because `/pair` reissues that one whenever the browser
 reconnects.
+
+### What a send may do to a turn already running — `ifGenerating`, `reloadFirst`
+
+The composer refuses a new message while a turn is in flight. That is the whole shape of the
+problem: a chat generating and a chat wedged look identical from outside, and the one state a
+caller most wants to recover is the one state nothing outside the page can reach. So the send
+path carries two page actions, and neither is ever a default.
+
+- **`ifGenerating: 'refuse'`** — the default, and exactly what this route has always done. It
+  never interrupts. The message waits for the composer and ends as `expired` if the turn never
+  finishes. `just say` and `just new` use it. Use it for everything: a stream mid-turn is
+  producing work, and a push that arrives while it is thinking is meant to land afterwards.
+- **`ifGenerating: 'stop_first'`** — press ChatGPT's Stop control in that chat, then type.
+  `just interrupt <chat> "..."`. This destroys whatever the turn was producing, so it exists
+  only where somebody typed it. The app does not second-guess it: whether a turn deserves to
+  be interrupted needs the task and the history, which the agent driving the fleet has and the
+  app does not. What the app owes that decision is the state, below. It presses again every
+  ten seconds while the send waits, because ChatGPT ignores the first press often enough that
+  one attempt is not a stop, and it stops asking the moment a page redeems the send. The press
+  is recorded: a `chat_error` row in the chat's own recording, and a warning line naming the
+  turn id, how long it had been open, and how long since the recording last changed.
+- **`reloadFirst: true`** — reload the page holding the chat once, before the message is typed.
+  `just revive <chat> "..."`. For a document alive enough to poll but stuck behind a turn its
+  renderer will never resolve. Offered exactly once per command and only before any document
+  has redeemed it, so it can never cost a lease or loop; the app holds that latch, because a
+  page that reloads forgets everything it knew. A renderer frozen hard enough not to poll is
+  not reachable this way at all — the service worker's frozen-duplicate recycle owns those.
+
+Both extras need a named conversation: a fresh chat has no turn to stop and no page to reload,
+and asking for either there is `400 needs_conversation`. An `ifGenerating` value this app does
+not implement is `400 bad_if_generating` rather than a quiet fall back to the safe one.
+
+### What one chat is actually doing — `GET /conversation/status`
+
+`just state <chat>`. Facts from the live recorder, and no verdict.
+
+`just chats` answers a similar question from the recording on disk and gets one thing wrong
+that matters: a canonical message keeps the time it was **first seen**, so a chat spending four
+minutes writing a long final answer looks exactly like a chat that stopped. This route reads
+the recorder instead, where every streaming revision is a durable write, so `lastStoredAt`
+moves as the prose grows.
+
+`{known, sessionId, generating, activeTurnId, turnStartedAt, generatingForMs, lastStoredAt,
+lastStoredKind, noProgressForMs, lastPageToolAt, lastContactAt, observerLostAt, pendingTools,
+inFlightCalls, sleeping}`. `lastContactAt` is a heartbeat and never progress — a wedged page
+still polls. A conversation this app has never recorded answers `known: false` rather than a
+manufactured idle state, and unknown numbers are `null` rather than zero. The same block rides
+on the `POST /send` answer and on a still-queued `/send/outcome`, so a caller deciding whether
+to push does not have to queue a message to find out what is in the way.
+
+There is deliberately no `stalled` field. Whether a turn open for eleven minutes with no stored
+observation for four of them is a wedge or an agent thinking is a judgment that needs the task,
+and the agent driving the fleet is the one holding it.
 
 **Must hold.** The extension token never enters the ChatGPT page — the service worker holds
 it in extension-owned state and the app keeps its counterpart out of config and log surfaces.
@@ -1023,8 +1079,12 @@ just transcript <part-of-an-id>  # print one chat; defaults to the newest
 just search <term>               # which chats mention a term
 
 just chats                       # conversation ids, and whether each chat is mid-turn
+just state <conversation-id>     # what that one chat's turn is doing, from the live recorder
 just say <conversation-id> "..."  # send that message to that chat
 just new "..."                    # open a new chat with that opening message
+
+just interrupt <conversation-id> "..."  # stop the turn it is running, then send
+just revive <conversation-id> "..."     # reload its page, then send
 ```
 
 `just chats` is the one that gives you the id `say` needs. `busy` means that chat's newest
@@ -1105,11 +1165,16 @@ costs one refused push, since the re-check above leaves a chat alone when its cl
 Being late costs a whole polling interval of a chat doing nothing, which is the expensive
 side.
 
-**A stalled chat cannot be rescued from outside.** The composer refuses while a turn is in
-flight, which is exactly the state worth rescuing, so only the page can break it. That is why
-the content script presses Stop and sends `Continue` itself, retries every two minutes because
-ChatGPT often ignores the first press, and why the service worker reloads a tab that holds a
-chat and will not act on the command for it.
+**A stalled chat can only be rescued from inside the page, and now you can ask it to.** The
+composer refuses while a turn is in flight, which is exactly the state worth rescuing, so
+nothing outside the page can break it. The page breaks it three ways. On its own: the content
+script presses Stop and sends `Continue` after a ten-minute stall, retrying every two minutes
+because ChatGPT often ignores the first press, and the service worker reloads a tab that holds
+a chat and will not act on the command for it. On request: `just interrupt <chat> "..."` makes
+that same press happen now and types your message instead of `Continue`, and
+`just revive <chat> "..."` reloads the page first. Both destroy or discard whatever the turn
+was doing, so they are separate verbs from `say` — read `just state <chat>` before reaching for
+one. A chat that is merely working is a chat to leave alone.
 
 **Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
 short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
@@ -1302,6 +1367,29 @@ That is the whole role, and its boundaries are hard:
 - Do not step in and do the work.
 - Do not pull repository detail into your own context to check theirs.
 - Do not revise their instructions or policies.
+
+**Neither the steward nor its subagents are the worker on any managed repository.**
+Dispatching a subagent into a managed repo to merge branches, resolve conflicts, write
+its documentation or repair its data is the same violation as doing it yourself — it
+just spends different tokens. The steward may step in briefly to clear a blocker that
+stops every stream at once and cannot be delegated; everything else, including work the
+steward discovered and understands perfectly, goes into that repository's own queue or
+TODO and is assigned to its worker. Repo-specific work funnels into that repo's
+workstream. That is the whole mechanism.
+
+**Anything that "needs a decision" is a task to file, not a question to ask.** A red
+gate, an unmergeable branch, two competing proofs of one card, a corrupted artifact —
+these are work items for the repository that owns them. File them in that repo's queue
+with the evidence and the acceptance condition, and point a worker at it. Escalate to
+the owner only what no worker in any repo could act on: resourcing, authorization,
+external accounts.
+
+**Do not discuss repository internals in the orchestration chat.** This session holds no
+repository's context, so card ids, merge conflicts, YAML defects and file paths are
+noise here and read as word salad however carefully they are written. Report at the
+workstream level — which repositories have a worker producing, which are stuck, which
+have run out of scope, and what was dispatched. The detail belongs in the repo, in
+front of the agent that can act on it.
 
 Point, send, and continue until the task is done, the chat is wedged, or its context is full.
 

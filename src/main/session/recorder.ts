@@ -62,14 +62,23 @@ import {
   requestCorrelationConflicted,
   resetCorrelationRegistryForTests,
 } from './correlation.js';
-import { learnSessionBinding, sessionBindingDetail, type SessionBindingMethod } from './connector-session.js';
+import {
+  learnSessionBinding,
+  noteSessionKeySeen,
+  sessionBindingDetail,
+  type SessionBindingMethod
+} from './connector-session.js';
 import {
   claimPushCorrelation,
   isSleptWithBoundKey,
   noteConnectorActivity,
+  noteOutOfBandSend,
   noteObservedTurnEnd,
-  noteObservedTurnStart
+  noteObservedTurnStart,
+  pendingSendMatches,
+  sleepStateFor
 } from './sleep-wake.js';
+import { classifySendOrigin, recordOutOfBandSend } from './send-origin.js';
 import { resumeOpeningChat } from './resume-gate.js';
 import { summarizeToolCall } from './summarize.js';
 
@@ -679,6 +688,93 @@ export function liveConversations(): Array<{
 }
 
 /**
+ * When this conversation's recording last actually changed, and what changed it.
+ *
+ * Deliberately not `meta.updatedAt` and deliberately not an event's own `time`. The former
+ * moves on any observation of the chat including the recorder's own polling, and the latter
+ * is frozen at first sight for a canonical message — a streaming answer revises the same
+ * row for minutes without its `time` ever moving, which is why `just chats` calls a chat
+ * writing a long final answer "stalled". This clock is the one honest thing in between: it
+ * advances exactly when an observation was durably *stored*, streaming revisions included,
+ * and does not advance when the page is merely alive and polling.
+ *
+ * Bounded because a conversation entry can outlive its tab. Only the newest few hundred are
+ * kept; an evicted conversation reports `null`, which is "not known" and never "idle".
+ */
+const lastStored = new Map<string, { at: number; kind: string; pageToolAt: number | null }>();
+const MAX_TRACKED_PROGRESS = 256;
+
+function noteStoredObservation(conversationId: string, kind: string): void {
+  const at = Date.now();
+  const previous = lastStored.get(conversationId);
+  lastStored.set(conversationId, {
+    at,
+    kind,
+    pageToolAt: kind === 'page_tool' ? at : previous?.pageToolAt ?? null
+  });
+  if (lastStored.size <= MAX_TRACKED_PROGRESS) return;
+  // Insertion order is close enough to recency here: every write re-inserts the key.
+  for (const key of lastStored.keys()) {
+    if (lastStored.size <= MAX_TRACKED_PROGRESS) break;
+    lastStored.delete(key);
+  }
+}
+
+/**
+ * Everything this app can cheaply and truthfully say about one conversation's current turn.
+ *
+ * The facts, never a verdict. Whether a turn that has been open for eleven minutes with no
+ * stored observation for four of them deserves to be interrupted is a judgment the steward
+ * driving the fleet makes with context this app does not have; what this app owes it is the
+ * numbers that judgment needs. `null` fields are unknowns and say so — a conversation this
+ * app has never recorded returns `known: false` rather than a fabricated idle state.
+ */
+export interface ConversationTurnState {
+  conversationId: string;
+  /** Whether this app has a live recording for the conversation at all. */
+  known: boolean;
+  sessionId: string | null;
+  /** A turn this app's recorder opened and has not seen end. */
+  generating: boolean;
+  activeTurnId: string | null;
+  turnStartedAt: number | null;
+  /** ms since the open turn started, or null when nothing is open. */
+  generatingForMs: number | null;
+  /** When the recording last changed, and with what. Null means nothing stored this run. */
+  lastStoredAt: number | null;
+  lastStoredKind: string | null;
+  /** ms since the recording last changed, or null when that is unknown. */
+  noProgressForMs: number | null;
+  /** When ChatGPT's own activity feed last put a tool row into the recording. */
+  lastPageToolAt: number | null;
+  /** When the page last proved it still has a live observer. A heartbeat, never progress. */
+  lastContactAt: number | null;
+  /** Set when the app closed an open turn it never saw end — the turn may still be running. */
+  observerLostAt: number | null;
+}
+
+export function conversationTurnState(conversationId: string): ConversationTurnState {
+  const entry = conversations.get(conversationId) ?? null;
+  const progress = lastStored.get(conversationId) ?? null;
+  const now = Date.now();
+  return {
+    conversationId,
+    known: entry !== null,
+    sessionId: entry?.sessionId ?? null,
+    generating: entry?.turnStartedAt != null,
+    activeTurnId: entry && entry.turnStartedAt !== null ? entry.turnId : null,
+    turnStartedAt: entry?.turnStartedAt ?? null,
+    generatingForMs: entry?.turnStartedAt != null ? now - entry.turnStartedAt : null,
+    lastStoredAt: progress?.at ?? null,
+    lastStoredKind: progress?.kind ?? null,
+    noProgressForMs: progress ? now - progress.at : null,
+    lastPageToolAt: progress?.pageToolAt ?? null,
+    lastContactAt: entry?.lastContactAt ?? null,
+    observerLostAt: entry?.observerLostAt ?? null
+  };
+}
+
+/**
  * The one managed conversation currently mid-generation, or null for zero or several.
  *
  * "Exactly one" is a claim about the whole managed fleet, so it also fails closed on
@@ -753,6 +849,10 @@ export function inferDegradedCaller(
   // Every degraded call is the quiescence heartbeat for whichever slept conversation owns
   // its key; a no-op while nothing sleeps.
   if (sessionKey) noteConnectorActivity(sessionKey);
+  // Recorded before any tier reads the key, so "first sighting" means this call. The push
+  // window is the only consumer, and it needs the distinction `byKey` cannot make: an
+  // unbound key is not a new key, it is usually one no tier has ever had evidence about.
+  const firstSeenAt = sessionKey ? noteSessionKeySeen(sessionKey) : null;
   const held = sessionBindingDetail(sessionKey);
   if (held && isSleptWithBoundKey(held.conversationId)) {
     // A key bound to a slept conversation is that chat's own call stream. Slept chats are
@@ -769,7 +869,7 @@ export function inferDegradedCaller(
     // Push-correlated learning outranks temporal learning for a first-seen key. When both
     // claim the key for different conversations at first sight, the claim is contradictory
     // and the key is condemned (sticky) inside claimPushCorrelation — neither side wins.
-    const claim = claimPushCorrelation(sessionKey, soleGeneratingConversation());
+    const claim = claimPushCorrelation(sessionKey, soleGeneratingConversation(), firstSeenAt);
     if (claim === 'contradicted') return null;
     if (claim) return { conversationId: claim, method: 'push_correlated' };
   }
@@ -1826,7 +1926,7 @@ async function recordChatObservationsNow(
           message: await storeText(sessionId, item.text ?? '', 2000)
         });
         break;
-      case 'turn_start':
+      case 'turn_start': {
         // Lifecycle without a durable local id is not a lifecycle boundary a later reader
         // can reconcile. In particular, a reloaded page once emitted an unnamed turn_end
         // between two named generations; accepting it cleared the live turn and made the
@@ -1838,7 +1938,24 @@ async function recordChatObservationsNow(
         // service worker may replay the exact same local lifecycle id. Never turn that transport
         // retry into a second durable boundary or reopen a turn that already ended.
         if (live?.knownTurnStarts.has(item.turnId) || live?.knownTurnEnds.has(item.turnId)) continue;
-        await appendEvent(sessionId, { ...base, kind: 'turn_start' });
+        // Send-origin attribution (session/send-origin.ts), decided before this turn's own
+        // bookkeeping mutates the evidence it reads: the observer-lost flag is cleared just
+        // below, and the sleep/wake hook at the bottom consumes its pending-send registry.
+        // The verdict is the app's cross-check of its send registry against page evidence —
+        // the page never supplies it.
+        const sendOrigin = classifySendOrigin(conversationId, item.time, {
+          verifiedBySleepWake: pendingSendMatches(conversationId, item.time),
+          sleepState: sleepStateFor(conversationId),
+          observerLost: live !== undefined && live.observerLostAt !== null,
+          detachedMidTurn: detachedWhileGenerating.has(conversationId),
+          // No local lifecycle history at all — seeded from the durable log at pickup, so
+          // this really is a chat the app has never recorded a turn boundary for. That is
+          // the only kind of turn a fresh-chat command in flight could be: ChatGPT issues
+          // the conversation id when the message is typed, so no queued command can name it.
+          firstTurnForConversation:
+            live === undefined || (live.knownTurnStarts.size === 0 && live.knownTurnEnds.size === 0)
+        });
+        await appendEvent(sessionId, { ...base, kind: 'turn_start', sendOrigin });
         // Commit before publishing the lifecycle projection. If append rejects, the same
         // browser event remains eligible for its normal at-least-once retry.
         if (live) {
@@ -1853,10 +1970,18 @@ async function recordChatObservationsNow(
           live.observerLostAt = null;
         }
         detachedWhileGenerating.delete(conversationId);
+        if (sendOrigin === 'out_of_band') {
+          // Before the sleep/wake hook on purpose: an out-of-band send into a slept
+          // conversation must cancel the sleep state (two drivers — the dangerous case), not
+          // be handed to the hook below and mistaken for a benignly reopened observer.
+          const sleepCancelled = noteOutOfBandSend(conversationId, item.time);
+          recordOutOfBandSend(conversationId, item.time, sleepCancelled);
+        }
         // Sleep/wake: a fresh observed turn_start is the verification of a pending push,
         // or a waking remount showing its turn still generating. Inert while disabled.
         noteObservedTurnStart(conversationId, item.time);
         break;
+      }
       // Also not stored, and for the same reason: this is the page describing which calls
       // it made, which is a fact about attribution rather than something that happened in
       // the chat. The calls themselves are recorded by the connector, once each.
@@ -1899,6 +2024,10 @@ async function recordChatObservationsNow(
         break;
     }
     stored++;
+    // Reached only by an observation that actually changed the recording — every `continue`
+    // above is a batch item that stored nothing. That is what makes this a progress clock
+    // rather than a liveness one. See conversationTurnState().
+    noteStoredObservation(conversationId, item.kind);
   }
   notifyChanged();
   return { sessionId, stored };

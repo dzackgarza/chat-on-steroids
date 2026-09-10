@@ -51,6 +51,22 @@ interface HeldBinding {
 const MAX_BINDINGS = 5000;
 
 const byKey = new Map<string, HeldBinding>();
+/**
+ * When each session key was first presented to this process, bound or not.
+ *
+ * `byKey` only holds keys some tier managed to bind, so it cannot answer "is this key new?".
+ * Under a busy fleet most keys never bind at all — `temporal_unique` needs exactly one
+ * visible generator and there rarely is one — so a key that has been calling for twenty
+ * minutes is indistinguishable, in `byKey`, from one that has never been seen. The
+ * push-correlated window used to read that absence as "first sight" and claim it, which is
+ * how a long-running worker's call stream was measured (2026-09-10) being bound to a chat
+ * that had just been pushed and never made a call in its life.
+ *
+ * First sighting is the missing evidence: a key whose calls predate the push cannot be the
+ * turn that push just started. Kept for every key, not just bound ones, and deliberately
+ * separate from `byKey` so eviction of one never silently rejuvenates the other.
+ */
+const firstSeenByKey = new Map<string, number>();
 
 function trim(): void {
   while (byKey.size > MAX_BINDINGS) {
@@ -195,6 +211,31 @@ export function boundKeyForConversation(conversationId: string): string | null {
   return found;
 }
 
+/**
+ * Records that this key has now been seen, and answers when it was *first* seen.
+ *
+ * Called on every degraded call before any tier looks at the key, so the answer is "now"
+ * exactly on a key's first sighting and the original timestamp forever after. That is the
+ * evidence the push-correlated window needs: a key already calling before the window opened
+ * belongs to a call stream the push did not start.
+ */
+export function noteSessionKeySeen(sessionKey: string, at: number = Date.now()): number {
+  const seen = firstSeenByKey.get(sessionKey);
+  if (seen !== undefined) return seen;
+  firstSeenByKey.set(sessionKey, at);
+  while (firstSeenByKey.size > MAX_BINDINGS) {
+    const oldest = firstSeenByKey.keys().next().value as string | undefined;
+    if (!oldest) break;
+    firstSeenByKey.delete(oldest);
+  }
+  return at;
+}
+
+/** First sighting of a key, or null if this process has never seen it. Diagnosis/tests. */
+export function sessionKeyFirstSeenAt(sessionKey: string): number | null {
+  return firstSeenByKey.get(sessionKey) ?? null;
+}
+
 /** Whether this key has contradictory temporal evidence. Diagnosis/tests only. */
 export function sessionBindingConflicted(sessionKey: string): boolean {
   return byKey.get(sessionKey)?.conflicted === true;
@@ -202,4 +243,5 @@ export function sessionBindingConflicted(sessionKey: string): boolean {
 
 export function resetSessionBindingsForTests(): void {
   byKey.clear();
+  firstSeenByKey.clear();
 }

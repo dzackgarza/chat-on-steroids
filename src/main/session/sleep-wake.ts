@@ -29,6 +29,10 @@
  * - **The single-driver invariant.** While a conversation is slept or waking, the send
  *   path refuses external pushes with a typed reason and a next-check hint instead of
  *   racing the wake (two drivers collided during the experiment).
+ * - **Out-of-band sends.** A message typed into a managed conversation by something other
+ *   than the app (see send-origin.ts) cancels that conversation's sleep at error level and
+ *   closes any open correlation window: the app cannot know what was sent, so neither the
+ *   sleep state machine nor a `push_correlated` binding may keep claiming otherwise.
  * - **Honest interplay with page evidence.** A slept conversation with a bound key is
  *   excluded from temporal-uniqueness computations (recorder.ts asks
  *   `isSleptWithBoundKey`): its server turn is real but its calls carry its own key, so it
@@ -45,7 +49,7 @@
 import { getConfig, DEFAULT_SLEEP_WAKE } from '../config.js';
 import type { SleepWakeSettings } from '../../shared/types.js';
 import { readDurable, writeDurableSoon } from '../durable.js';
-import { logInfo, logWarn } from '../logger.js';
+import { logError, logInfo, logWarn } from '../logger.js';
 import {
   boundKeyForConversation,
   condemnSessionKey,
@@ -201,6 +205,69 @@ export function notePushTyped(conversationId: string, typedAt: number, horizonMs
 }
 
 /**
+ * Non-consuming peek for the send-origin classifier (session/send-origin.ts): would this
+ * observed turn_start verify a pending typed send? Same match arithmetic as
+ * noteObservedTurnStart below, which stays the consumer.
+ */
+export function pendingSendMatches(conversationId: string, at: number): boolean {
+  const pending = pendingTypedSends.get(conversationId);
+  return pending !== undefined && at >= pending.typedAt - 2_000 && at - pending.typedAt <= pending.horizonMs;
+}
+
+/** The sleep state this module holds for a conversation, for the send-origin classifier. */
+export function sleepStateFor(conversationId: string): SleepState | null {
+  return records.get(conversationId)?.state ?? null;
+}
+
+/**
+ * Recorder verdict (session/send-origin.ts): a message reached this conversation's composer
+ * with no app-originated send to explain it. The sleep-managed case is the dangerous one:
+ * while a conversation is slept the app is the only driver allowed to send into it, so page
+ * evidence of a fresh turn means something else typed — or someone reopened the tab; the
+ * app cannot tell which, and either way this state machine no longer describes what is in
+ * that chat. Cancel the sleep loudly rather than waking into a turn the app never sent.
+ * The `push_correlated` window is untouched on purpose: it only ever opens from the app's
+ * own verified sends, and an out-of-band send must never arm or claim one.
+ *
+ * Returns true when a sleep-managed record was cancelled.
+ */
+export function noteOutOfBandSend(conversationId: string, at: number): boolean {
+  // First, and regardless of whether this conversation is sleep-managed: close any open
+  // correlation window. The window's whole premise is "the app just sent to exactly one
+  // conversation and sends are serialized, so the next unbound key is that conversation's".
+  // A message the app did not send is now generating calls somewhere in the fleet, and that
+  // premise no longer holds — the next new key may well belong to the turn nobody
+  // registered. Leaving the window open let a key armed by an *earlier* legitimate send bind
+  // as `push_correlated` after an out-of-band send had already broken the assumption, which
+  // is the tier poisoning this whole mechanism exists to prevent. Fail closed: the weaker
+  // tiers still apply, and at worst one key stays unattributed.
+  if (pushWindow) {
+    logWarn(
+      `sleep/wake: closing the open push-correlation window for conversation ${pushWindow.conversationId} — ` +
+        `a message was typed into conversation ${conversationId} by something other than the app, so ` +
+        'the next unbound session key can no longer be assumed to belong to the conversation the app sent to'
+    );
+    pushWindow = null;
+  }
+  const record = records.get(conversationId);
+  if (!record) return false;
+  logError(
+    `sleep/wake: out-of-band send into ${record.state} conversation ${conversationId} — ` +
+      'a message was typed into a chat this app was managing by something other than the app; ' +
+      'two drivers on one conversation, so its sleep state is cancelled'
+  );
+  emit({
+    kind: 'sleep_cancelled',
+    conversationId,
+    at,
+    reason:
+      'out_of_band_send: a turn started with no app-originated send while the conversation was sleep-managed; the app cannot know what was sent, so the sleep state is cancelled'
+  });
+  drop(record);
+  return true;
+}
+
+/**
  * Pure quiescence arithmetic: how long until the quiet threshold is reached, from now.
  * Zero means the threshold has been reached or passed.
  */
@@ -214,19 +281,51 @@ export function quietRemainingMs(
   return Math.max(0, quietSince + quietMs - now);
 }
 
+/**
+ * How long until this slept conversation must be looked at, whatever its call stream does.
+ *
+ * Quiescence is the primary signal and stays primary; this is the ceiling on it. A bound key
+ * that is not really this conversation's resets `lastCallAt` forever, so the quiet threshold
+ * is never reached, the wake never fires, and the send path refuses every push for that chat
+ * for the rest of the process's life — measured live on 2026-09-10, where an idle chat's
+ * next-check hint walked from 1s back to 227s each time a foreign call landed. The binding
+ * gate in claimPushCorrelation is the cure for how that key got bound; this is the bound on
+ * what one still costs. It is not a bypass: waking only remounts the tab, and a remount that
+ * finds the turn still generating re-sleeps (noteObservedTurnStart), so a genuinely busy
+ * conversation is never pushed into and never interrupted — it just gets looked at.
+ */
+export function wakeDelayMs(
+  lastCallAt: number | null,
+  sleptAt: number,
+  quietMs: number,
+  fallbackWakeMs: number,
+  now: number
+): { delayMs: number; cause: 'quiescence' | 'fallback_timer' } {
+  const quiet = quietRemainingMs(lastCallAt, sleptAt, quietMs, now);
+  const fallback = Math.max(0, sleptAt + fallbackWakeMs - now);
+  return quiet <= fallback ? { delayMs: quiet, cause: 'quiescence' } : { delayMs: fallback, cause: 'fallback_timer' };
+}
+
 function armQuiescenceCheck(record: SleptRecord): void {
-  const { quietMs } = sleepWakeSettings();
-  const delay = quietRemainingMs(record.lastCallAt, record.sleptAt ?? Date.now(), quietMs, Date.now());
-  arm(record, Math.max(delay, 1_000), () => {
+  const { quietMs, fallbackWakeMs } = sleepWakeSettings();
+  const sleptAt = record.sleptAt ?? Date.now();
+  const next = wakeDelayMs(record.lastCallAt, sleptAt, quietMs, fallbackWakeMs, Date.now());
+  arm(record, Math.max(next.delayMs, 1_000), () => {
     record.timer = null;
     if (record.state !== 'slept') return;
-    const remaining = quietRemainingMs(record.lastCallAt, record.sleptAt ?? Date.now(), quietMs, Date.now());
-    if (remaining > 0) {
+    const due = wakeDelayMs(
+      record.lastCallAt,
+      record.sleptAt ?? Date.now(),
+      quietMs,
+      fallbackWakeMs,
+      Date.now()
+    );
+    if (due.delayMs > 0) {
       // Calls arrived since this check was armed: not quiet yet, re-arm for the remainder.
       armQuiescenceCheck(record);
       return;
     }
-    void wake(record, 'quiescence');
+    void wake(record, due.cause);
   });
 }
 
@@ -397,18 +496,14 @@ export function noteObservedTurnStart(conversationId: string, at: number): void 
     persist();
     return;
   }
-  if (record.state === 'slept') {
-    // Page evidence for a chat whose tab this app discarded: somebody (the user, another
-    // driver) reopened it. That tab is not ours to close — hand the conversation back to
-    // ordinary live observation and say so.
-    emit({
-      kind: 'woke_unconfirmed',
-      conversationId,
-      at,
-      detail: 'page evidence arrived while slept — a tab this app did not open is observing the chat; sleep state released'
-    });
-    drop(record);
-  }
+  // A `slept` record cannot reach here. Page evidence of a fresh turn in a chat whose tab
+  // this app discarded is, by definition, a second driver: the app is the only driver
+  // allowed to send into a slept conversation, so the send-origin classifier
+  // (session/send-origin.ts) rules every such start either `app` — which took the
+  // pending-send branch above — or `out_of_band`, and the recorder routes `out_of_band`
+  // through noteOutOfBandSend() before calling here, which cancels the sleep at error level.
+  // This used to be treated as a benign reopened tab and released with a quiet
+  // `woke_unconfirmed`; that reading is what made a bypass look like ordinary observation.
 }
 
 /**
@@ -451,14 +546,32 @@ export function noteConnectorActivity(sessionKey: string): void {
  * `soleVisible` is the temporal tier's answer for the same moment. When both tiers claim
  * the key for different conversations, the first-sight evidence is contradictory and the
  * key is condemned outright — neither side may win ('contradicted').
+ *
+ * `firstSeenAt` is when this process first saw the key at all (connector-session.ts), and
+ * it is a hard gate: the window may only claim a key whose call stream *began* inside it.
  */
-export function claimPushCorrelation(sessionKey: string, soleVisible: string | null): string | 'contradicted' | null {
+export function claimPushCorrelation(
+  sessionKey: string,
+  soleVisible: string | null,
+  firstSeenAt: number | null
+): string | 'contradicted' | null {
   if (!enabled() || !pushWindow) return null;
   const { correlationWindowMs } = sleepWakeSettings();
   if (Date.now() - pushWindow.openedAt > correlationWindowMs) {
     pushWindow = null;
     return null;
   }
+  // The window's whole claim is "the app just started a turn in exactly one conversation, so
+  // the calls that turn begins making are that conversation's". A key that was already
+  // calling before the window opened was started by something else, and binding it was the
+  // measured 2026-09-10 failure: a long-running worker's key was bound to a freshly pushed
+  // chat, which then recorded that worker's calls, charged them to the wrong conversation,
+  // and — because the wake detector reads quiescence off the bound key — held an idle chat
+  // asleep past every push, permanently unreachable through the send path.
+  //
+  // Not a reason to close the window: an unrelated key arriving says nothing about whether
+  // the pushed conversation's own first call is still coming.
+  if (firstSeenAt === null || firstSeenAt < pushWindow.openedAt) return null;
   const claimant = pushWindow.conversationId;
   if (soleVisible && soleVisible !== claimant) {
     condemnSessionKey(

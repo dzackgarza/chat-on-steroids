@@ -31,6 +31,7 @@ const { safeStorage } = await import('electron');
 
 const { DEFAULT_SLEEP_WAKE, defaultConfig, getConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
 const { resetSleepWakeForTests, setSleepWakeDriver } = await import('../src/main/session/sleep-wake.js');
+const { STARTUP_GRACE_MS, resetSendOriginForTests } = await import('../src/main/session/send-origin.js');
 const { initSecretsPath, resetSecretsCacheForTests, setSecret } = await import('../src/main/secrets.js');
 const {
   bridgePort,
@@ -59,7 +60,7 @@ const {
   resetGoalStateForTests,
   setGoalObjective
 } = await import('../src/main/goal.js');
-const { createSession, deleteSession, getSession, initSessionStore, readEvents, resetSessionStoreForTests } = await import(
+const { createSession, deleteSession, findSessionByConversation, getSession, initSessionStore, readEvents, resetSessionStoreForTests } = await import(
   '../src/main/session/store.js'
 );
 const { closeConversation, liveConversations, noteChatOrigin, recordChatObservations, recordToolCall, resetRecorderForTests } = await import('../src/main/session/recorder.js');
@@ -4566,6 +4567,155 @@ describe('local send', () => {
     expect(out.state).toBe('draft_left_in_composer');
     expect(out.message).toContain('retry');
   });
+
+  /**
+   * The two page actions a caller may ask for before its message is typed, and the guarantee
+   * that neither of them is anything a caller gets by accident.
+   *
+   * `stop_first` ends a turn that is producing work. Interrupting a working agent is the
+   * expensive mistake here, not failing to interrupt a wedged one — so the whole surface is
+   * built around the default doing exactly what it has always done, and the interrupting
+   * verb existing only where somebody typed it.
+   */
+  describe('what a send may do to a turn already running', () => {
+    /** A live conversation the recorder is mid-turn on, as the page would have made it. */
+    async function generatingChat(chat: string, turnId: string): Promise<void> {
+      const events = await request('POST', '/events', {
+        body: { conversationId: chat, events: [{ kind: 'turn_start', time: Date.now(), turnId }] }
+      });
+      expect(events.status).toBe(200);
+    }
+
+    it('defaults to never interrupting, and says so rather than leaving the caller to assume it', async () => {
+      await pair();
+      const chat = '5a1b2c3d-4e5f-4061-8172-8394a5b6c7d8';
+      await generatingChat(chat, 'g-working-turn');
+
+      const reply = await send({ conversationId: chat, text: 'when you get a moment' });
+      expect(reply.status).toBe(200);
+      expect(reply.body.ifGenerating).toBe('refuse');
+      expect(reply.body.reloadFirst).toBe(false);
+
+      // The page is told nothing. A default send into a chat mid-turn waits for the composer
+      // exactly as it always has; it must never reach for the Stop control.
+      const activity = await request('GET', `/activity?conversationId=${chat}`);
+      expect(activity.status).toBe(200);
+      expect(activity.body.stopTurn).toBeNull();
+      expect(activity.body.reloadPage).toBeNull();
+    });
+
+    it('asks the page to stop the turn only when the caller said stop_first, and keeps asking until a page takes the send', async () => {
+      await pair();
+      const chat = '6b2c3d4e-5f60-4172-8283-94a5b6c7d8e9';
+      await generatingChat(chat, 'g-wedged-turn');
+
+      const reply = await send({ conversationId: chat, text: 'stop and pick this up instead', ifGenerating: 'stop_first' });
+      expect(reply.status).toBe(200);
+      expect(reply.body.ifGenerating).toBe('stop_first');
+      const id = reply.body.command.id as string;
+
+      // The instruction reaches the page as the id of the command it belongs to, so the page
+      // presses Stop once per instruction rather than once per poll.
+      const first = await request('GET', `/activity?conversationId=${chat}`);
+      expect(first.body.stopTurn).toBe(id);
+      // Re-advertised while the send is still waiting: ChatGPT ignores the first press often
+      // enough that one attempt is not a stop.
+      const second = await request('GET', `/activity?conversationId=${chat}`);
+      expect(second.body.stopTurn).toBe(id);
+
+      // The app also states what it did and to which turn, because ending a turn that was
+      // producing work is not a thing that should only exist in a caller's memory.
+      expect(reply.body.conversation).toMatchObject({
+        conversationId: chat,
+        known: true,
+        generating: true,
+        activeTurnId: 'g-wedged-turn'
+      });
+
+      // Claimed by a page: past the point where stopping helps, so it stops being asked for.
+      await waitForOpened(1);
+      await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+      const afterClaim = await request('GET', `/activity?conversationId=${chat}`);
+      expect(afterClaim.body.stopTurn).toBeNull();
+    });
+
+    it('offers the reload exactly once, so a document that comes back does not reload again', async () => {
+      await pair();
+      const chat = '7c3d4e5f-6071-4283-8394-a5b6c7d8e9fa';
+      await generatingChat(chat, 'g-stuck-renderer');
+
+      const reply = await send({ conversationId: chat, text: 'continue', reloadFirst: true });
+      expect(reply.status).toBe(200);
+      expect(reply.body.reloadFirst).toBe(true);
+      const id = reply.body.command.id as string;
+
+      const offered = await request('GET', `/activity?conversationId=${chat}`);
+      expect(offered.body.reloadPage).toBe(id);
+      // The latch is app-side on purpose: a page that reloads forgets everything it knew, and
+      // a directive the replacement document keeps re-reading is a reload loop.
+      const afterReload = await request('GET', `/activity?conversationId=${chat}`);
+      expect(afterReload.body.reloadPage).toBeNull();
+
+      const outcome = (
+        await request('GET', `/send/outcome?id=${id}`, { origin: null, auth: await localToken() })
+      ).body;
+      expect(outcome.reloadFirst).toBe(true);
+      expect(outcome.reloadHandedToPage).toBe(true);
+    });
+
+    it('refuses both extras for a fresh chat, which has no turn to stop and no page to reload', async () => {
+      await pair();
+      const stopped = await send({ text: 'nothing to stop here', ifGenerating: 'stop_first' });
+      expect(stopped.status).toBe(400);
+      expect(stopped.body.error).toBe('needs_conversation');
+      const reloaded = await send({ text: 'nothing to reload here', reloadFirst: true });
+      expect(reloaded.status).toBe(400);
+      expect(reloaded.body.error).toBe('needs_conversation');
+      expect(pendingCommands()).toEqual([]);
+    });
+
+    it('refuses a mode it does not implement instead of falling back to the safe one', async () => {
+      await pair();
+      const reply = await send({
+        conversationId: '8d4e5f60-7182-4394-a5b6-c7d8e9fa0b1c',
+        text: 'queue behind whatever is running',
+        ifGenerating: 'queue'
+      });
+      expect(reply.status).toBe(400);
+      expect(reply.body.error).toBe('bad_if_generating');
+      expect(pendingCommands()).toEqual([]);
+    });
+
+    it('reports a conversation’s turn state as facts, including the honest unknowns', async () => {
+      await pair();
+      const chat = '9e5f6071-8293-44a5-b6c7-d8e9fa0b1c2d';
+      const auth = await localToken();
+
+      // Never recorded. "Not known" is the answer; an invented idle state would be a lie a
+      // caller would act on.
+      const unknown = await request('GET', `/conversation/status?conversationId=${chat}`, { origin: null, auth });
+      expect(unknown.status).toBe(200);
+      expect(unknown.body).toMatchObject({ known: false, generating: false });
+      expect(unknown.body.turnStartedAt).toBeNull();
+      expect(unknown.body.noProgressForMs).toBeNull();
+
+      await generatingChat(chat, 'g-open-turn');
+      const open = await request('GET', `/conversation/status?conversationId=${chat}`, { origin: null, auth });
+      expect(open.body).toMatchObject({ known: true, generating: true, activeTurnId: 'g-open-turn' });
+      expect(open.body.generatingForMs).toBeGreaterThanOrEqual(0);
+      // A turn_start is a stored observation, so the progress clock has started running. It
+      // moves again on every streaming revision, which is the fact `just chats` cannot see.
+      expect(open.body.lastStoredKind).toBe('turn_start');
+      expect(open.body.noProgressForMs).toBeGreaterThanOrEqual(0);
+
+      // Read-only, and behind the local credential like every other route a program may use.
+      const unauthorised = await request('GET', `/conversation/status?conversationId=${chat}`, {
+        origin: null,
+        auth: null
+      });
+      expect(unauthorised.status).toBe(401);
+    });
+  });
 });
 
 /**
@@ -4682,5 +4832,98 @@ describe('sleep/wake over the push path', () => {
     expect(withNothing.status).toBe(401);
     const withLocal = await request('GET', '/sleep/status', { origin: null, auth: await localToken() });
     expect(withLocal.status).toBe(200);
+  });
+});
+
+/**
+ * Bypass detection at the steward's own surface (session/send-origin.ts).
+ *
+ * Doctrine (FANOUT-SCHEDULE.md) demoted direct-CDP composer drives to break-glass. Nothing
+ * here blocks one — break-glass must keep working — but a send the app did not make can no
+ * longer pass as ordinary traffic: it is marked on the turn, counted, and served on the
+ * route the steward already polls. The classifier's own rules are proven in
+ * sleep-wake.test.ts; what this covers is the real HTTP path end to end, including that the
+ * bridge's send registry is fed by a genuine POST /send → redeem → ACK.
+ */
+describe('out-of-band send detection over the push path', () => {
+  async function localToken(): Promise<string> {
+    return (await fs.readFile(path.join(dir, 'state', 'local-token'), 'utf8')).trim();
+  }
+
+  async function sleepStatus(): Promise<any> {
+    const reply = await request('GET', '/sleep/status', { origin: null, auth: await localToken() });
+    expect(reply.status).toBe(200);
+    return reply.body;
+  }
+
+  async function turnStart(chat: string, turnId: string): Promise<void> {
+    const reply = await request('POST', '/events', {
+      body: { conversationId: chat, events: [{ kind: 'turn_start', time: Date.now(), turnId }] }
+    });
+    expect(reply.status).toBe(200);
+  }
+
+  async function storedOrigins(chat: string): Promise<Array<string | undefined>> {
+    const session = await findSessionByConversation(chat);
+    const events = await readEvents(session!.id, { kinds: ['turn_start'] });
+    return events.filter((event) => event.kind === 'turn_start').map((event) => event.sendOrigin);
+  }
+
+  beforeEach(async () => {
+    // The startup grace is honest but would mask everything here: a process that has just
+    // booted cannot tell an unexplained turn from one whose send it forgot at restart.
+    resetSendOriginForTests(Date.now() - STARTUP_GRACE_MS - 60_000);
+    await pair();
+  });
+
+  afterEach(() => {
+    resetSendOriginForTests();
+  });
+
+  it('marks a turn from a real POST /send as app-originated and counts no bypass', async () => {
+    const chat = 'c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const reply = await request('POST', '/send', {
+      origin: null,
+      auth: await localToken(),
+      body: { conversationId: chat, text: 'the normal control surface' }
+    });
+    expect(reply.status).toBe(200);
+    const id = reply.body.command.id as string;
+    await vi.waitFor(() => expect(opened.length).toBeGreaterThan(0));
+    await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
+    await request('POST', '/commands/ack', { body: { id, status: 'sent', conversationId: chat, client: 'tab-1' } });
+
+    await turnStart(chat, 'turn-app-originated');
+
+    expect(await storedOrigins(chat)).toEqual(['app']);
+    const status = await sleepStatus();
+    expect(status.sendOrigin.outOfBandSends).toMatchObject({ total: 0, byConversation: [] });
+    expect(status.sendOrigin.events).toEqual([]);
+  });
+
+  it('marks a turn nothing sent as out-of-band, and serves the count on /sleep/status', async () => {
+    // No POST /send, no ACK: the composer moved and the app was never told. This is what a
+    // direct-CDP drive against port 9222 looks like from the evidence layer.
+    const chat = 'd2e3f4a5-6b7c-4d8e-9f0a-1b2c3d4e5f6a';
+    await turnStart(chat, 'turn-out-of-band');
+
+    expect(await storedOrigins(chat)).toEqual(['out_of_band']);
+    const status = await sleepStatus();
+    expect(status.sendOrigin.outOfBandSends.total).toBe(1);
+    expect(status.sendOrigin.outOfBandSends.byConversation).toMatchObject([{ conversationId: chat, count: 1 }]);
+    expect(status.sendOrigin.events).toMatchObject([
+      { kind: 'out_of_band_send', conversationId: chat, sleepCancelled: false }
+    ]);
+    // The steward reads what happened in plain terms, not a code they have to look up.
+    expect(status.sendOrigin.events[0].detail).toContain('typed into this chat by something other than the app');
+  });
+
+  it('keeps the bypass ledger on the same credential as the rest of the route', async () => {
+    await turnStart('e3f4a5b6-7c8d-4e9f-8a0b-2c3d4e5f6a7b', 'turn-credential-check');
+    const withExtensionToken = await request('GET', '/sleep/status', { origin: null, auth: token! });
+    expect(withExtensionToken.status).toBe(401);
+    // The tally is fleet-control state, not page state: it rides the local-caller credential
+    // exactly like /send and /send/outcome, and the extension's token cannot read it.
+    expect((await sleepStatus()).sendOrigin.outOfBandSends.total).toBe(1);
   });
 });

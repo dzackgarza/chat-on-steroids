@@ -50,6 +50,7 @@ import { logInfo, logWarn } from './logger.js';
 import {
   closeConversation,
   closeStaleObserverTurns,
+  conversationTurnState,
   liveConversations,
   noteChatOrigin,
   noteConversationContact,
@@ -67,7 +68,7 @@ import {
   readRecentEvents,
   sessionDurableModifiedAt
 } from './session/store.js';
-import { inFlightMcpRequests, runningToolCalls, settlingToolCalls } from './mcp/call-context.js';
+import { inFlightCallCensus, inFlightMcpRequests, runningToolCalls, settlingToolCalls } from './mcp/call-context.js';
 import { nativeHandoffPrompt } from './session/handoff-prompt.js';
 import { briefShortfall, resumeBootstrapText } from './session/handoff.js';
 import {
@@ -120,6 +121,12 @@ import {
 } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
 import { notePushTyped, sendRefusalFor, sleepWakeStatus } from './session/sleep-wake.js';
+import {
+  noteAppOriginatedSend,
+  sendOriginStatus,
+  restoreSendOrigin,
+  setAppSendInFlightProvider
+} from './session/send-origin.js';
 import { durableRoot, readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
 import { APP_VERSION, BRIDGE_PROTOCOL } from './version.js';
 import { requestCorrelation } from './session/correlation.js';
@@ -339,7 +346,32 @@ type CommandSpec =
    * bootstrap or resume into one job because those are one chat being opened twice, and two
    * things the user said must never collapse that way.
    */
-  | { type: 'send'; conversationId: string | null; text: string; nonce: string };
+  /**
+   * `stopFirst` and `reloadFirst` are the two page actions a local caller may ask for
+   * *before* the text is typed, and neither is ever the default.
+   *
+   * `stopFirst` presses ChatGPT's Stop control in the tab holding this chat. The composer
+   * refuses a new message while a turn is in flight, so a turn that will never finish makes
+   * the chat unreachable by anything — the whole state a caller most wants to recover was
+   * the one state nothing could recover from outside the page. This is the plain verb for
+   * it: no inference about whether the turn deserved to be stopped, because the agent
+   * driving the fleet decides that with context this app does not have. The app's part is
+   * to report the turn's state truthfully (see conversationTurnState) and to do exactly
+   * what it was told.
+   *
+   * `reloadFirst` reloads the page holding this chat once before the message is typed —
+   * the recovery for a document that is alive enough to poll but stuck behind a turn its
+   * renderer will never resolve. It is advertised exactly once per command and only while
+   * no document has redeemed the command, so it can never cost a lease or loop.
+   */
+  | {
+      type: 'send';
+      conversationId: string | null;
+      text: string;
+      nonce: string;
+      stopFirst: boolean;
+      reloadFirst: boolean;
+    };
 
 interface Command {
   id: string;
@@ -1073,11 +1105,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * it landed in. Nothing here binds an agent or moves a session, so the chat this reaches is
    * an ordinary chat, and the extension records it exactly as it records the user's own.
    *
-   * One of exactly two routes on this server a local program may use — the other is the
-   * read-only GET /send/outcome below, which reports what became of a message queued here.
-   * The bridge still has no route that reads a file, runs a command, or changes a permission,
-   * and these two add none: one puts words in a chat, which the person at this keyboard can
-   * already do by typing them, and the other only reports on that.
+   * The only route on this server that a local program may use to *do* anything; its three
+   * siblings — GET /send/outcome, GET /conversation/status and GET /sleep/status — are
+   * read-only and only report on chats. The bridge still has no route that reads a file, runs
+   * a command, or changes a permission, and none of these adds one: this one puts words in a
+   * chat, presses Stop, or reloads a page, all of which the person at this keyboard can
+   * already do by hand; the other three only say what happened.
    */
   if (route === '/send' && req.method === 'POST') {
     if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
@@ -1127,8 +1160,67 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const text = typeof body['text'] === 'string' ? body['text'] : '';
     if (!text.trim()) return json(res, 400, { error: 'no_text' }, origin);
     if (text.trim().length > MAX_SEND_CHARS) return tooLarge(res, origin);
-    const command = queueSend(target, text);
+    // What this send is allowed to do to a turn that is already running.
+    //
+    // `refuse` is the default and is exactly what this route has always done: it never
+    // interrupts, the page will not type while a turn is in flight, and a send into a chat
+    // that never finishes its turn ends as `expired` rather than as a message typed over
+    // somebody's working agent. `stop_first` is the explicit opposite and must be asked for
+    // at the call site every time — a mid-turn stream is producing work, and destroying it
+    // is a deliberate act, never something a default does by accident.
+    const rawMode = body['ifGenerating'];
+    const ifGenerating = rawMode === undefined || rawMode === null ? 'refuse' : rawMode;
+    if (ifGenerating !== 'refuse' && ifGenerating !== 'stop_first') {
+      return json(
+        res,
+        400,
+        {
+          error: 'bad_if_generating',
+          message: "ifGenerating must be 'refuse' (the default: never interrupt a running turn) or 'stop_first' (press Stop in that chat, then type)."
+        },
+        origin
+      );
+    }
+    const rawReload = body['reloadFirst'];
+    if (rawReload !== undefined && rawReload !== null && typeof rawReload !== 'boolean') {
+      return json(res, 400, { error: 'bad_reload_first', message: 'reloadFirst must be a boolean.' }, origin);
+    }
+    const reloadFirst = rawReload === true;
+    // Both page actions name a chat that already exists. A fresh chat has no turn to stop and
+    // no page to reload, so asking for either there is a caller mistake worth saying out loud
+    // rather than a flag that silently does nothing.
+    if ((ifGenerating === 'stop_first' || reloadFirst) && !target) {
+      return json(
+        res,
+        400,
+        {
+          error: 'needs_conversation',
+          message:
+            "ifGenerating:'stop_first' and reloadFirst act on the tab holding an existing chat. Name a conversationId, or drop them to open a fresh chat."
+        },
+        origin
+      );
+    }
+    // The facts about the target as this app can actually observe them, attached to every
+    // answer this route gives. Not a judgment and not a gate: the agent driving the fleet
+    // decides whether a turn should be interrupted, and a refusal or an acceptance that does
+    // not say what state the chat was in forces it to guess or to go round the app.
+    const state = target ? conversationTurnState(target) : null;
+    const command = queueSend(target, text, { stopFirst: ifGenerating === 'stop_first', reloadFirst });
     if (!command) return json(res, 400, { error: 'no_text' }, origin);
+    // Stopping a live turn is rare, deliberate and destructive of work in flight, so it is
+    // recorded here with everything that identifies the turn it ended. This is the honest
+    // record of what the app did on a caller's instruction, not a permission check.
+    if (ifGenerating === 'stop_first') {
+      logWarn(
+        state?.generating
+          ? `bridge: send ${command.id} was asked to stop the running turn in ${target} first — turn ${state.activeTurnId ?? 'unnamed'}, open for ${state.generatingForMs}ms, recording last changed ${state.noProgressForMs === null ? 'never this run' : `${state.noProgressForMs}ms ago`}`
+          : `bridge: send ${command.id} asked to stop a running turn in ${target} first, but this app has no open turn recorded there; nothing will be stopped unless the page still shows one`
+      );
+    }
+    if (reloadFirst) {
+      logInfo(`bridge: send ${command.id} will reload the page holding ${target} once before typing`);
+    }
     // The caller may bound how long "typed" is allowed to remain unverified before the
     // outcome route calls it undelivered. Clamped: a sub-second horizon can only produce
     // false negatives, and an unbounded one is a caller that never learns the truth.
@@ -1148,7 +1240,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       {
         command,
         pendingTools: runningToolCalls(target),
+        // Which calls, and how old. A bare count cannot be told apart from a wedged app, and
+        // that ambiguity is what sent a steward to the composer instead of here.
+        inFlightCalls: inFlightCallCensus(target),
         verifyHorizonMs: horizon,
+        // Echoed rather than assumed. A caller that meant to interrupt and did not say so
+        // should see `refuse` here and not discover the difference from a silent expiry.
+        ifGenerating,
+        reloadFirst,
+        // The target's turn state at the moment this was queued. Null for a fresh chat.
+        conversation: state,
         // Queueing is not delivery. This is where the caller learns what actually happened.
         outcome: `/send/outcome?id=${encodeURIComponent(command.id)}`
       },
@@ -1250,6 +1351,19 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
           commandId: id,
           conversationId: conversation,
           pendingTools: inFlight,
+          inFlightCalls: inFlightCallCensus(conversation),
+          // What this send was asked to do to the page, and what the target chat looks like
+          // now. A `stop_first` send that is still queued has either not been picked up by a
+          // page yet or is waiting on a turn that has not gone down; `conversation` is how a
+          // caller tells those apart without opening the browser.
+          ...(pending.spec.type === 'send'
+            ? {
+                ifGenerating: pending.spec.stopFirst ? 'stop_first' : 'refuse',
+                reloadFirst: pending.spec.reloadFirst,
+                reloadHandedToPage: pending.spec.reloadFirst ? reloadAdvertised.has(id) : false
+              }
+            : {}),
+          ...(conversation ? { conversation: conversationTurnState(conversation) } : {}),
           message:
             inFlight > 0
               ? `${inFlight} local tool call(s) are in flight; the page refuses to type while any are running, and an unattributed call counts against every chat. The send waits — poll again once they settle.`
@@ -1272,9 +1386,48 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   /**
+   * One conversation's turn state, for the local program deciding what to do about it.
+   *
+   * Read-only, local credential, and facts only. `just chats` answers the same question from
+   * the recording on disk and gets one thing wrong that matters: a canonical message keeps
+   * the time it was first seen, so a chat writing a long final answer looks to it exactly
+   * like a chat that stopped. This route reads the live recorder instead, where a streaming
+   * revision is a durable write and moves `lastStoredAt` every time the prose grows.
+   *
+   * It reports and does not conclude. There is no "stalled" field here on purpose: whether a
+   * turn open for eleven minutes with no stored observation for four of them is a wedge or an
+   * agent thinking is a judgment that needs the task, and the agent driving the fleet has
+   * that. What it needs from here is the numbers, including the honest nulls — a conversation
+   * this app has never recorded says `known: false` rather than inventing an idle state.
+   */
+  if (route === '/conversation/status' && req.method === 'GET') {
+    if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
+    const asked = url.searchParams.get('conversationId') ?? '';
+    const id = conversationId(asked);
+    if (!id) return json(res, 400, { error: 'bad_conversation_id' }, origin);
+    const state = conversationTurnState(id);
+    return json(
+      res,
+      200,
+      {
+        ...state,
+        // The same two numbers the send path answers with, so a caller deciding whether to
+        // push does not have to queue a message to find out what is in the way.
+        pendingTools: runningToolCalls(id),
+        inFlightCalls: inFlightCallCensus(id),
+        // Sleep/wake owns this conversation while it is slept or waking, and a push would be
+        // refused. Null when the feature is off or this chat is not managed.
+        sleeping: sendRefusalFor(id)
+      },
+      origin
+    );
+  }
+
+  /**
    * The sleep/wake fleet projection, for the local program driving pushed conversations.
    *
-   * The third and last local-credential route, read-only like /send/outcome: per-slept-
+   * The fleet-wide read-only local-credential route, beside the per-command
+   * /send/outcome and the per-conversation /conversation/status: per-slept-
    * conversation state (slept/waking, key bound or keyless, next check time) plus the
    * typed event ring — `woke_ready` is the signal that a conversation has its finished
    * turn recorded and accepts the next push. Adds nothing to what the bridge can do: it
@@ -1282,7 +1435,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    */
   if (route === '/sleep/status' && req.method === 'GET') {
     if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
-    return json(res, 200, sleepWakeStatus(), origin);
+    // The sendOrigin sibling is the bypass ledger (session/send-origin.ts): out-of-band send
+    // counts per conversation plus the typed out_of_band_send events, so a steward can query
+    // how much composer driving is happening outside the app send path.
+    // `inFlightCalls` is the whole fleet's in-flight set with ages, oldest first. It is the
+    // one place a steward can see a call that has been open far longer than the work plausibly
+    // takes; the app reports it and never judges it, because whether a long call is plausible
+    // depends on what that worker was asked to do — which the agent knows and the app does not.
+    return json(
+      res,
+      200,
+      {
+        ...sleepWakeStatus(),
+        sendOrigin: sendOriginStatus(),
+        inFlightCalls: inFlightCallCensus(null, 50)
+      },
+      origin
+    );
   }
 
   // A deliberate revocation is different from a stale credential. The extension repairs a
@@ -1768,6 +1937,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // and may end the wait so the redeem path can clear it; user writing matches nothing
         // here and keeps its absolute protection.
         staleDrafts: appDraftsFor(live.conversationId),
+        // The two things a local caller may ask this page to do before its message is typed,
+        // each carrying the command id it belongs to so the page acts once per instruction
+        // rather than once per poll. Null is the ordinary case and the default for both:
+        // nothing here ever interrupts a turn or reloads a page that was not asked for.
+        stopTurn: stopTurnDirective(live.conversationId),
+        reloadPage: reloadDirective(live.conversationId),
         // Diagnostic only. A finished unattributed call is still being placed into durable
         // history; unknown ownership is conservatively projected onto every chat until that
         // attribution finishes, but this number never gates the compaction prompt.
@@ -2105,7 +2280,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (!id) return json(res, 400, { error: 'bad_conversation_id' }, origin);
     const token = typeof body['token'] === 'string' ? body['token'] : '';
     const clientId = typeof body['clientId'] === 'string' ? body['clientId'].slice(0, 100) : '';
-    return json(res, 200, { acknowledged: ackGoalDraft(id, token, clientId) }, origin);
+    const acknowledged = ackGoalDraft(id, token, clientId);
+    if (acknowledged) {
+      // A goal-draft ACK is the page reporting the app's own draft typed — or abandoned;
+      // the ledger cannot tell which. Register it as an app-originated send either way so
+      // a goal-driven turn is never miscounted as an out-of-band send; an abandoned draft costs
+      // at most one verify-horizon window in a chat the goal loop already owns.
+      noteAppOriginatedSend(id, Date.now(), SEND_VERIFY_HORIZON_MS);
+    }
+    return json(res, 200, { acknowledged }, origin);
   }
 
   /**
@@ -2700,6 +2883,20 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       }
     }
 
+    if (receipt.committed && receipt.conversationId) {
+      // Send-origin evidence (session/send-origin.ts): every committed ACK that names a
+      // conversation is an app-originated composer push — a local send, a worker bootstrap,
+      // a revival offer, a resume handoff. The recorder cross-checks each observed
+      // turn_start against this registry; a start nothing registered explains is flagged
+      // as an out-of-band send on GET /sleep/status.
+      //
+      // Registered *before* the durable receipt write, so no window exists in which the
+      // command has left the in-flight queue but its send is not yet registered — a
+      // turn_start landing there would be flagged out-of-band for a send the page has already
+      // reported typing. The page typed it either way; that is the fact being recorded, and
+      // it is not made less true by a local disk failure on the line below.
+      noteAppOriginatedSend(receipt.conversationId, receipt.completedAt, sendVerifyHorizon(id));
+    }
     if (!(await finalizeCommand(command, receipt))) {
       // The semantic operation may already be committed. 5xx is intentional: old browser
       // code only settles successful HTTP responses, so it must retry until the app can prove
@@ -3053,6 +3250,12 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       // expired lease looks queued again and can open the same bootstrap a second time, while
       // a still-live lease can sit forever with no timer to end it.
       rearmRetainedCommandDeadlines();
+      // Send-origin wiring (session/send-origin.ts): the recorder needs to know whether a
+      // queued/leased command could still explain an observed turn_start (the page can
+      // report the turn before the ACK that registers the send lands), and the durable
+      // out-of-band-send tally must survive restarts to stay a meaningful migration metric.
+      setAppSendInFlightProvider(appSendInFlight);
+      await restoreSendOrigin();
       dropSpawnRequestListener?.();
       dropSpawnRequestListener = onSpawnRequest((workers) => {
         for (const worker of workers) queueWorkerBootstrap(worker.id, worker.task);
@@ -3234,6 +3437,60 @@ function appDraftsFor(conversation: string): string[] {
   return (appDraftLedger.get(conversation) ?? []).map((record) => record.text);
 }
 
+/**
+ * The queued local send for this chat that is still waiting for a page, if there is one.
+ *
+ * Fenced on `owner`, not on `claimedAt`: a command is "claimed" the moment this app opens a
+ * tab for it, which is well before any document has redeemed the durable lease and is
+ * exactly the window both actions below live in. Once a document owns the lease it is about
+ * to type, and a reload then would throw that lease away.
+ */
+function unredeemedSendFor(conversation: string): (Command & { spec: Extract<CommandSpec, { type: 'send' }> }) | null {
+  for (const command of commands) {
+    if (command.spec.type !== 'send' || command.spec.conversationId !== conversation) continue;
+    if (command.owner !== null) continue;
+    return command as Command & { spec: Extract<CommandSpec, { type: 'send' }> };
+  }
+  return null;
+}
+
+/**
+ * Whether the page holding this chat has been asked to press Stop, and for which command.
+ *
+ * Re-advertised on every poll while the command waits, deliberately: ChatGPT frequently
+ * ignores the first press, which is why the content script's own stall recovery retries too.
+ * It stops being advertised the moment a document redeems the command or the command
+ * retires, so nothing here can go on stopping turns after the send it belonged to is over.
+ */
+function stopTurnDirective(conversation: string): string | null {
+  const command = unredeemedSendFor(conversation);
+  return command && command.spec.stopFirst ? command.id : null;
+}
+
+/** Commands whose one reload has already been handed to a page. Memory only, by design. */
+const reloadAdvertised = new Set<string>();
+
+/**
+ * The one reload this command is entitled to, handed out exactly once.
+ *
+ * The latch is here rather than in the page because a page that reloads forgets everything
+ * it knew, and a directive a reloading document keeps re-reading is a reload loop. Held
+ * app-side, the second poll — from the fresh document — sees nothing and gets on with the
+ * ordinary send.
+ */
+function reloadDirective(conversation: string): string | null {
+  const command = unredeemedSendFor(conversation);
+  if (!command || !command.spec.reloadFirst || reloadAdvertised.has(command.id)) return null;
+  reloadAdvertised.add(command.id);
+  if (reloadAdvertised.size > 256) {
+    for (const id of reloadAdvertised) {
+      if (reloadAdvertised.size <= 256) break;
+      reloadAdvertised.delete(id);
+    }
+  }
+  return command.id;
+}
+
 /** The ledger survives restarts: the wedge it names outlives the process that manufactured it. */
 async function restoreAppDraftLedger(): Promise<void> {
   try {
@@ -3281,6 +3538,30 @@ function pruneSendVerifyHorizons(): void {
       sendVerifyHorizons.delete(id);
     }
   }
+}
+
+/**
+ * Could an app command still put a message into this chat right now?
+ *
+ * The send-origin classifier's evidence-gap probe (session/send-origin.ts). A page types
+ * before it ACKs, and its observation of the resulting `turn_start` can reach `/events`
+ * ahead of the ACK that registers the send — so a queued or leased command targeting this
+ * conversation makes the origin honestly `unknown` rather than falsely `out_of_band`.
+ *
+ * A command with no conversation of its own opens a *fresh* chat: ChatGPT issues the id
+ * only when the message is typed, so nothing in the queue can name the conversation it will
+ * become. Such a command therefore excuses only the very first turn of a chat this app has
+ * no lifecycle history for — never a later turn, and never a chat it has recorded before,
+ * which is what stops one pending bootstrap from laundering every out-of-band send into
+ * `unknown`.
+ */
+function appSendInFlight(conversation: string, firstTurnForConversation: boolean): boolean {
+  return commands.some((command) => {
+    const spec = command.spec;
+    const target = spec.type === 'send' || spec.type === 'revive' ? spec.conversationId : null;
+    if (target !== null) return target === conversation;
+    return firstTurnForConversation;
+  });
 }
 
 /**
@@ -3848,7 +4129,11 @@ export function queueWorkerRevival(agent: string, conversationId: string): Bridg
  * is typed as a genuine user message and the chat is recorded like any other, which is what
  * makes this usable for driving ordinary chats rather than workers.
  */
-export function queueSend(conversationId: string | null, text: string): BridgeCommand | null {
+export function queueSend(
+  conversationId: string | null,
+  text: string,
+  options: { stopFirst?: boolean; reloadFirst?: boolean } = {}
+): BridgeCommand | null {
   const body = text.trim();
   if (!body || body.length > MAX_SEND_CHARS) return null;
   const command = queue({
@@ -3856,7 +4141,9 @@ export function queueSend(conversationId: string | null, text: string): BridgeCo
     conversationId,
     text: body,
     // Two sends are two messages. See CommandSpec.
-    nonce: randomBytes(8).toString('hex')
+    nonce: randomBytes(8).toString('hex'),
+    stopFirst: options.stopFirst === true,
+    reloadFirst: options.reloadFirst === true
   });
   void deliver();
   return describe(command, null);
@@ -4504,7 +4791,14 @@ function restoredCommandSpec(version: number, raw: Partial<CommandSpec>): Comman
       type: 'send',
       conversationId: target,
       text: text.slice(0, MAX_SEND_CHARS),
-      nonce: local.nonce.slice(0, 64)
+      nonce: local.nonce.slice(0, 64),
+      // Absent in a snapshot written before these existed, which reads as the default and
+      // is the only safe reading: a restored command must never acquire a page action its
+      // caller did not ask for. `stopFirst` is carried across the restart because the
+      // caller's instruction has not been carried out yet; `reloadFirst` is too, and its
+      // one-shot ledger is in-memory, so a restart genuinely re-offers the one reload.
+      stopFirst: (local as Partial<Extract<CommandSpec, { type: 'send' }>>).stopFirst === true,
+      reloadFirst: (local as Partial<Extract<CommandSpec, { type: 'send' }>>).reloadFirst === true
     };
   }
   if (

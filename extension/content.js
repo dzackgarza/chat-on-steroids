@@ -121,6 +121,14 @@
   /** How long to wait for the composer after pressing Stop, before giving up on this attempt. */
   const STALL_RESTART_READY_MS = 30 * 1000;
   /**
+   * How often Stop is pressed again for a queued message that asked to interrupt the turn.
+   *
+   * Same reason as the retry above — ChatGPT ignores a press often enough that one attempt is
+   * not a stop — but on a much shorter clock, because a caller is waiting on this send rather
+   * than a background recovery noticing an abandoned chat.
+   */
+  const STOP_FOR_PUSH_RETRY_MS = 10 * 1000;
+  /**
    * Error banners a chat can be brought back from, as lowercase fragments.
    *
    * A rate limit ends the turn and leaves a banner standing, and while it stands the
@@ -1993,6 +2001,7 @@
       }
     }
   }
+
 
   /**
    * Clears a chat wedged behind a recoverable error banner.
@@ -5071,6 +5080,80 @@
     }
   }
 
+  /**
+   * Presses Stop because a local caller asked for it, ahead of the message it queued.
+   *
+   * The stall recovery in observe() decides for itself, on a ten-minute clock, and is right
+   * to be that cautious: it is guessing. This one is not guessing. A person or an agent looked at the
+   * chat, decided the turn in it should end, and posted the send that carries this
+   * instruction — so the only judgment left here is the page's own: is there a turn to stop
+   * at all, and is some other part of this document already driving the composer.
+   *
+   * Deliberately narrower than the stall recovery: it presses Stop and stops there. It types
+   * nothing and touches no draft, because the send waiting behind it owns the text and owns
+   * the draft-by-authorship rules that decide what may be cleared. A composer with the
+   * user's writing in it is therefore no reason to leave the turn running — that draft is
+   * still preserved, by the send path, exactly as it would have been.
+   *
+   * Re-pressed on later polls while the instruction stands, because ChatGPT ignores the first
+   * press often enough that the page's own recovery retries too; `STOP_FOR_PUSH_RETRY_MS`
+   * keeps that to the cadence a person would use rather than once per mutation.
+   */
+  let stopForPushAt = 0;
+  let stopForPushCommand = '';
+  function stopTurnForPush(commandId) {
+    if (typeof commandId !== 'string' || !commandId) return;
+    // A new instruction starts its own retry clock. Two different sends asking to stop the
+    // same chat are two decisions, and the second must not wait out the first's cooldown.
+    if (commandId !== stopForPushCommand) {
+      stopForPushCommand = commandId;
+      stopForPushAt = 0;
+    }
+    if (goalBusy || nativeBusy || compactCapture || (job && job.busy)) return;
+    if (Date.now() - stopForPushAt < STOP_FOR_PUSH_RETRY_MS) return;
+    const stop = CLF_DOM.stopButton();
+    if (!stop) return;
+    stopForPushAt = Date.now();
+    stop.click();
+    // The same flag the click listener sets when the user presses Stop: this turn ended
+    // because somebody stopped it, and the recorded turn must say so rather than read as a
+    // turn that finished on its own.
+    userStopped = true;
+    emit({ kind: 'chat_error', text: 'The app stopped this turn because a queued message asked to interrupt it.' });
+    // A revival/send waiter blocked on `generating` re-evaluates on DOM mutation, and the
+    // Stop control leaving is one — but say so anyway, so the wait ends on the transition
+    // rather than on whatever happens to repaint next.
+    notifyCommandReadiness();
+  }
+
+  /**
+   * Reloads this page because a local caller asked for it, ahead of the message it queued.
+   *
+   * For a document that is alive enough to poll but stuck behind a turn its renderer will
+   * never resolve: the composer refuses, Stop does nothing, and the only thing that has ever
+   * fixed it is a person pressing reload. The app hands this instruction out exactly once per
+   * command and only before any document has redeemed it, so this cannot cost a redeemed
+   * lease and cannot loop — the document that comes back polls again and is offered nothing.
+   *
+   * A renderer frozen hard enough not to poll never reaches here. That tab is not reachable
+   * from inside; the service worker's frozen-duplicate recycle is what owns it.
+   */
+  const reloadedForPush = new Set();
+  function reloadForPush(commandId) {
+    if (typeof commandId !== 'string' || !commandId || reloadedForPush.has(commandId)) return;
+    reloadedForPush.add(commandId);
+    // Nothing of ours is mid-flight that a reload would strand: no command has been redeemed
+    // in this document (the app only offers this before a document redeems it) and the
+    // observation queue is handed to the service worker, which outlives the page.
+    void flush();
+    try {
+      window.location.reload();
+    } catch {
+      // A page that will not reload is the state this was trying to fix. The send behind it
+      // still runs, and reports its own outcome.
+    }
+  }
+
   async function pullActivity() {
     if (!CLF_DOM.conversationId()) {
       // A New Chat has no feed: /activity is addressed by conversation, and this composer is
@@ -5219,6 +5302,16 @@
         // when told. New ledger knowledge is exactly such a moment.
         if (changed) notifyCommandReadiness();
       }
+      // Two things a local caller may have asked this page to do before the message it queued
+      // is typed. Both name the command they belong to, and both are absent — null — unless
+      // that caller said so explicitly: nothing here interrupts a turn or reloads a page on
+      // the app's own initiative. The reload is offered once per command by the app, so it is
+      // read before anything else that could navigate this document.
+      if (typeof data.reloadPage === 'string' && data.reloadPage) {
+        reloadForPush(data.reloadPage);
+        return;
+      }
+      if (typeof data.stopTurn === 'string' && data.stopTurn) stopTurnForPush(data.stopTurn);
       // The generation this chat has open in the app, if any. Only ever *read* by
       // resumeOpenTurn(), on the boot pull, and only to work out whether this document is
       // standing in the middle of a turn a previous one opened. See adoptTurnId.
@@ -8988,6 +9081,7 @@
       settleCheckDueAt: () => settleCheckDueAt,
       STALL_MS,
       ERROR_RECOVERY_RETRY_MS,
+      STOP_FOR_PUSH_RETRY_MS,
       PRESENTATION_SCROLL_IDLE_MS,
       /** Test-only: production defaults ON; tests opt into renderer cases explicitly. */
       setRenderStream: (on) => {
