@@ -1377,6 +1377,23 @@ steward discovered and understands perfectly, goes into that repository's own qu
 TODO and is assigned to its worker. Repo-specific work funnels into that repo's
 workstream. That is the whole mechanism.
 
+**Never build a path around this app's own send path.** Typing into the page over CDP
+delivers a message and bypasses everything the app does with it: no entry in the send
+registry, no `sent_verified`, no sleep cycle armed, and no `push_correlated` attribution
+binding. In 2026-09 a steward built exactly that as a "fallback" while the app path was
+refusing under the unattributed-call gate, and the bypass then guaranteed its own
+necessity — every push it delivered was a push that bound no key, so the gate never
+opened, which was cited as the reason to keep the bypass. The fleet stayed unattributed
+for a day because its recovery tooling was routing around the mechanism that would have
+fixed it. If `/send` cannot deliver, that is a defect to file against this repository
+with the terminal state it returned. It is never a reason to type into the page.
+
+**Treat the disappearance of your own tooling as a signal, not an accident.** A steward
+whose scripts vanish should find out who removed them and why before recreating them —
+the same rule that applies to every other artifact of unknown provenance. Restoring a
+deleted bypass within the minute, without asking, is how a correction gets undone
+faster than it can be made.
+
 **Anything that "needs a decision" is a task to file, not a question to ask.** A red
 gate, an unmergeable branch, two competing proofs of one card, a corrupted artifact —
 these are work items for the repository that owns them. File them in that repo's queue
