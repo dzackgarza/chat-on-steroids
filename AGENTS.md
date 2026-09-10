@@ -1349,7 +1349,12 @@ anything:
    progress figure is real — it is simply frozen. It cost lean-categories a full working
    day in 2026-09 waiting on an aggregate build stopped at 4760/4761 that no longer
    existed. Daemon restarts kill every exec session, and so does the OOM killer on a
-   loaded host, so suspect it after either.
+   loaded host, so suspect it after either. Nothing self-heals here, which is why it runs
+   for hours: the chat is *busy*, not stalled, so the content script's own Stop-and-
+   `Continue` recovery never fires, and any steward loop that pushes only what is idle or
+   stalled will never target it either. The composer refuses to type while a turn is in
+   flight, so the only way in is to press Stop first — which costs nothing, because the
+   turn being stopped is a poll of something that no longer exists.
 
 **Every hour, sweep every managed repository for these signatures.** The sweep is
 state-level and cheap — `git log`/`status` timestamps across branches and worktrees,
