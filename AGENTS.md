@@ -1354,14 +1354,73 @@ replacement to check what has already landed and to reuse recorded audits; and w
 transcript shows that a unit another was told to start is already done, send that correction to
 the chat holding the stale instruction rather than letting it find out.
 
+### Reading the fleet
+
+Every mistake in this section has been made, and each one turned a working fleet into a
+reported outage. They share a shape: the steward measured its own machinery and reported
+the answer as a fact about the work.
+
+**The fleet's output is in the repositories, not in your outbox.** Whether a push landed
+says nothing about whether the program moved. `git log --all --since=...` in each managed
+repo is the measurement, and it is two seconds away. On 2026-09-10 a steward reported "no
+file written in any managed repo for ten minutes, no commits for twenty" and declared an
+app-wide deadlock; `new-qual-site` took eight commits in that exact window, seven of them
+on `main`, and they were solved algebra problems and recovered analysis proofs. The
+workers were fine. What had stopped was the steward's ability to push, and it never
+checked the difference. **"I cannot reach a worker" and "the fleet is stopped" are
+different claims and need different evidence.**
+
+**Check the substrate before you blame the app.** `df -h`, `uptime`, `/usr/bin/ps` — a
+few seconds, before any theory about attribution tiers or gates. A full volume does not
+present as a disk error; it presents as killed processes, dying `exec_command` sessions
+and workers that look like they have gone stupid, and it reads as worker misbehaviour for
+hours until somebody runs `df`. In the same 2026-09-10 window a worker committed
+`docs: clear resolved filesystem blocker` while the volume filled from 27 duplicated
+worktrees, and the steward diagnosed an attribution deadlock instead. The
+cheapest check that could refute your hypothesis goes first, not last.
+
+**You are inside the system you are measuring, and your remedy is part of the load.**
+Every send opens a command tab and counts against every chat's gate, so pushing harder
+into a saturated fleet produces fewer deliveries, not more. If your corrective action
+makes the symptom worse, stop treating the symptom as external. The steward that filed
+the deadlock complaint had written exactly this mechanism into the header comment of its
+own push loop, and left the loop running.
+
+**Queued is not failed.** A send that ends in state `queued` is held by the app and typed
+when the page's in-flight calls settle. Re-sending stacks a second queued message for the
+same chat and consumes the gate the first one is waiting on. Read the terminal states —
+`sent_verified`, `typed_unverified`, `refused`, `expired` — and treat everything else as
+in progress. The same applies to `just say` printing a hint and waiting: that is the app
+working, not the app stuck.
+
+**"There is no way in" is nearly always false; enumerate what you still have.** You have
+a shell. You have every read-only route on the bridge (`/conversation/status`,
+`/sleep/status`, `/send/outcome`), every managed repository's git history, the process
+table, and the disk. A steward that concludes it is locked out has usually stopped at the
+first closed door — the composer — and not looked at the room. Before escalating a
+control-path failure, state which of those you checked and what they said.
+
+**A rule reaches workers only where workers read.** Fleet-level documents in this
+repository are read by the steward and by nobody else. A worker follows its own repo's
+`AGENTS.md` and `CONTRIBUTING.md`, and if those say something different, that is what
+happens — regardless of how many times the rule was explained in chat or written into a
+schedule here. `new-qual-site` rebuilt 27 worktrees and filled the volume while the
+no-worktrees rule sat in `FANOUT-SCHEDULE.md`, because its own `AGENTS.md` still carried a
+`# Worktrees` chapter telling every stream to open one. **And a rule that has already been
+restated once needs an enforcement point, not a third restatement** — a check in that
+repo's commit gate, so the next stream that violates it finds out at its next commit
+instead of at 100% disk.
+
 ### Check-in reports
 
 At each check-in (every twenty minutes), report the status of each managed repository workstream
 directly in chat:
 - Current local time and anticipated time of the next scheduled wakeup.
-- Workstream status.
+- Workstream status, measured on the repository — commits landed since the last check-in,
+  read from `git log`, never inferred from whether your own pushes succeeded.
 - A 1-line summary of its last activity.
 - How long ago that activity occurred.
+- Free space on the volume, whenever any stream looks degraded.
 - The decision on what to do with it (allow it to continue, inject continuation prompt, determine
   if wedged, orchestrate manual handoff, tidy tabs, etc.).
 
