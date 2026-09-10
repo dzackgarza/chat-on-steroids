@@ -81,6 +81,25 @@ was done about it.
   descheduled real-timer suite has, and it is further reason to read the failure lists above
   as environment noise — but it is indirect, so it settles nothing on its own. Wait for an
   idle machine instead of trying to out-configure the load.
+- **Settled: the `session.test.ts` failure predates all of 2026-09-10's work.** The fixed-commit
+  worktree the entry above asks for was run, and the trick that makes it affordable is
+  `--bail=1 --testTimeout=20000`: the run stops at the first failure in about two minutes
+  instead of ten-plus, which is short enough to survive whatever SIGTERMs the long runs
+  (several were killed with exit 144 at roughly the eight-minute mark). A detached worktree at
+  `eb910d8` — the commit before `193539c`, so containing none of the send-origin work, none of
+  the interrupt/revive work, and none of the `recorder.ts` serialization wrapper — reports
+  **44 passed, then `canonical recorder 1.8 > lets the store deduplicate repeated recorder
+  assets instead of shadow-counting the same bytes toward quota` timing out.** The same command
+  on current HEAD reports the identical 44-and-that-test. The failure therefore exists with
+  none of today's code in the tree and is not evidence about any change made today.
+  What this does **not** establish is which test is genuinely first or why it hangs: with one
+  call site in `recorder.ts` neutralised the bail point moved to 28 passed and a different test
+  (`session store > repairs a canonical message revision while building the read-only session
+  list after restart`), so the bail position is scattered by load exactly like the failure
+  lists are, and is not a fingerprint. Every test sampled still passes alone, and the whole
+  `canonical recorder 1.8` describe passes 18/18 in isolation. The open question is a real
+  suite-level defect — leaked state or an unsettled promise chain that only bites in file
+  order — and it wants an idle machine, not another attribution argument.
 - **Behavior change to the sleep/wake contract, deliberate.** Page evidence of a fresh
   turn in a slept conversation used to be released quietly as
   `woke_unconfirmed` ("a tab this app did not open is observing the chat"). Under the
