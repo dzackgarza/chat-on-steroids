@@ -25,8 +25,8 @@ hours-long streams.
 The app owns the browser, so it holds the send registry, the draft ledger,
 single-driver enforcement, sleep/wake state, and send-correlated attribution; a
 send it did not make leaves all of that wrong, and it records any such send as
-`sendOrigin: out_of_band`. A nonzero out-of-band counter means something is
-driving a composer behind the app — treat it as an incident and find it.
+`sendOrigin: out_of_band` — then repairs its own bookkeeping for that chat
+(cancelling a pending sleep, closing an open correlation window) and says so.
 
 **A broken send path is a P0 defect in tooling we own — fix it.** That is what the
 degraded-control brake buys time for: hold width, keep existing streams running,
@@ -42,11 +42,6 @@ each key binds. Sends, tab recovery, and sleep/wake all run through the app; §1
 holds the contract and the browser behaviors it handles (activation before typing,
 duplicate and frozen tabs, draft recovery, turn_start verification). new-qual-site
 is at its 8-stream target.*
-
-While attribution is broken, per-chat `tool_call` recency is unavailable as an
-evidence channel — every call lands in one unattributed session. Stream state
-comes from `just chats` rows, and fleet-level execution from the unattributed
-bucket still growing.
 
 ---
 
@@ -86,16 +81,12 @@ its worklist with `just unsolved-in <collection>`. S1/S8 and S3/S8 share directo
 but are provably file-disjoint (unsolved vs Gemini-solved); S8's claim boundary is
 its saved file list. Queue regeneration happens once, on main, at consolidation.
 
-**Preconditions:** a shared-resource contract, and it was missing when this repo was
-fanned to 8 — which is how the checkout reached 16 GB across 38 worktrees, each
-carrying its own `.venv`, on a disk that then hit 100%. Streams may hold separate
-worktrees, but never separate copies of anything regenerable: one virtualenv, shared
-read-only, exactly as lean-categories shares `.lake/packages`. A worktree is retired
-by the agent that created it once its unit is integrated, and a stale entry in
-`git worktree list` is a retirement debt, not a second writer. Branch consolidation
-is not a precondition — algebra branches are already consolidated into main (all
-`agent/*` solved sets are subsets of main). **Projected landing: Sep 11–12 at N=8; N=6 is the
-minimum that makes Sep 13.**
+**Preconditions:** none outstanding — every branch is consolidated into `main`, so the
+work that was stranded is landed. The standing constraint is shared resources: never
+give a stream its own copy of anything regenerable. One virtualenv, shared read-only,
+exactly as lean-categories shares `.lake/packages`; duplicating them is what put 16 GB
+of `.venv` copies on a volume that then hit 100%. **Projected landing: Sep 11–12 at
+N=8; N=6 is the minimum that makes Sep 13.**
 
 ---
 
