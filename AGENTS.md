@@ -1391,7 +1391,14 @@ anything:
    progress figure is real — it is simply frozen. It cost lean-categories a full working
    day in 2026-09 waiting on an aggregate build stopped at 4760/4761 that no longer
    existed. Daemon restarts kill every exec session, and so does the OOM killer on a
-   loaded host, so suspect it after either. Nothing self-heals here, which is why it runs
+   loaded host, so suspect it after either. **A full volume produces the same signature
+   and is the easiest cause to miss**: it kills processes mid-run and leaves no disk
+   error anywhere a steward looks, so the fleet presents as a dozen misbehaving workers
+   at once. It also strands a `.git/index.lock` from whatever git process it killed,
+   which then refuses every commit in that repository until someone proves it stale and
+   moves it aside. Check `df -h` before concluding anything about a repository that has
+   stopped banking — it costs one command and it is the difference between re-scoping a
+   fleet and replacing workers that were never at fault. Nothing self-heals here, which is why it runs
    for hours: the chat is *busy*, not stalled, so the content script's own Stop-and-
    `Continue` recovery never fires, and any steward loop that pushes only what is idle or
    stalled will never target it either. The composer refuses to type while a turn is in
