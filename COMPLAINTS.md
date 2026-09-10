@@ -55,26 +55,25 @@ was done about it.
 
 ## 2026-09-10 — out-of-band send detection agent
 
-- **`session.test.ts` was never verified green against the send-origin change.** The
-  work in `193539c` (send-origin classifier, `sendOrigin` on every `turn_start`, the
-  out-of-band ledger) is proven by `test/sleep-wake.test.ts` (35/35) and
+- **`session.test.ts` could not be verified on this machine: it is 3x oversubscribed.**
+  The send-origin work in `193539c` is proven by `test/sleep-wake.test.ts` (35/35) and
   `test/bridge.test.ts` (150/150), both re-run after the final edits, with
   `tsc --noEmit` clean and `verify:privacy` adding nothing beyond the two accepted
-  historical findings. `test/session.test.ts` is the gap. One five-file parallel run
-  reported 8 failures in it — the whole `open turns whose page observer disappeared`
-  describe plus two in `naming the chats this app opened` — but that run had a second
-  vitest process and a `tsc` competing for the machine, and
-  `closes a silently open turn as observer_lost, on the record` passes 1/1 in isolation.
-  Four attempts to reproduce the failures in a clean solo run did not produce a result:
-  the file takes 8+ minutes, and each attempt was either reaped as a background job or
-  (once) lost to an invalid `--reporter=basic` flag. **So the 8 failures are neither
-  confirmed as a regression nor cleared as contention.** Next step for a fresh worker:
-  run `npx vitest run test/session.test.ts` alone, with nothing else on the machine, and
-  read the assertion text. If they are real, the two prime suspects are both in
-  `recorder.ts`'s `turn_start` case — the classifier is called before the block's own
-  bookkeeping mutates `observerLostAt`/`knownTurnStarts`, and `recordOutOfBandSend()`
-  now writes a `logWarn` per unexplained `turn_start`, which can evict older lines from
-  the 500-entry ring buffer that other tests assert against.
+  historical findings. `test/session.test.ts` never produced a trustworthy verdict.
+  Three runs of the identical command reported **8, then 3, then 31** failures, with no
+  stable overlap between the sets and one run failing at suite load; every failing test
+  sampled (`closes a silently open turn as observer_lost`, `files a headerless call into
+  the temporally inferred conversation`) passes 1/1 in isolation. The cause was measured,
+  not guessed: **load average 31.16 on 10 cores** (`uptime`/`nproc`, 2026-09-10 07:59),
+  against a vitest `testTimeout` of 30s — the fleet runs its suites concurrently on this
+  box, so a 10-minute real-timer suite scatters timeout failures across whichever tests
+  happen to be descheduled. HEAD also moved twice mid-run and another agent held
+  `recorder.ts` modified in the shared tree, so consecutive runs did not even execute the
+  same code. **This is a measurement environment problem, not evidence about the change.**
+  To get a real verdict, run `npx vitest run test/session.test.ts` when `uptime` shows
+  load below the core count; a `git worktree` at a fixed commit removes the moving-tree
+  variable (the shared tree is dirty by design — see AGENTS.md §19). Under load, treat a
+  session-suite failure list as unreliable until it reproduces twice with the same members.
 - **Behavior change to the sleep/wake contract, deliberate.** Page evidence of a fresh
   turn in a slept conversation used to be released quietly as
   `woke_unconfirmed` ("a tab this app did not open is observing the chat"). Under the
