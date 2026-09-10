@@ -90,8 +90,15 @@ its worklist with `just unsolved-in <collection>`. S1/S8 and S3/S8 share directo
 but are provably file-disjoint (unsolved vs Gemini-solved); S8's claim boundary is
 its saved file list. Queue regeneration happens once, on main, at consolidation.
 
-**Preconditions:** none — algebra branches are consolidated into main (all agent/*
-solved sets are subsets of main). **Projected landing: Sep 11–12 at N=8; N=6 is the
+**Preconditions:** a shared-resource contract, and it was missing when this repo was
+fanned to 8 — which is how the checkout reached 16 GB across 38 worktrees, each
+carrying its own `.venv`, on a disk that then hit 100%. Streams may hold separate
+worktrees, but never separate copies of anything regenerable: one virtualenv, shared
+read-only, exactly as lean-categories shares `.lake/packages`. A worktree is retired
+by the agent that created it once its unit is integrated, and a stale entry in
+`git worktree list` is a retirement debt, not a second writer. Branch consolidation
+is not a precondition — algebra branches are already consolidated into main (all
+`agent/*` solved sets are subsets of main). **Projected landing: Sep 11–12 at N=8; N=6 is the
 minimum that makes Sep 13.**
 
 ---
@@ -193,6 +200,14 @@ back half; the pre-unlock spine is serial and more workers cannot shorten it.
 ---
 
 ## Fleet totals and machine constraints
+
+**Every width number assumes streams share regenerable state.** Per-stream worktrees
+are cheap; per-stream virtualenvs, package caches and build outputs are not, and they
+multiply by exactly the number this document authorizes. Before raising a stream count,
+name what the new streams will share and what they will duplicate — a partition that is
+collision-free on files can still be ruinous on disk. The failure is silent until the
+volume fills, and then it presents as killed builds and dead exec sessions rather than
+as a disk error.
 
 Full fan-out ≈ 20 streams. Card-solving and prose-authoring streams are I/O-light;
 the only machine-bound repo is lean-categories (RAM). Actual stream counts are the
