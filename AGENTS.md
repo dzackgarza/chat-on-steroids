@@ -1377,6 +1377,17 @@ regardless. Follow it with the blank-tab close above, since `tidy` matches only
 `chatgpt.com/c/` and cannot see a blank, and with the `woke_ready` close, since `tidy` always
 leaves one tab per conversation.
 
+**Archive before you close the last tab — the two rules above conflict in that order.**
+`tidy` walks DevTools targets, so it only ever sees a conversation that still has a tab
+open. A chat whose tabs you closed on the strength of a `woke_ready` is invisible to it:
+it cannot be archived, and it stays in `just chats` attracting pushes forever. Observed
+2026-09-11 — a cold lean stream sat through a full sweep untouched because it was already
+tabless, while every chat that still had one was correctly kept or archived. So retire in
+this order: decide the chat is finished, archive it, *then* close its tabs. The tab-closing
+economy applies to chats you intend to keep working; a chat you intend to retire needs its
+tab for one more command. If you find an already-tabless chat that should be retired, open
+one on its conversation URL and archive through that, rather than leaving it in the roster.
+
 **Archive a chat the moment it is known finished; do not leave it idling.** A worker that has
 run out of scope says so plainly — "no remaining TODO in the collection-defined scope",
 "nothing further to execute within the assigned scope" — and answers every further `Continue`
