@@ -1186,6 +1186,31 @@ that same press happen now and types your message instead of `Continue`, and
 was doing, so they are separate verbs from `say` — read `just state <chat>` before reaching for
 one. A chat that is merely working is a chat to leave alone.
 
+**A tab that renders is not a chat that answers.** `just tabs` calls a tab `live` when the
+page is loaded and its chat was recently touched; neither half of that asks whether the chat
+produced anything. A chat can hold a `live` tab, accept every push, and emit nothing: in
+2026-09 `6aa27577` took twenty-one `Continue` pushes across fourteen hours with no assistant
+message after 07:18, while `just tabs` showed it `live 0m` and `just chats` showed an ordinary
+`turn_end stalled` row. Row kinds and tab verdicts are substrate metrics. The only evidence a
+worker is alive is an assistant message dated after the last push, which costs one read:
+`just transcript <chat> | grep -E '^## (assistant|user)' | tail -30`. A run of consecutive
+`## user` lines with no assistant between them is a corpse absorbing pushes, and every tick
+that re-pushes it is a tick that bought nothing.
+
+**`typed_unverified` is not proof of non-delivery, and retrying it duplicates the stream.**
+The outcome means the page reported the text accepted while no `turn_start` reached the
+recording inside the horizon — a late receipt produces it just as reliably as a wedged draft.
+On a `just new`, retrying blind is how one scope ends up with two workers on it. Read
+`just chats 1` first: a conversation that was not there before, with a title matching what you
+sent, means it landed.
+
+**Unreachable is not dead, and archiving is not cheap to reverse.** A chat can refuse `say`,
+`interrupt` and `revive` in succession while its worker is executing normally — `6aa3009c`
+refused all three while inside a pytest run at 95% CPU that it went on to bank from. Send
+paths fail for reasons that live in the page, not in the worker. Confirm against the worker's
+own output — the host process it named, or its repository's clock — before archiving, because
+the app archives through `PATCH is_archived` and carries no recipe to undo it.
+
 **Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
 short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
 finding out why one chat will not accept a message is an hour of three chats not working, and
