@@ -1553,6 +1553,14 @@ when a launch fails and leaves an empty chat, archive it then — rather than le
 cleanup pass accumulate. On 2026-09-11 the sidebar held thirty-six conversations of which
 eight were live.
 
+**A send batch the harness kills is not a failed send.** Under memory pressure the
+steward's own shell gets killed mid-batch, so the terminal states for the remaining
+pushes never print — and on 2026-09-11 that happened three times in one hour while every
+one of those chats went on to move its clock. Read the outcome from `just chats`, never
+from whether your batch survived to report it. The corollary is to keep batches small
+when memory is tight: a batch of six serial sends holds a shell for ten minutes and is a
+fat target, where two batches of three usually both survive.
+
 **Count the browser's tabs every tick; they accumulate and they degrade the control
 path silently.** Tab count is a substrate metric like disk and load, and it is the one
 that presents as chat trouble rather than as a browser problem. As it climbs, sends
