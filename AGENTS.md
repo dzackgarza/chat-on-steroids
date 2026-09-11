@@ -1659,6 +1659,18 @@ the recurring check-in and then list the scheduled jobs to see it there; an inte
 cadence is not a cadence. Jobs are session-only, so a steward taking over an existing
 watch must schedule its own rather than assume it inherited one.
 
+**Judge banking cadence against the repository's own gate, not a clock you carry
+between repos.** A commit costs what that repo's gate costs, and they differ by orders of
+magnitude: a card repo commits prose in seconds, while lean-categories runs an aggregate
+build and audit chain that has been measured at eighty-seven minutes and holds
+`.git/index.lock` throughout. Ninety minutes without a commit is a stall in the first and
+a single gate cycle in the second. On 2026-09-11 a steward had a lean worker one read
+away from replacement on exactly that arithmetic — no commit in ninety minutes, no writes
+in twenty — when its transcript showed it had passed a focused build and was clearing a
+lint warning before entering the full gate. Before concluding a worker is not banking,
+find out what a commit costs where it is working, and read what it last said it was
+doing; replacing a worker mid-gate throws away the hour it has already spent.
+
 **An idle worker is either stuck or finished, and those take opposite actions.** `just
 chats` reports both as `idle`; nothing in the state distinguishes them. Read what the
 chat last said before pushing. A worker that is stuck says what it is waiting on; a
