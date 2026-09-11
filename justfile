@@ -283,6 +283,17 @@ gpt limit="100" match="" archived="false":
 
 # Archive one conversation in ChatGPT, whether or not it has a tab open
 archive chat:
+    @just _set-archived {{chat}} true archived
+
+# Archiving is how a chat leaves management, and a chat archived on a wrong call is still a
+# live worker: it keeps executing, it just stops being reachable.
+#
+# Bring an archived conversation back into the managed set, so it can be pushed again
+unarchive chat:
+    @just _set-archived {{chat}} false unarchived
+
+[private]
+_set-archived chat flag verb:
     #!/usr/bin/env python3
     import json, subprocess
 
@@ -314,7 +325,7 @@ archive chat:
         '   method: "PATCH",'
         '   headers: {"Content-Type":"application/json", "Authorization":"Bearer " + s.accessToken},'
         '   credentials: "include",'
-        '   body: JSON.stringify({is_archived: true})'
+        '   body: JSON.stringify({is_archived: {{flag}}})'
         " });"
         " return r.status;"
         "})()"
@@ -330,11 +341,11 @@ archive chat:
     except Exception:
         status = None
     if status == 200:
-        print("archived {{chat}}")
+        print("{{verb}} {{chat}}")
     elif status is None:
         raise SystemExit("the tab this ran through did not answer — try again, or open another ChatGPT tab")
     else:
-        raise SystemExit(f"ChatGPT refused the archive with status {status}")
+        raise SystemExit(f"ChatGPT refused the change with status {status}")
 
 # Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
 tabs quiet="30":
