@@ -1320,6 +1320,36 @@ Blank tabs should stay near zero, since the service worker closes a command tab 
 never acknowledged. Dozens of them means that has regressed. Close a tab directly through
 `http://127.0.0.1:9222/json/close/<target id>`.
 
+**A conversation that has woken tablessly needs no tab at all, and tabs are the fleet's
+largest memory cost.** Every `/send` opens its own command tab carrying a distinct `clf`
+token, and nothing closes it afterwards, so tabs accumulate one per push for the life of a
+stream. On 2026-09-11 the browser held **107 pages for 16 conversations** — one chat alone
+had fourteen, another thirteen, twenty-seven were blank — at 4.4 GB of Chrome on a host with
+7.9 GB total and 286 MB free. Collapsing it to 8 pages returned about 2 GB, which on this
+box is the difference between workers running and workers swapping.
+
+The tab is a view, not the conversation: the turn runs on chatgpt.com's servers and
+`session/sleep-wake.ts` (§14) wakes a slept conversation with no tab open. So the question is
+not whether a chat is busy, it is whether that chat has a proven wake path. Read
+`/sleep/status` and keep a tab only for a conversation with no `woke_ready` event — one that
+has never completed a wake cycle has nothing to wake it, and closing its last tab strands it
+behind `no_live_composer_tab`:
+
+```bash
+curl -s -H "Authorization: Bearer $(cat ~/.config/chat-on-steroids/state/local-token)" \
+  http://127.0.0.1:8765/sleep/status |
+  python3 -c "import json,sys; e=json.load(sys.stdin)['events']; print(sorted({x['conversationId'][:8] for x in e if x['kind']=='woke_ready'}))"
+```
+
+Everything with a `woke_ready` can lose every tab it has. For the rest, collapse duplicates to
+one — prefer a tab whose URL carries `clf=`, which is one the app has adopted. Sweep this on
+the hourly pass; a hundred tabs is not a tidiness problem, it is the reason the box is
+swapping.
+
+Do not reach for `just tidy` to do this. It *archives* every conversation quiet longer than
+its threshold, which retires live-but-slow workers as a side effect of wanting memory back.
+Closing tabs through `/json/close` archives nothing.
+
 **An idle chat refused while its neighbours work is now a bug, not the design.** The gate that
 refuses is the content script's own `pendingTools`, refreshed on its activity loop; the count
 `just say` prints is the app's, sampled once at the POST, so the two can disagree. Until
