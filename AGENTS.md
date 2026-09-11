@@ -1473,6 +1473,18 @@ retracted immediately and confirmed landed** — it will act on the wrong fact w
 turn, and the chat is usually busy doing exactly that, so the retraction must be retried
 until it delivers rather than left for the next tick.
 
+**Archive a conversation the moment it stops being a managed stream.** Every replaced
+worker, retired duplicate, failed launch and one-off probe stays in the owner's ChatGPT
+sidebar forever unless somebody archives it, and a day of stewarding produces dozens.
+They are not only clutter: a steward reading `just chats` has to tell live streams from
+dead ones on every tick, and a dead chat that still answers is exactly how duplicate work
+starts. `just archive <full conversation id>` takes a chat whether or not it has a tab
+open and is reversible, so there is no reason to defer it. Archive as part of the same
+action that ends the stream — when you launch a replacement, archive the predecessor;
+when a launch fails and leaves an empty chat, archive it then — rather than letting a
+cleanup pass accumulate. On 2026-09-11 the sidebar held thirty-six conversations of which
+eight were live.
+
 **Count the browser's tabs every tick; they accumulate and they degrade the control
 path silently.** Tab count is a substrate metric like disk and load, and it is the one
 that presents as chat trouble rather than as a browser problem. As it climbs, sends
