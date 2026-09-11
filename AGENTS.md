@@ -1228,13 +1228,23 @@ only `pendingTools` sits through an hour of long turns firing sends that can nev
 one opening another command tab. Read both fields, and treat an empty response as *unknown*
 rather than as clear, because a bridge that did not answer is not a gate that opened.
 
-**A resend loop must verify in the transcript, not in the send's own outcome.** `say` reports
-failure it cannot prove, so a loop that retries on a non-`delivered` result will happily
-deliver the same message three times to a worker that received it the first time — and a
-worker that reads its brief twice does the work twice. Before each attempt, grep the
-transcript for a distinctive phrase from the message; treat its presence as landed and stop.
-That check is also what closes a tick honestly: an intervention is landed when it is visible
-in the worker's own transcript or in a moved commit clock, never when the send returned.
+**A resend loop must verify against something other than the send's own outcome — and the
+transcript is not that something.** `say` reports failure it cannot prove, so a loop that
+retries on a non-`delivered` result will happily deliver the same message three times to a
+worker that received it the first time. But the obvious fix, grepping the transcript for a
+phrase from the message, fails the other way: the recorder can stop appending to a chat's
+transcript while the chat keeps working. On 2026-09-11 `lean-categories` showed a transcript
+frozen at 22:54 while the bridge reported a turn that had started ninety seconds earlier and
+the repository banked four commits in between, so two waiters declared the push not landed and
+a third would have duplicated it.
+
+Rank the surfaces by what they can actually prove. The repository's commit clock is ground
+truth for whether work happened. `GET /conversation/status` is ground truth for delivery: a
+`lastStoredKind` of `turn_start`, or a `turnStartedAt` later than your send, means the message
+reached the chat. The transcript is the only place the worker's own words live and is
+indispensable for reading intent — but it lags, and for a chat whose observer was lost it can
+stop advancing altogether, so absence of your message there proves nothing at all. Never
+escalate to a resend on transcript absence alone; check the bridge first.
 
 **A chat's title and its early transcript name the repository it started on, not the one it
 is working now.** Long-lived chats get repurposed, and the tab title never follows — a chat
