@@ -1331,8 +1331,43 @@ Blank tabs should stay near zero, since the service worker closes a command tab 
 never acknowledged. Dozens of them means that has regressed. Close a tab directly through
 `http://127.0.0.1:9222/json/close/<target id>`.
 
-**A conversation that has woken tablessly needs no tab at all, and tabs are the fleet's
-largest memory cost.** Every `/send` opens its own command tab carrying a distinct `clf`
+**A `woke_ready` event does not mean a conversation can be driven with no tab. Keep one
+tab per managed conversation.** This rule replaces the one below it, which was written on
+2026-09-11 from a single morning's observation and stopped the fleet that same afternoon.
+What follows the arrow is the retraction, not the advice.
+
+The reasoning was: `/sleep/status` shows `slept` → `wake_started` → `woke_ready` cycles, the
+turn runs on chatgpt.com's servers, so the tab is only a view and can go. Tabs were closed
+for every conversation with a `woke_ready`, taking the browser from 107 pages to 8. The
+fleet kept working for about two hours, which read as confirmation and was not. It then
+stopped completely: every managed repository went to zero writes for over an hour, `/send`
+returned `expired` or `refused` for six of eight pushes, `just new` failed with
+`No tab produced a usable composer for this chat`, and turns that did start rendered
+nothing until the ten-minute watchdog killed them. Reopening one tab per conversation
+restored delivery immediately — three of five pushes `delivered` where two of eight had
+before — and the first repository commit landed within ten minutes.
+
+Two lessons worth more than the rule they replace. **A sleep/wake cycle recorded in
+`/sleep/status` proves the conversation slept and woke while a tab existed; it is not
+evidence that the wake path can materialise a composer from nothing.** And **a fleet that
+keeps working for two hours after a change has not validated it** — the tabs already open
+were carrying the work, and the damage surfaced only when those conversations needed a
+fresh composer.
+
+What is still true from the original finding: every `/send` opens its own command tab
+carrying a distinct `clf` token and nothing closes it, so duplicates accumulate one per
+push and are the fleet's largest memory cost. Collapsing **duplicates** is correct and
+recovered about 2 GB. Collapsing to **zero** is what broke it. Keep one tab per managed
+conversation — prefer one whose URL carries `clf=`, which the app has adopted — and close
+the rest.
+
+---
+
+*Retracted 2026-09-11 — see above. Retained so the next steward recognises the reasoning
+if it re-occurs to them.*
+
+**~~A conversation that has woken tablessly needs no tab at all, and tabs are the fleet's
+largest memory cost.~~** Every `/send` opens its own command tab carrying a distinct `clf`
 token, and nothing closes it afterwards, so tabs accumulate one per push for the life of a
 stream. On 2026-09-11 the browser held **107 pages for 16 conversations** — one chat alone
 had fourteen, another thirteen, twenty-seven were blank — at 4.4 GB of Chrome on a host with
@@ -1352,8 +1387,9 @@ curl -s -H "Authorization: Bearer $(cat ~/.config/chat-on-steroids/state/local-t
   python3 -c "import json,sys; e=json.load(sys.stdin)['events']; print(sorted({x['conversationId'][:8] for x in e if x['kind']=='woke_ready'}))"
 ```
 
-Everything with a `woke_ready` can lose every tab it has. For the rest, collapse duplicates to
-one — prefer a tab whose URL carries `clf=`, which is one the app has adopted.
+~~Everything with a `woke_ready` can lose every tab it has.~~ **Retracted — this is the
+sentence that stopped the fleet.** Collapse duplicates to one per conversation and stop
+there, preferring a tab whose URL carries `clf=`, which is one the app has adopted.
 
 **This is tick work, not spring cleaning.** Tabs accrue at the rate you push, so the sweep
 belongs in every check-in beside reading the fleet, and it costs one command:
