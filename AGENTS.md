@@ -1257,8 +1257,16 @@ On 2026-09-11 a steward credited a `sage-categories` commit to a chat that had s
 thirty-three minutes, withdrew a correct re-scope on that basis, and left the repository
 looking owned while its chat sat silent. The separation that works is content: grep each
 candidate transcript for a term that appears only in that repository's work — a theorem name, a
-module path, the commit subject — and let the chat that mentions it own the commits. A chat
-with zero mentions of the work did not do the work, whatever the timing suggests.
+module path — and let the chat that mentions it own the commits.
+
+Absence is weaker evidence than presence here, and mistaking the two flips the answer. The
+transcript renders an `exec_command` row as a truncated one-liner, so a commit subject typed
+inside a long command never appears in it at all; a chat can author a commit whose message the
+transcript does not contain. Search for prose the worker wrote — the mathematics it described,
+the file it said it was editing — not for the text of the command it ran. And check turn
+latency before reading silence as death: a worker whose turns run fifty minutes is not wedged
+at thirty-five, and the same chat that looks dead against a tick interval is on schedule
+against its own.
 
 **Never refute a worker with a detector you invented. Use the repository's own tool.** A
 worker that reports its range already complete is making a claim the steward has to check, and
