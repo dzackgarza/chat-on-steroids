@@ -1211,6 +1211,22 @@ paths fail for reasons that live in the page, not in the worker. Confirm against
 own output — the host process it named, or its repository's clock — before archiving, because
 the app archives through `PATCH is_archived` and carries no recipe to undo it.
 
+**The composer gate closes on the steward, not on the worker, and retrying widens it.** The
+page refuses to type while local tool calls are in flight, and an unattributed call is charged
+against every chat — so a fleet where all four workers happen to be running tools is a fleet
+with no reachable chat in it, and the refusal says nothing about any particular worker. Every
+send attempt opens its own command tab, which is one more call against the same gate, so a
+retry loop is the one response that reliably makes the next attempt fail too. Poll `just state
+<chat>` until it reports no pending tool, then send once.
+
+**A resend loop must verify in the transcript, not in the send's own outcome.** `say` reports
+failure it cannot prove, so a loop that retries on a non-`delivered` result will happily
+deliver the same message three times to a worker that received it the first time — and a
+worker that reads its brief twice does the work twice. Before each attempt, grep the
+transcript for a distinctive phrase from the message; treat its presence as landed and stop.
+That check is also what closes a tick honestly: an intervention is landed when it is visible
+in the worker's own transcript or in a moved commit clock, never when the send returned.
+
 **Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
 short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
 finding out why one chat will not accept a message is an hour of three chats not working, and
