@@ -1473,6 +1473,21 @@ retracted immediately and confirmed landed** — it will act on the wrong fact w
 turn, and the chat is usually busy doing exactly that, so the retraction must be retried
 until it delivers rather than left for the next tick.
 
+**Count the browser's tabs every tick; they accumulate and they degrade the control
+path silently.** Tab count is a substrate metric like disk and load, and it is the one
+that presents as chat trouble rather than as a browser problem. As it climbs, sends
+start returning `expired` and `no_live_composer_tab` — *"ChatGPT never exposed a usable
+composer for bootstrap"* — and `just new` stops working, so replacements cannot be
+launched exactly when wedged chats make them necessary. On 2026-09-10 it reached 47 and
+every new-chat launch failed; hours later it reached 100 and sends were expiring across
+the whole fleet. Restarting `chat-on-steroids-browser.service` clears it, costs nothing
+that is not recreated on demand, and on both occasions the next send landed immediately.
+Read it with the CDP endpoint rather than `just tabs`, which only matches `/c/` URLs:
+
+```bash
+curl -s -m 8 http://127.0.0.1:9222/json | grep -c '"type": "page"'
+```
+
 **Check the substrate before you blame the app.** `df -h`, `uptime`, `/usr/bin/ps` — a
 few seconds, before any theory about attribution tiers or gates. A full volume does not
 present as a disk error; it presents as killed processes, dying `exec_command` sessions
