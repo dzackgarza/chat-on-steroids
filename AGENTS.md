@@ -2136,6 +2136,30 @@ does the steward act on the live worker — and then only by routing it into tho
 The orchestrator's lever is routing agents into each repository's own documentation;
 policy that lives only in orchestrator messages does not exist.
 
+### Collapsing to one worker leaves the repository still believing in the others
+
+Retiring the extra streams does not retire their claims. Fan-out leaves records behind — claim
+rows, `coord:` commits, a claim-protocol paragraph in `TODO.md`, untracked directories that
+look like someone else's in-flight work — and the surviving worker reads all of it as current.
+It then does exactly what the repository told it to do: skips every node and every queue entry
+that appears held, and reports the skips as correct behaviour, because under the old regime
+they were. The repository quietly narrows to whatever nobody claimed, and the steward sees a
+worker banking steadily and calls it working.
+
+The tell is in the worker's own words, and it is easy to read past: *"already being
+dispositioned by concurrent work, so I will not touch those paths"*, *"actively claimed by
+another worker, so I'm checking the other prerequisite-free nodes"*. Both were written by the
+only worker in their repository, deferring to claims it had written itself an hour earlier. A
+single push does not fix it either — the same worker skipped on the same premise twenty-eight
+minutes after being told the premise was false, because the claim records it reads every turn
+outlast anything said in chat.
+
+So when the count drops to one, treat the repository's coordination state as part of the
+collapse: have the worker release its own stale claims, commit whatever untracked work was
+stranded by a retired stream, and amend the document that describes the claim protocol so it
+no longer promises concurrency that is gone. Until that lands in the repo, every tick pays for
+it again.
+
 ### One worker per repository
 
 A managed repository gets exactly one worker at a time. Parallelise across repositories,
