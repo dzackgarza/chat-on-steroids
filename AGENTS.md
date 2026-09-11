@@ -1696,13 +1696,25 @@ instead of at 100% disk.
 At each check-in (every twenty minutes), report the status of each managed repository workstream
 directly in chat:
 - Current local time and anticipated time of the next scheduled wakeup.
-- Workstream status, measured on the repository — commits landed since the last check-in,
-  read from `git log`, never inferred from whether your own pushes succeeded.
-- A 1-line summary of its last activity.
+- **The repository's tracked surface**: what its own queues, TODO checkboxes or generated
+  counts say about progress since the last check-in. This is the first cell because it is
+  the repository's own belief about whether the work is advancing, and it is the one that
+  exposes a stream doing the wrong work correctly.
+- **Commits landed since the last check-in**, read from `git log --all` — `--all` because
+  a worker on a branch is invisible without it — never inferred from whether your own
+  pushes succeeded.
+- **The worker's own last sentence**, quoted or closely paraphrased from its transcript,
+  not the row kind from `just chats`. "page_tool" and "turn_end completed" are not
+  activity summaries; "the child Lean process has advanced" and "the sole owned range
+  remains complete" are, and the difference between those two is the whole job.
 - How long ago that activity occurred.
 - Free space on the volume, whenever any stream looks degraded.
 - The decision on what to do with it (allow it to continue, inject continuation prompt, determine
   if wedged, orchestrate manual handoff, tidy tabs, etc.).
+
+A report whose activity column contains row kinds rather than the worker's own words was
+written without reading the transcripts, and is not a check-in. The three reads are the
+tick; the table is only how they are reported.
 
 **The report is written after the tick's actions, and describes what is now true.** It is not
 a plan and it is not a queue. No cell in it may name a future intervention: "will replace next
