@@ -1227,6 +1227,20 @@ transcript for a distinctive phrase from the message; treat its presence as land
 That check is also what closes a tick honestly: an intervention is landed when it is visible
 in the worker's own transcript or in a moved commit clock, never when the send returned.
 
+**A chat's title and its early transcript name the repository it started on, not the one it
+is working now.** Long-lived chats get repurposed, and the tab title never follows — a chat
+titled `Fix Lean Categories Blocker` spent hours on `sage-categories` while every path in its
+transcript said so. Counting repository mentions across a whole transcript measures where a
+chat has *been*, which is the wrong question; a steward that attributes a worker that way will
+route a push at the wrong repo's queue and then read the wrong clock to verify it. Attribute
+from the newest output only, and confirm by which repository's clock moves after the push.
+
+Repurposing also runs backwards: telling a worker to re-read its repository's own documents is
+the standard way to land policy, but a chat carrying an older identity can take that as an
+instruction to return to the repository it started in. Watch the reply, not the send — if the
+artifacts it names belong to a different repository than the one you addressed, say the working
+directory explicitly and make it echo `pwd` before it does anything else.
+
 **Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
 short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
 finding out why one chat will not accept a message is an hour of three chats not working, and
