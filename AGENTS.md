@@ -1336,11 +1336,38 @@ tab per managed conversation.** This rule replaces the one below it, which was w
 2026-09-11 from a single morning's observation and stopped the fleet that same afternoon.
 What follows the arrow is the retraction, not the advice.
 
-The reasoning was: `/sleep/status` shows `slept` → `wake_started` → `woke_ready` cycles, the
-turn runs on chatgpt.com's servers, so the tab is only a view and can go. Tabs were closed
-for every conversation with a `woke_ready`, taking the browser from 107 pages to 8. The
-fleet kept working for about two hours, which read as confirmation and was not. It then
-stopped completely: every managed repository went to zero writes for over an hour, `/send`
+**Read the tab titles first.** `Just a moment...` is Cloudflare challenging the browser, and
+it is the cheapest fleet-wide diagnostic there is — one `curl` against `/json`, no DOM
+probing:
+
+```bash
+curl -s -m 5 http://127.0.0.1:9222/json | python3 -c "import json,sys; p=[t for t in json.load(sys.stdin) if t.get('type')=='page']; print(sum(1 for t in p if 'Just a moment' in (t.get('title') or '')), 'of', len(p), 'challenged')"
+```
+
+A challenged tab is indistinguishable from a wedged chat through every surface a steward
+normally reads: the turn stays marked generating, nothing renders, the ten-minute watchdog
+fires, `/send` returns `expired` or `no_live_composer_tab`, and `just new` reports
+`No tab produced a usable composer`. It also poisons recorded state — a conversation's
+`meta.json` title becomes the literal string `Just a moment...`, so a roster read from
+titles is wrong in a way that looks like a dead stream. On 2026-09-11 six of sixteen pages
+were challenged; a steward spent forty minutes on send-path verbs, substrate checks and a
+DOM probe for a rate-limit modal before looking at the titles. `Page.reload` with
+`ignoreCache` cleared all six, and repositories that had been silent for over an hour
+committed within minutes.
+
+The reasoning behind the retracted rule was: `/sleep/status` shows `slept` → `wake_started`
+→ `woke_ready` cycles, the turn runs on chatgpt.com's servers, so the tab is only a view and
+can go. Tabs were closed for every conversation with a `woke_ready`, taking the browser from
+107 pages to 8. The fleet kept working for about two hours, which read as confirmation and
+was not.
+
+**The two causes compound, and the tab rule is what made the first one fatal.** Cloudflare
+was the trigger; a thinned tab pool was why it took everything down at once. At 107 tabs
+there are always already-cleared pages to fall back on and a challenge wave is absorbed
+invisibly. At 8 there is no slack, and the same wave removes every path to every worker
+simultaneously. Keeping one tab per conversation is the floor, not the target — it is
+enough to be reachable and not enough to survive a challenge wave, so expect to clear
+challenges by hand when the pool is thin. What happened after the pool was thinned: every managed repository went to zero writes for over an hour, `/send`
 returned `expired` or `refused` for six of eight pushes, `just new` failed with
 `No tab produced a usable composer for this chat`, and turns that did start rendered
 nothing until the ten-minute watchdog killed them. Reopening one tab per conversation
