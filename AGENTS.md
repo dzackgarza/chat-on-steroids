@@ -1274,6 +1274,20 @@ short handoff — ambient task, tracking documents, current item — and `just n
 finding out why one chat will not accept a message is an hour of three chats not working, and
 the handoff costs minutes.
 
+**The browser is a fleet-wide resource and long-running chats exhaust it.** Each managed chat
+holds a renderer whose cost grows with its transcript, and every send opens a command tab that
+a send which never redeems leaves behind. On 2026-09-11 four chats and eleven orphaned command
+tabs held 2.3 GB on an 8 GB host with 450 MB free and 10 GB swapped — and memory pressure is
+the named cause of the dead-process wait in the hourly sweep, because it is the OOM killer that
+takes the workers' `exec_command` sessions. So read memory as a fleet metric, not a host
+curiosity: `free -m` alongside `df -h`, and `ps -eo pid,rss,pcpu --sort=-rss` when it is tight.
+Restarting `chat-on-steroids-browser.service` reclaims it and the app reopens the chats.
+
+Closing a chat's tab does not stop its worker — the turn runs at ChatGPT and the `exec_command`
+sessions run on this host — but it does take the chat off the air until the next send reopens
+it, and the app records the gap as `This content is unavailable or could not be found`, which
+reads exactly like a wedged chat. Check the repository's clock before believing that row.
+
 Three things break every chat at once and none of them is the chat:
 
 - **The app's bridge is not listening.** The app can be running, small and idle, with nothing
