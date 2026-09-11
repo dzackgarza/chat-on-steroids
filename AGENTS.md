@@ -1686,6 +1686,12 @@ enforcement point in that repo's gate when the rule has already been restated on
 ignored; a third restatement is not a remedy. Check first whether the rule is already
 there — a doc that has already been corrected needs verifying, not rewriting.
 
+**Steward writing is meta-work, and every managed repository documents a route for it.** When the steward edits a repository's `AGENTS.md`, `TODO.md`, queue files or complaints, it is not contributing that repository's code and the full commit gate is not the applicable standard. Each of these repos already says so in its own words — `new-qual-site` calls it "the authorized docs-only route" and names `--no-verify` outright, `sage-categories` says "a docs-only edit runs no repository verification", `research` makes it `DEV-58`'s prose-only exemption. Find that rule before committing, and cite it in the message.
+
+The failure to avoid is fighting a gate that was never aimed at your change. On 2026-09-11 a steward spent several attempts and two dead-end diagnoses trying to land a queue-metadata edit through `new-qual-site`'s full commit gate, which was failing for a reason unrelated to the edit — a sibling stream's staged corpus file tripping a hook that stages inside `pre-commit`. The repository's prose route, four lines in its own `AGENTS.md`, would have landed it immediately. Inspect the diff, confirm it is documents only, take the route the repo names.
+
+This is not licence to bypass a gate on repository code, and it is the opposite of the known-red habit: the point is that a *different* standard applies to documents, not that the standard is optional. A steward commit that touches code, data or a card takes the ordinary gate like anyone else.
+
 **Never build a path around this app's own send path.** Typing into the page over CDP
 delivers a message and bypasses everything the app does with it: no entry in the send
 registry, no `sent_verified`, no sleep cycle armed, and no `push_correlated` attribution
