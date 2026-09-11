@@ -1839,6 +1839,23 @@ lint warning before entering the full gate. Before concluding a worker is not ba
 find out what a commit costs where it is working, and read what it last said it was
 doing; replacing a worker mid-gate throws away the hour it has already spent.
 
+**Read three things every tick, and read them in this order: the repository's tracked
+surface, its recent commits, and the worker's own last message.** The chat's `idle` or
+`busy` state is the weakest signal available and it is the one a steward reaches for
+first, because it is cheapest. It answers "did my push land", not "is the assigned work
+advancing", and those come apart constantly. What the tracked surface says — queue counts
+ticking down, TODO checkboxes moving, the unsolved file regenerating — is what the
+repository itself believes about progress. What the commits say is what actually landed.
+What the worker last said is what it thinks it is doing, and it is the only one of the
+three that catches a worker doing the wrong work correctly.
+
+On 2026-09-11 a stream answered every push for five and a half hours with the same
+sentence — "the sole owned range remains complete" — because a re-scope had never taken.
+Its clock moved on every push, its state alternated idle and busy exactly like a healthy
+stream, and its repository's queue sat unchanged the whole time. Any one of the three
+reads would have caught it in the first twenty minutes; the state check never would,
+however many times it was repeated.
+
 **An idle worker is either stuck or finished, and those take opposite actions.** `just
 chats` reports both as `idle`; nothing in the state distinguishes them. Read what the
 chat last said before pushing. A worker that is stuck says what it is waiting on; a
