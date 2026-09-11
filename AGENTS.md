@@ -1297,6 +1297,23 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A wedged chat is usually holding unbanked work, and the replacement is the only thing that
+can find out.** The steward must not go into the repository to bank it — that is the worker's
+job and the tree has one index — but the handoff has to name it, because a fresh worker walking
+into a tree with thousands of modified lines it did not write will read them as debris and
+reset them. Size the loss before writing the brief: `git status --porcelain | wc -l` and
+`git diff --stat | tail -1` cost nothing and turn the handoff from "continue node X" into
+"37 modified files, 4362 insertions, evaluate and bank what is correct, do not reset the tree."
+A `sage-categories` worker wedged on `Message delivery timed out` holding exactly that, one
+node short of banking it.
+
+The rest of the brief is what the wedged chat can no longer tell anyone: which node it was on,
+what shape the repository's tracked surface has (a DAG table is not a checklist, and an absence
+of checkboxes is not an absence of work), which of that node's prerequisites are externally
+owned so the new worker does not wait on them, and the last concrete thing the old worker said
+it was about to do. That last sentence is worth more than the rest combined — it is the only
+part a fresh worker cannot reconstruct from the repository itself.
+
 **Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
 short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
 finding out why one chat will not accept a message is an hour of three chats not working, and
