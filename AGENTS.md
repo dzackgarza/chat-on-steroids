@@ -1219,6 +1219,15 @@ send attempt opens its own command tab, which is one more call against the same 
 retry loop is the one response that reliably makes the next attempt fail too. Poll `just state
 <chat>` until it reports no pending tool, then send once.
 
+**Two different refusals look identical from outside the page, and waiting on the wrong one
+waits forever.** A chat refuses because a turn is already generating, or because local tool
+calls are still pending; the composer needs both clear, and the error text does not say which
+one you hit. `GET /conversation/status` on the bridge reports them separately — `generating`,
+`pendingTools`, plus `generatingForMs` and `noProgressForMs` for how long. A waiter that polls
+only `pendingTools` sits through an hour of long turns firing sends that can never type, each
+one opening another command tab. Read both fields, and treat an empty response as *unknown*
+rather than as clear, because a bridge that did not answer is not a gate that opened.
+
 **A resend loop must verify in the transcript, not in the send's own outcome.** `say` reports
 failure it cannot prove, so a loop that retries on a non-`delivered` result will happily
 deliver the same message three times to a worker that received it the first time — and a
