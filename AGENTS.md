@@ -1868,6 +1868,19 @@ stream, and its repository's queue sat unchanged the whole time. Any one of the 
 reads would have caught it in the first twenty minutes; the state check never would,
 however many times it was repeated.
 
+**An empty execution graph is not an empty backlog — unfolding the backlog into it is
+the work.** Repositories that track through a DAG, a node list or a dependency graph show
+zero ready nodes in two completely different situations: everything is genuinely done, or
+the outstanding obligations have not been expanded into nodes yet. The second is far more
+common and it reads identically from outside, so a steward that counts checkboxes will
+report a finished repo while its plan still carries unclaimed work. When the graph is
+empty and the plan is not, the next task *is* the unfolding: take the outstanding
+obligations from whatever owns them — the approved plan, the issue tree, the prose
+sections the graph defers to — and expand them into nodes with dependency edges, then
+work the frontier that appears. A worker sitting idle because "there are no ready nodes"
+has mistaken the absence of a map for the absence of territory, and the steward's job is
+to say so rather than to record the repository as complete.
+
 **An idle worker is either stuck or finished, and those take opposite actions.** `just
 chats` reports both as `idle`; nothing in the state distinguishes them. Read what the
 chat last said before pushing. A worker that is stuck says what it is waiting on; a
