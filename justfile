@@ -500,6 +500,32 @@ tidy quiet="30" keep="":
     if scratch_id:
         dt("/json/close/" + scratch_id)
 
+    # Every send opens a command tab on bare chatgpt.com, and a send that never redeems leaves
+    # its tab behind. They carry no conversation id, so the loop above never sees them, and they
+    # accumulate one renderer at a time until the host is swapping — which is what kills the
+    # workers' own exec sessions.
+    #
+    # A managed chat's own tab is momentarily bare too, between opening and navigating to the
+    # conversation, and closing one of those takes a live worker off the air. The two look
+    # identical in a single snapshot, so look twice: a tab still bare several seconds later is
+    # not on its way anywhere. Keep the newest survivor as the app's spare.
+    def bare_ids():
+        listing = json.loads(subprocess.run(
+            ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
+        return {t["id"] for t in listing
+                if t.get("type") == "page"
+                and (t.get("url") or "").rstrip("/") == "https://chatgpt.com"
+                and t.get("id") != scratch_id}
+
+    first = bare_ids()
+    if first:
+        time.sleep(8)
+        orphans = sorted(first & bare_ids())
+        for tab in orphans[1:]:
+            dt("/json/close/" + tab)
+        if len(orphans) > 1:
+            print(f"closed {len(orphans) - 1} orphaned command tab(s)")
+
 # What a chat is: driven prime, swarm worker, or nothing the app is still using
 #
 # Paste the id from a tab's URL. Answers the only question a pile of open tabs raises —
