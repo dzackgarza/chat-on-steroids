@@ -1286,6 +1286,17 @@ does, follow it, and then put what you learned in a commit — this file, `COMPL
 the repository that owns the defect. When it does not, it is a diversion that reads as
 diligence, and it is where whole ticks go.
 
+**Every tick ends with the fleet no wider than the work.** Reading the fleet and acting on
+it is the tick's substance; leaving behind exactly the chats and tabs the work needs is the
+tick's cost of doing business, and it is not optional because it is cheap. Each tick, close
+the chats you concluded were finished, archive what has run out of scope, and sweep the tabs
+— the one-line `just tidy` with a freshly computed keep list, under
+[Standing watch](#standing-watch-over-several-chats). Skipping it does not save time; it
+defers a cost that compounds at the rate you push, and which lands as a host that cannot
+carry the streams you already have. On 2026-09-11 that deferral had reached 107 browser
+pages for 16 conversations and 4.4 GB of a 7.9 GB box, and the streams were swapping while
+the roster looked healthy.
+
 **Your own machinery is never the emergency.** Rewriting a push loop, installing a library,
 fixing the wake check, building a better nudge — none of that is work on the fleet, and doing
 it while a stream is stopped is effort substituting for effectiveness. Fix the machinery only
@@ -1342,13 +1353,40 @@ curl -s -H "Authorization: Bearer $(cat ~/.config/chat-on-steroids/state/local-t
 ```
 
 Everything with a `woke_ready` can lose every tab it has. For the rest, collapse duplicates to
-one — prefer a tab whose URL carries `clf=`, which is one the app has adopted. Sweep this on
-the hourly pass; a hundred tabs is not a tidiness problem, it is the reason the box is
-swapping.
+one — prefer a tab whose URL carries `clf=`, which is one the app has adopted.
 
-Do not reach for `just tidy` to do this. It *archives* every conversation quiet longer than
-its threshold, which retires live-but-slow workers as a side effect of wanting memory back.
-Closing tabs through `/json/close` archives nothing.
+**This is tick work, not spring cleaning.** Tabs accrue at the rate you push, so the sweep
+belongs in every check-in beside reading the fleet, and it costs one command:
+
+```bash
+just tidy 45 "$(just chats 5 2>/dev/null | grep -vE 'sitecustomize|ModuleNotFound' \
+  | awk -F'\t' 'NF>1 && $2!=""{print $2}' | sort -u | paste -sd,)"
+```
+
+Check the keep list is non-empty before trusting that line. If `just chats` returns nothing
+— the app down, the bridge not listening — the substitution collapses to `""` and `tidy`
+archives every quiet conversation in the browser, including the whole managed fleet. An
+empty keep list is never correct while streams exist.
+
+`tidy`'s two arguments are what make it safe, and its behaviour is not what its name
+suggests. It closes duplicate tabs for **every** conversation unconditionally, keep-listed or
+not, which is most of the win. It archives only a conversation quiet longer than the first
+argument *and* absent from the second — so the keep list must be the live fleet, computed
+fresh in the same command, never a remembered one. A chat with no recording at all is kept
+regardless. Follow it with the blank-tab close above, since `tidy` matches only
+`chatgpt.com/c/` and cannot see a blank, and with the `woke_ready` close, since `tidy` always
+leaves one tab per conversation.
+
+**Archive a chat the moment it is known finished; do not leave it idling.** A worker that has
+run out of scope says so plainly — "no remaining TODO in the collection-defined scope",
+"nothing further to execute within the assigned scope" — and answers every further `Continue`
+the same way. That chat is done: it will never produce again, it holds tabs and browser
+memory for as long as it stays open, and it pads the fleet count so a real stall hides inside
+an apparently healthy roster. Retiring it is the same verb as re-scoping it — archive it,
+close its tabs, drop it from the keep list — and it is the steward's call, needing nobody's
+permission. The distinction that matters is **finished versus merely quiet**: quietness alone
+is why `tidy` needs an accurate keep list, and finishedness is read from what the chat last
+said, not from its clock.
 
 **An idle chat refused while its neighbours work is now a bug, not the design.** The gate that
 refuses is the content script's own `pendingTools`, refreshed on its activity loop; the count
@@ -1722,6 +1760,10 @@ for this stream" — and pushing `Continue` at it returns "nothing further to ex
 within the assigned scope" for as long as you keep asking. That is not a stalled chat
 to nudge, it is a finished one to re-scope or retire, and treating it as the former
 burns the stream and reads as a fleet-wide stall that is really a planning gap.
+Retiring means archiving it and closing its tabs in the same tick you conclude it is
+finished — a finished chat left open costs browser memory indefinitely, and it keeps
+inflating the roster so the next stall hides behind a stream that stopped producing
+hours ago. Re-scope it or archive it; leaving it idle is neither.
 
 **Never leave a worker asleep or idle.** A sleeping or stalled chat produces zero progress; nothing restarts on its own. The steward does not wait for work to begin spontaneously. When a worker finishes a turn, stalls, or dies to an error (such as a delivery timeout), the steward must act immediately: push `Continue` if viable, or launch a replacement with `just new` and a brief handoff.
 
