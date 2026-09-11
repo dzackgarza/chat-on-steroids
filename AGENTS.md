@@ -1250,6 +1250,25 @@ instruction to return to the repository it started in. Watch the reply, not the 
 artifacts it names belong to a different repository than the one you addressed, say the working
 directory explicitly and make it echo `pwd` before it does anything else.
 
+**Never refute a worker with a detector you invented. Use the repository's own tool.** A
+worker that reports its range already complete is making a claim the steward has to check, and
+the cheap-looking check is a grep. It is the wrong instrument: a corpus marks its own state in
+its own notation, and that notation is not guessable from outside. `new-qual-site` marks
+solutions with a pandoc fenced div, `::: solution`, and ships `tools/unsolved_queue.py` behind
+`just unsolved` to count them; on 2026-09-11 a steward grepped for a `## Solution` heading
+instead, found none, told a worker its fourteen cards were "entirely unwritten", and pasted the
+loop as proof. Every card already had its solution. The worker complied against its own correct
+judgment and re-solved a solved card in a format the corpus does not use, and the false premise
+then propagated into a retired stream, a handover brief, and a queue item.
+
+The asymmetry is what makes this expensive: a worker that stops on a wrong "it is done" costs
+one push to restart, while a worker told its finished work is missing does harmful work
+confidently and buries the evidence under a plausible commit. So when a worker's completion
+claim conflicts with your reading, suspect the reading first. Find the repository's own
+measurement — a `just` recipe, the tool the commit gate runs, the queue file it regenerates —
+and quote that. If no such tool exists, the honest move is to ask the worker how completeness
+is marked in that corpus, not to assert a negative from a pattern you chose yourself.
+
 **Do not diagnose a stubbornly wedged chat. Replace it.** Read the transcript tail, write a
 short handoff — ambient task, tracking documents, current item — and `just new`. An hour spent
 finding out why one chat will not accept a message is an hour of three chats not working, and
