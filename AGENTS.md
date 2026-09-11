@@ -1250,6 +1250,16 @@ instruction to return to the repository it started in. Watch the reply, not the 
 artifacts it names belong to a different repository than the one you addressed, say the working
 directory explicitly and make it echo `pwd` before it does anything else.
 
+**Attributing a commit to a chat by elimination is how a repository quietly loses its worker.**
+Two chats each holding a plausible claim on a repository cannot be separated by which one you
+last pushed, by a tab title, or by "no other chat was active, so it must have been this one."
+On 2026-09-11 a steward credited a `sage-categories` commit to a chat that had said nothing for
+thirty-three minutes, withdrew a correct re-scope on that basis, and left the repository
+looking owned while its chat sat silent. The separation that works is content: grep each
+candidate transcript for a term that appears only in that repository's work — a theorem name, a
+module path, the commit subject — and let the chat that mentions it own the commits. A chat
+with zero mentions of the work did not do the work, whatever the timing suggests.
+
 **Never refute a worker with a detector you invented. Use the repository's own tool.** A
 worker that reports its range already complete is making a claim the steward has to check, and
 the cheap-looking check is a grep. It is the wrong instrument: a corpus marks its own state in
