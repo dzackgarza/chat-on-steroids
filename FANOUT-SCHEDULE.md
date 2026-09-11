@@ -20,6 +20,21 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
+**One stream per repository. Width is across repositories, never within one.** This
+overrides every per-repository stream count below; those tables stand as the partition
+analysis, not as a launch target. A git repository has one index and one working tree, so
+two workers in it cannot hold a lock neither knows about, and a pathspec commit still
+captures whatever else is sitting in that path. Directory-disjoint scopes do not fix this
+and reasoning that they should is the documented trap: in `new-qual-site` on 2026-09-10
+two runs raced and one of them reset the shared tree under a live authoring worker,
+destroying 21 authored solutions — 962 lines, recovered only because that worker happened
+to notice. In this repository three workers' commits were repeatedly swept into each
+other's until the messages no longer described their contents. The apparent speedup is
+repaid in lost work, false gate verdicts and unattributable history. Queue a repository's
+work behind its single worker and give it the whole sequence, so it never idles between
+stages waiting to be told what is next. If a second task genuinely cannot wait, it needs a
+separate clone that nothing else touches — not a second chat on the same checkout.
+
 **Width is capped by what the control path can actually feed, not by the work
 available.** A stream that cannot be reached is not a stream. Every send opens a command
 tab and counts against every other chat's `pendingTools`, so pushing harder across more
@@ -52,6 +67,8 @@ each key binds. Sends, tab recovery, and sleep/wake all run through the app; §1
 holds the contract and the browser behaviors it handles (activation before typing,
 duplicate and frozen tabs, draft recovery, turn_start verification). new-qual-site
 is at its 8-stream target.*
+
+*Superseded 2026-09-11: collapsed to one stream per repository, per the rule above.*
 
 ---
 

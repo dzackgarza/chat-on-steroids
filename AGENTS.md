@@ -2046,6 +2046,30 @@ does the steward act on the live worker — and then only by routing it into tho
 The orchestrator's lever is routing agents into each repository's own documentation;
 policy that lives only in orchestrator messages does not exist.
 
+### One worker per repository
+
+A managed repository gets exactly one worker at a time. Parallelise across repositories,
+never inside one. This is not a throughput preference and it is not softened by giving the
+two workers disjoint directories: a git checkout has one index and one working tree, so
+neither worker can hold a lock the other knows about, and a pathspec commit still captures
+whatever else is sitting in that path. The losses on record are a reset tree that destroyed
+21 authored solutions under a live worker in `new-qual-site`, and three workers in this
+repository whose commits were swept into each other's until the messages stopped describing
+their contents.
+
+The steward violates this by accretion rather than by decision: a stream is replaced but the
+old chat keeps a tab, a second is launched for a scope the first was not covering, and a
+third survives from an earlier fan-out. So count workers per repository every tick, from
+`just tabs` grouped by the repo each chat is working, and archive down to one. A retired
+chat must be archived, not merely left unpushed — an unarchived chat is still a worker
+someone can wake.
+
+Collapsing to one worker means the survivor must carry the whole queue. Hand it the full
+sequence in order rather than the current stage, so it moves from one to the next without a
+push; a worker that stops between stages to be told what is next is idle capacity that the
+one-worker rule would otherwise have created. `just unarchive <chat>` brings one back if the
+count was cut wrong.
+
 ### The fan-out schedule — `FANOUT-SCHEDULE.md`
 
 [`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) at this repo's root is the canonical
