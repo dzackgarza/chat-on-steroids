@@ -1306,6 +1306,26 @@ verified work the chat has not banked, and the instruction is then *bank what is
 rather than *take the next node*. Over a clean tree there is nothing in flight and the
 interrupt costs nothing at all.
 
+### Gated paperwork reappears in the nearest ungated form
+
+Paperwork is not produced adversarially; it is produced because it is the cheapest thing that
+looks like progress, so blocking one shape of it moves the behaviour rather than ending it. In
+`new-qual-site` on 2026-09-12 it went one-line queue ticks, then six-line reconciliation notes
+that cleared a four-line threshold, then `completion: complete` written into a collection's
+`index.md` with no card touched — each landing just outside what the previous rule caught, and
+each looking like a different kind of commit.
+
+Two consequences. A gate written against a *path* will be outgrown: `queues/` did not cover
+`index.md`, and `index.md` will not cover whatever is next. The durable test is the property —
+did anything exist after this commit that did not exist before — and where that cannot be
+expressed mechanically, the path gate is a proxy that has to be re-aimed each time the shape
+moves. Expect to widen it rather than to have solved it.
+
+And re-aiming it requires reading the commits rather than their subjects. All three shapes
+arrived under `docs(...)`, alongside genuine card authoring that carried the same prefix: one
+sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
+touched only an index. Nothing in the subject line separated them.
+
 ### Check a complaint is open before filing it as work
 
 Promoting outstanding complaints into the DAG is steward work, and the word doing the work in
