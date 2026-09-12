@@ -1259,6 +1259,32 @@ banking a batch — the batch had been committed twenty minutes later, so there 
 to wait for and nothing unbanked. A handoff repeating its last stated intent would have sent
 the replacement to redo finished work.
 
+### Ask the host what the worker cannot see
+
+A worker waiting on a build, test or gate has no way to learn that it ended. The chat stays
+coherent, the figure it quotes stays real, and it waits — twice on 2026-09-12 a
+`lean-categories` chat lost an hour that way, the second time in a replacement briefed
+specifically about it, because the constraint is not something a chat can check about itself
+from the inside.
+
+So the steward checks. When a stream goes quiet with a clean tracked tree, ask the host before
+asking anything else; it costs one command and it decides between two opposite actions:
+
+```bash
+pgrep -a -x 'lean|lake'            # lean-categories
+pgrep -af 'sage|mypy|pytest'       # sage-categories, research
+```
+
+A process there means a long compile and the stream is left alone. Nothing there, with a clean
+tree and a silent turn, means the work is already done and unbanked behind a wait that will
+never end — interrupt, and the instruction is to re-run in the foreground and bank. The
+`lean-categories` interrupt that followed that check released seventeen definitions that had
+been sitting finished.
+
+Documentation cannot fix this one. Three separate statements of the rule in that repository's
+own `AGENTS.md` did not prevent either occurrence, because a chat cannot act on a fact it has
+no way to observe. The check belongs to whoever can run it.
+
 ### A chat that stalls the same way twice earns a shorter horizon
 
 The general signal — a turn generating for many minutes with `turn_start` as the last stored
