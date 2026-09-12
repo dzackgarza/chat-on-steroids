@@ -1297,6 +1297,21 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**The steward filing a queue item is a second agent on that index, and on a slow gate it is
+the one blocking the worker.** One-worker-per-repository is usually read as a rule about
+chats, but a queue filing takes the same single index and runs the same commit gate, and on a
+repository whose gate walks ten thousand files that is minutes during which the worker's own
+commits are refused. On 2026-09-12 a steward cleared a stale lock off `new-qual-site`, told its
+worker to resume, and then took the lock itself for a queue filing — replacing a dead blocker
+with a live one.
+
+Two consequences. Do not run a steward commit detached and unwatched on a repository with an
+expensive gate: if it dies — and memory pressure kills exactly these — it orphans the lock and
+stops the repository, which is the outage the filing was meant to prevent. And where the gate
+is slow, prefer handing the item to the worker in the push that tells it about the finding
+rather than committing it yourself; the worker is already inside that gate and pays nothing
+extra to carry one more file.
+
 **A lock you keep meeting is not a busy worker — check its age and whether anything holds it.**
 The two cases look identical at the point of failure and mean opposite things. A live
 `git commit` behind the lock is the worker banking, and the steward waits. A lock with no
