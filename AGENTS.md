@@ -1297,6 +1297,26 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A browser restart can strand every chat whose tab was open, and a new chat is the test that
+tells you whose fault it is.** Reclaiming memory by restarting the browser is cheap and usually
+free, but it is not always: on 2026-09-12 a restart left three of four chats at `chat_error`
+with `This content is unavailable` and `Failed to load subscription`, and the app could not
+re-establish any of them — `say`, `revive` and repeated retries all expired, while the one chat
+whose tab predated the restart kept working normally. Two repositories sat dry for the better
+part of an hour.
+
+That shape has two readings that call for opposite actions: a substrate fault, where replacing
+chats is futile because the replacements will fail the same way, or genuinely dead chats, where
+replacing is the only route. `just new` separates them for the price of a chat you would need
+anyway if replacement is the answer. If a brand-new chat delivers and starts a turn, the
+substrate is fine and the stranded chats are dead — archive and replace them. If it expires
+too, stop replacing and repair the app.
+
+The restart itself stays worth doing, because memory pressure OOM-kills workers' own
+`exec_command` sessions, which is more expensive than losing a chat. But price it correctly:
+it is not a free reclaim, it is a reclaim that may cost every chat currently open, so take it
+at a moment when the fleet is between turns and be ready to re-establish all of them.
+
 **The steward filing a queue item is a second agent on that index, and on a slow gate it is
 the one blocking the worker.** One-worker-per-repository is usually read as a rule about
 chats, but a queue filing takes the same single index and runs the same commit gate, and on a
