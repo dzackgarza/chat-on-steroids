@@ -1297,6 +1297,16 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A verification watch that dies takes the verification with it, silently.** The tick's
+guarantee is that no unverified push crosses into the next tick, and that guarantee lives in
+whatever is watching the clocks. When that watcher fails — a script error, the harness killing
+it under memory pressure — nothing announces that three interventions are now unobserved; the
+steward simply stops hearing about them and reads the silence as nothing having happened yet.
+Keep the watcher boring for that reason: plain variables and one `git log` per repository, no
+shell features that can fail, and a final line that names which legs never fired rather than
+exiting quietly. When a watcher does die, re-arm it before doing anything else — the pushes it
+was holding are the only state that was lost.
+
 **A dirty count read while a commit is in its gate measures the tree before the commit, so
 "not banked yet" and "not banking" look identical for minutes.** On a repository whose gate
 walks ten thousand files, a worker can be three minutes into exactly the commit you asked for
