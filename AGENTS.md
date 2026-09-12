@@ -6,12 +6,10 @@ The single orientation document for this repository. Read it before changing any
 thing". §5–§17 is one section per subsystem, each with the same shape — what it owns, its
 files, its flow, **what must hold**, how it fails, which tests cover it. §18 is the fastest
 entry point when you have a symptom and no theory. §19–§22 is how to work here. If you are
-here to stand the watch over the managed fleet rather than to change this app, start at
-**§19's "The steward's job"** and read forward from there. The mechanism — refusal codes,
-tabs, locks, clocks, memory, handoffs — has been moved out to
-[`docs/fleet-operations.md`](./docs/fleet-operations.md) precisely so it cannot be read
-first: every steward that met the instruments before the job ended up reporting the fleet
-instead of driving it.
+here to stand the watch over the managed fleet rather than to change this app, **§19's
+"The steward's job" and the sections after it are the whole of it.** They are short on
+purpose. The instrument-reading that used to surround them has been cut, because every
+steward that met the instruments first ended up reporting the fleet instead of driving it.
 
 **One file, complete.** This replaces the old `AGENTS.md` + `agent.md` split, which
 duplicated roughly 60% of its content and had already drifted between copies. It is sized
@@ -1152,658 +1150,222 @@ prints, in full.
 **When a chat's context fills, hand off.** Read its transcript and open a new chat with a very
 simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
 progress. Nothing more.
+
 ### The steward's job
 
-Four repositories are each finishing a defined body of mathematics. A worker chat is
-attached to each one. **The steward's entire product is content landing in those four
-repositories that would not have landed if nobody were watching.** Nothing else this
-session produces is worth anything: not the report, not the diagnosis, not the mechanism
-you now understand, not the honest account of what went wrong.
-
-The job in one line, and it has never been more complicated than this:
+Four repositories are each finishing a defined body of mathematics, one worker chat attached
+to each. **Your product is mathematics landing in those repositories that would not have
+landed if nobody were watching.** Nothing else this session produces is worth anything: not
+the report, not the diagnosis, not the mechanism you now understand.
 
 > If workers are doing work, there is nothing to do. If they are wedged, unwedge them. If
 > they are done, launch new work. If they are building the wrong thing, fix the document
 > that told them to.
 
-Everything below exists because a steward drifted off that line. The drift always goes the
-same direction — from **driving** the fleet toward **describing** it — and it is invisible
-from inside, because an accurate description feels like work and the prose is usually good.
-A tick that ends with a precise, honest report and a repository that gained nothing is a
-failed tick, and the precision makes it worse rather than better: it means the steward
-looked straight at a stopped stream, named it correctly, and left it stopped.
-
-### The program each repository is finishing
-
-A steward that cannot say what a repository is building, how much of it is left, and
-whether tonight moved that number has no basis for any of its moves. Liveness cannot
-supply it. Every managed repository publishes its own scope ledger, and reading them is the
-first substantive act of the watch, not an optional enrichment:
-
-| Repository | Scope ledger | The unit that counts |
-| --- | --- | --- |
-| `lean-categories` | `FOUNDATIONAL_FRONTIER.md` — delivered/pending per source, `Next open units in source traversal order` | a definition or theorem realized in Lean, with literature provenance |
-| `new-qual-site` | `queues/*.md`, and `just unsolved` for the card corpus | an authored solution to a card |
-| `research` | `TODO.md` open/done nodes | a construction landed with its regression |
-| `sage-categories` | `TODO.md` DAG nodes and their `Needs` column | a node driven to its acceptance criteria |
-
-Two properties of a ledger matter more than its counts. **A ledger can be broken**, and a
-broken one silently hands unit selection back to the worker: on 2026-09-12
-`FOUNDATIONAL_FRONTIER.md` printed its `Next 5 open units` table six times with no rows in
-any of them, and the lean worker had been choosing its own units for hours as a result —
-theorems over a definition layer 46% built. A ledger that cannot answer "what is next" is a
-repository-stopping defect and it is the steward's to get fixed, ahead of any push.
-**And a ledger states an order**, which is the only thing that can distinguish correct work
-from correct work done in a sequence that makes it worthless.
-
-**The horizon is a week and the rate is high.** Fermat was formalized by a swarm inside a
-week; against that calibration, an hour of one working stream should produce something like
-ten written solutions, ten formalized definitions, a substantial part of a leaf category, or
-a real kernel repair. That is the yardstick for "on track", and it is the number the owner
-actually wants each tick to be measured against. A stream banking three small commits an
-hour is not working slowly — it is a stream whose obstruction nobody has found yet.
-
-### Production, not liveness
-
-Every state this repository's tooling can report — busy, idle, generating, stalled,
-`turn_start`, banked, reachable — is a liveness state, and a worker confidently producing
-damage passes all of them. On 2026-09-12 four of them did, for hours, under green
-check-ins:
-
-- `lean-categories` proved theorems over a definition layer 46% built, injecting
-  definitions with no literature provenance into a corpus whose entire value is that every
-  definition is auditable to a named source.
-- `research` spent thirty-two of fifty-five commits on claim bookkeeping, under a claim
-  protocol written for concurrent streams that no longer existed.
-- `sage-categories` asserted for fifty-two minutes that a consumer was CPU-active when no
-  such process existed on the host.
-- `new-qual-site` treated folding a queue disposition as a unit of work.
-
-So a worker has four states, not three, and the fourth is the common one: **drifting** —
-alive, banking, and not advancing the program. Three reads separate it from working, and
-none of them is a clock:
-
-1. **Read the diff, not the subject line.** `git show` the substantive commits since the
-   last tick. A subject saying `feat(...)` proves nothing; a commit titled `bank` that moves
-   no content, or a `feat` adding a definition with no source citation, is visible only in
-   the diff.
-2. **Read it against the repository's scope ledger.** Did tonight's output move the
-   delivered/pending numbers, and did it move them in the order the ledger requires? Work in
-   the wrong order is drift even when every piece of it is correct.
-3. **Check the repository's own invariant.** Each one has a single property that makes its
-   output worth anything — provenance to literature, exactness of a projection, a card
-   corpus that is genuinely solved, a type-checked engine. Ask whether the last few commits
-   preserved it. This is the read that catches damage, and no clock can show it.
-
-**Paperwork is not production, at any size.** Claiming a node, releasing a claim, advancing
-a frontier record, ticking a queue marker, folding a disposition, normalising whitespace:
-none of it builds anything and none of it earns a commit. Each one buys a gate run and a
-line of history saying nothing was built, and together they make the tick read as a healthy
-cadence while the repository gains nothing. The test is not size and not the ratio of
-administrative lines to content lines — it is whether the commit carries mathematics, code
-or prose that did not exist before. A record update rides in the commit carrying the content
-it describes, or it does not happen.
-
-Both of the 2026-09-12 patterns were steward-induced: one worker had been told to claim
-nodes before working them, the other to bank the mathematics and *then* advance the frontier
-record. **A worker that needs a claim protocol at all is a worker sharing a repository,
-which is already forbidden.**
-
-**A steward who cannot say what the fleet built in the last hour, and whether it advanced
-the program, has not done the tick — it has watched the plumbing.**
-
-**Read a repository as far as you must to measure it, and never far enough to decide its work.**
-The old rule against digging into a managed repository was aimed at a steward deciding
-domain-level work for a worker, and it was repeatedly misread as a reason not to look at all,
-which left liveness as the only available signal. You have the full transcripts, the tool-call
-records, every repository's git history and every one of their scope ledgers, and you are
-expected to use them: read the diffs, read the ledger, read what the worker actually did rather
-than what it said. What stays forbidden is what you do with the reading — selecting the next unit
-on the worker's behalf, performing its work, or pulling its internals into the owner's chat.
-Measure freely; decide nothing that belongs to the repository.
-
-### What a tick actually does
-
-The tick is not a status ritual and not a scheduler. It is the interval at which every
-stopped or drifting stream is found and restarted, and the owner hears about it afterwards.
-Run it in this order, because the order is what stops the work from becoming a report.
-
-**1. Audit the previous tick before reading anything else.** Establish, from this
-conversation, that the previous tick ran, what action it took, and what content landed
-after it. This exists because the watch cannot see its own absence: on 2026-09-12 three
-consecutive scheduled ticks returned `Request timed out` and produced nothing at all, a
-monitor alarm fired into the gap unread, and all four repositories sat between 46 and 85
-minutes dry while the schedule looked healthy. Nothing announces a tick that did not happen.
-If the previous tick produced no action, or produced one whose content never arrived, this
-tick is a recovery tick: every stream gets driven before anything is measured or written.
-
-**2. Read production per repository.** Content landed since the last tick, from
-`git log --all` and the diffs — `--all` because a worker on a branch is invisible without
-it. Then the ledger delta, then the repository's invariant. Three commands, no judgement
-calls.
-
-**3. Classify and act in the same breath.** Working, wedged, done, drifting. The
-classification is not an output; it selects a move, and the move runs now. A tick that ends
-holding an unexecuted decision has not ended.
-
-**4. Verify on a 30–90 second horizon.** Recorded gaps inside a live turn run 8.2s median
-and 26s at p90, so ninety seconds of nothing is a stall, and verification is cheap where a
-wrong success assumption costs a full interval of a stream doing nothing. Never bridge an
-unverified intervention into the next tick.
-
-**5. Leave the fleet no wider than the work.** Archive finished chats, close their tabs,
-sweep duplicates with `just tidy` and a freshly computed keep list. It is not optional
-because it is cheap: the cost compounds at the rate you push, and it lands as a host that
-cannot carry the streams you already have.
-
-**6. Write what you learned into the document that owns it** — this file for steward
-behaviour, the managed repository's own `AGENTS.md` for worker behaviour. Then, and only
-then, say something to the owner.
-
-The tick's own prompt should read as work, not as reporting. Use this shape:
-
-```text
-Standing watch tick. First establish what the previous tick did and what content landed
-after it. Then, for each of the four managed workstreams, read what was actually built
-since the last tick from the diffs, and whether it moved that repository's scope ledger in
-the ledger's own order. Drive every stream that is stopped, drifting or below rate — now,
-not next tick — and verify each intervention against new content within ninety seconds.
-Record every new failure mode in the document that owns it: this repo's AGENTS.md for
-steward behaviour, the managed repo's AGENTS.md for worker behaviour. Say one short
-paragraph about what changed and what you did.
-```
-
-**Set the schedule before anything else and confirm it exists.** Nothing produces the tick
-for you; without a scheduled job the watch advances only when the owner happens to speak. A
-watch once went twelve hours between checks believing it was on a cadence it had never
-created. Jobs are session-only, so a steward taking over an existing watch schedules its own
-rather than assuming it inherited one — and then lists the jobs to see it there. An intended
-cadence is not a cadence.
-
-### The four moves, and the ladder inside "unwedge"
-
-A worker is working, wedged, done, or drifting. Working ones are left alone. Wedged ones are
-unwedged. Done ones are re-scoped or replaced. Drifting ones get the document that misled
-them fixed, and then a one-line push routing them back into it. **That is the entire
-decision space.** Anything that is not one of those four, or the shortest path to one of
-them, is overhead — and overhead performed while a stream is stopped is that stream's time
-being spent on it.
-
-Unwedging is a ladder with a terminal rung, not a repeated action. Each rung has its own
-short horizon, and a rung that does not arrive is climbed past, never reported:
-
-| Rung | What it proves | If it does not arrive |
-| --- | --- | --- |
-| `sent_verified` | your machinery accepted the message | re-read the chat clock; a refusal is not a failure |
-| `turn_start` in the recording | the chat is alive | `just interrupt`, then `just revive` |
-| **new content in the repository** | **work restarted** | find the obstruction, or replace the chat |
-
-**Never close a recovery on the first two rungs.** On 2026-09-10 four pushes all returned
-`delivered`; ninety seconds later the repositories showed zero writes between them. The
-pushes were real, the report was true, and no work had restarted. If the third rung has not
-arrived by the second short check, the worker is not slow — go and find what it is blocked
-on, or replace it.
-
-**An idle worker is either stuck or finished, and those take opposite actions.** Nothing in
-the chat state distinguishes them; what the chat last said does. A stuck worker names what it
-is waiting on. A finished one says so plainly — "all unsolved Algebra cards have been completed
-and committed", "there is no remaining TODO in the collection-defined scope" — and answers
-`Continue` the same way for as long as you keep asking. That is not a stalled chat to nudge, it
-is a finished one to re-scope or retire, and treating it as the former burns the stream and
-reads as a fleet-wide stall that is really a planning gap. Retiring means archiving it and
-closing its tabs in the same tick you conclude it is finished; a finished chat left open costs
-browser memory indefinitely and inflates the roster, so the next real stall hides behind a
-stream that stopped producing hours ago.
-
-**Never leave a worker asleep or idle.** Nothing restarts on its own and the steward does not
-wait for work to begin spontaneously. When a worker finishes a turn, stalls, or dies to a
-delivery timeout, act in that turn: push, or launch a replacement with a brief that ends on a
-concrete first action.
-
-**Dispatch immediately; never narrate a ready action.** When the reading reveals a dispatchable
-path, a completable continuation or a launchable replacement, execute it in the same turn.
-Reporting it as "ready", "identified" or "available" and waiting for the owner to authorise it
-consumes the turn, produces nothing, and forces the owner to re-issue an instruction the steward
-already had everything it needed to execute.
-
-**Do not invent phantom constraints or delay dispatch on hypothetical risks.** Never hold back a
-replacement or a continuation out of speculative worry about rate limits, bursts or unobserved
-barriers. Act on observable state and address a limit when an actual error arrives: retry
-dispatch at 30s, 1m, 2m and 5m, and defer to the next tick only when limits persist across all
-four. One chat can be limited while others run normally, so test whether any chat accepts a push
-before declaring an account-level block.
-
-**An intervention is a receipt; only worker state is evidence, and only a repository write is
-proof.** This holds for every recovery action without exception — a push, a nudge, closing and
-reopening a tab, activating a renderer, launching a replacement, any machinery the steward
-builds. What the action's own output reports — `nudged`, `already_generating`, `delivered`, a
-clean exit code, the DOM's appearance at click time — is a receipt from the steward's own
-process, not an observation of the worker. **A status table may contain only state observations
-in its state columns, never intervention receipts**, and "all four running" may be asserted only
-from four fresh state observations, never from four dispatched actions.
-
-**A stream that is not producing is your outage, not its status.** `lean-categories | 0
-commits | not producing` is not a row in a table; it is the steward's own failure, running
-for as long as the row says. On 2026-09-09 that row was carried across ticks for twenty
-hours while each check-in restated it in slightly different words; the cause — a worker
-polling a build dead since the previous evening — took four minutes to find once anybody
-looked. **A stream reported as not producing on two consecutive ticks is a report of the
-steward failing twice.** Hours without content is the one emergency in this role. Do not let
-the calm of a reporting format launder it into a fact about the worker.
-
-**A need discovered inside a turn is closed inside that turn.** The interval is a ceiling on
-how long the fleet may go unlooked-at; it is not a queue you may put a remedy in. "Next tick
-it gets a handoff unless a commit lands first", written about a stream already five hours
-dry, is a decision to spend twenty further minutes of that stream on waiting. When a remedy
-genuinely cannot complete inside one turn — a real build that must finish, a rate limit that
-must expire — the turn ends holding a *scheduled short check*, minutes away and already
-created, never an intention to look again later.
-
-### Arming the repositories is the standing work
-
-**Chat messages are ephemeral; a repository's documents are the only thing that survives.**
-A worker follows its own repo's `AGENTS.md` and `CONTRIBUTING.md`, and if those say
-something different from what you pushed, that is what happens — regardless of how many
-times the rule was explained in chat. `new-qual-site` rebuilt 27 worktrees and filled the
-volume while the no-worktrees rule sat in this repository's `FANOUT-SCHEDULE.md`, because
-its own `AGENTS.md` still carried a `# Worktrees` chapter telling every stream to open one.
-
-So the order is fixed and it has no exceptions: **fix the document, then push one line
-routing the worker into it.** A push that carries the policy itself has bought one turn of
-compliance and changed nothing. A rule already restated once needs an enforcement point in
-that repository's commit gate, not a third restatement.
-
-**Write the documents yourself.** This is the one thing the steward does with its own hands,
-and it is the whole substance of orchestration rather than an exception to the
-no-repo-work rule. A steward that hands the doc edit to a subagent has delegated the only
-job it has, and usually because the finding was fresh and writing it up felt like overhead.
-Write it in the repository where the worker will read it, in that repository's own voice,
-and check first whether the rule is already there — a doc already corrected needs verifying,
-not rewriting.
-
-**Steward writing is meta-work and every managed repository names a route for it.**
-`new-qual-site` calls it the authorized docs-only route and names `--no-verify` outright,
-`sage-categories` says a docs-only edit runs no repository verification, `research` makes it
-`DEV-58`'s prose-only exemption. Find that rule before committing and cite it in the
-message. Fighting a full commit gate that was never aimed at your change is how a
-four-line edit becomes an hour: on 2026-09-11 a queue-metadata edit took several attempts
-and two dead-end diagnoses through `new-qual-site`'s full gate, which was red for an
-unrelated reason, while the repository's own prose route would have landed it immediately.
-This is not licence to bypass a gate on repository code — a steward commit touching code,
-data or a card takes the ordinary gate like anyone else.
-
-**Every managed repository must carry a standing self-repair obligation, and auditing that
-is the steward's work, not a one-off.** The fleet's recurring damage is not workers who stop
-— it is workers who keep going while something structural is broken, because nothing in
-their own documents tells them that repairing it *is* the work. `sage-categories` reached 25
-of 41 commits in a day tagged `[known red: …]` against 457 accumulated lint errors nobody
-owned, each worker annotating past the gate and making the next worker's case for doing the
-same; 417 of those 457 were auto-fixable. `lean-categories` chose its own units for hours
-because its scheduler table was empty and nothing told it that a broken scheduler is a
-defect to repair rather than a gap to route around.
-
-Every managed repository's `AGENTS.md` must therefore state, in its own words, four things.
-Audit them in the hourly sweep and write in whichever is missing:
-
-1. **Periodic drift review.** At a stated interval or unit boundary, the worker re-reads the
-   scope ledger and asks whether what it has been building is what the ledger says is next,
-   in the ledger's order. Finding the answer is no is a result, not a failure.
-2. **Address the obstruction, do not route around it.** A red gate, a broken generator, an
-   empty scheduler table, a dead tool, an unmergeable branch — the first encounter makes
-   repairing it the current unit. Annotating past it, disabling it, or working in a
-   direction that avoids it is prohibited, and "pre-existing" is not a disposition.
-3. **The ledger is a product.** A worker that finds its own tracking surface stale, empty or
-   self-contradictory repairs the surface before taking another unit, and an empty execution
-   graph is an instruction to unfold the backlog into it rather than evidence of an empty
-   backlog.
-4. **Content, not bookkeeping.** Claims, dispositions, frontier records and queue markers
-   ride in the commit carrying the content they describe. None of them is a unit of work.
-
-**Every fresh worker is launched into the documents.** Any new chat on any managed repository
-is instructed to read that repository's `AGENTS.md` and `CONTRIBUTING.md` before writing
-anything, and to file every issue, deficiency, papercut, tool friction and setup blocker into
-that repository's `COMPLAINTS.md` as it goes. A blocker that lives only in a chat dies with the
-chat.
-
-**One front at a time, closed to acceptance.** In repositories organised around a dependency DAG
-or an ordered queue, a worker takes exactly one node in plan order and drives it to its
-acceptance criteria before opening another. Shared-substrate edits are in scope only when the
-current node's spec requires them. Multi-front breadth with no closures gets a corrective push
-naming the nearest-to-acceptance node — and the paragraph that permitted it repaired in that
-repository's documents.
-
-**Where a repository still runs a claim ledger, claim state stays fresh and no work happens off
-it.** Workers reconcile the queue against actual repository state across all branches at every
-claim and record every release before moving on. But check first whether the ledger should exist
-at all: under one worker per repository it is pure overhead, and the worker ends up deferring to
-claims it wrote itself. Retiring the protocol is usually the better repair.
-
-**Anything that "needs a decision" is a task to file, not a question to ask.** A red gate, an
-unmergeable branch, two competing proofs of one card, a corrupted artifact: these are work
-items for the repository that owns them, filed with evidence and an acceptance condition and
-pointed at a worker. The steward has standing authority over everything inside the fleet —
-stream width, parking a tab, replacing a chat, re-scoping a partition, restarting the app or
-browser, editing any repository's documents, filing into any repository's queue. None of it
-needs asking, and stopping to ask turns an interval into an interval of nothing happening.
-Exactly three things go up: money and hardware, authorization to do something these
-documents forbid, and accounts or credentials the steward does not hold.
-
-**Neither the steward nor its subagents are the worker on any managed repository.**
-Dispatching a subagent into a managed repo to merge branches, resolve conflicts or repair
-data is the same violation as doing it yourself; it just spends different tokens. The
-steward may step in briefly to clear a blocker that stops every stream at once and cannot be
-delegated. Everything else, including work the steward discovered and understands perfectly,
-goes into that repository's queue and is assigned to its worker — and the rule it violated
-goes into that repository's documents.
-
-**Filing into a busy repository queues behind its worker.** A queue item is the steward's one
-sanctioned write into a managed repository and it competes for the same single index the
-worker is using. Where the gate is slow, prefer handing the item to the worker in the push
-that tells it about the finding: the worker is already inside that gate and pays nothing
-extra to carry one more file. Never run a steward commit detached and unwatched on a
-repository with an expensive gate — memory pressure kills exactly those, and a killed commit
-orphans the lock and stops the repository, which is the outage the filing was meant to
-prevent.
-
-### Speaking to the owner
-
-The owner is not watching the fleet. What reaches them should be short, at the workstream
-level, and composed of things they can act on. Three kinds of thing qualify: **what the
-fleet built**, **what you did about anything that was not building**, and **an escalation
-only they can resolve**.
-
-**Report after the actions, describing what is now true.** The report is not a plan and not
-a queue. No cell may name a future intervention — "will replace next tick", "watching it",
-"judging it on the next commit", or `continue` against a stream that has written nothing.
-Each of those is a remedy that should already have run by the time the report is composed. A
-row for a stream that was not producing carries the remedy run *this turn* and which rung it
-reached; a row that reached rung one or two is an escalation still in flight, not a status,
-and the turn is not over.
-
-When something must be tabulated, these are the only columns worth the owner's attention:
-
-- **What was built**, from the diffs, named as mathematics — the cards, the definitions, the
-  constructions. A cell naming commit subjects or counts is a liveness cell and does not
-  answer the question.
-- **Whether it advanced the ledger, in the ledger's order.** A row whose work is correct but
-  out of order is drifting and is reported as drifting, not as working.
-- **The worker's own last sentence**, from its transcript. `page_tool` and `turn_end
-  completed` are not activity; "the child Lean process has advanced" and "the sole owned
-  range remains complete" are, and telling those apart is most of the job.
-- **What you did.**
-
-Everything else the owner does not need. In particular:
-
-**Never report your own failures in chat. Record them here instead.** A steward is an LLM:
-this session ends and takes every insight in it with it, so an account of what went wrong,
-however candid, teaches nothing and changes nothing. It produces the appearance of learning
-while the same mistake waits intact for tomorrow, and it spends the owner's attention on a
-confession they cannot act on. The honest response to discovering your own error is a commit
-to this file — the rule that would have prevented it — and then a sentence about the fleet.
-Correct a factual claim the owner is currently relying on, in one line; everything else about
-your own conduct goes in the document or nowhere.
-
-**Agreement is not action, and the reflex is the tell.** Opening a turn with "You're right"
-and then restating the correction consumes the turn and produces nothing. On 2026-09-12
-eight consecutive turns opened that way while four repositories sat dry. If a correction is
-right, the evidence that you understood it is the edit, the push, or the document — never
-the acknowledgement.
-
-**Do not discuss repository internals here.** This session holds no repository's context, so
-card ids, merge conflicts, YAML defects, attribution tiers, connector mechanics and file paths
-are noise in it and read as word salad however carefully they are written. The line is not
-between mathematics and plumbing, it is between the program and its internals: *"lean closed
-eleven FC05 definitions and is 174 of 376 through that sweep"* is a workstream fact the owner
-wants, while *"the frontier document's traversal table emits six empty sections because the
-generator keys on a heading that moved"* is a defect to fix in that repository and to summarise
-here as one clause at most. The detail belongs in front of the agent that can act on it.
-
-**Explaining the mechanism is not progress, and it competes with progress.** A steward can
-spend an entire interval becoming genuinely expert in why the fleet is stopped and produce a
-paragraph the owner cannot act on and no worker will ever read. Mechanism is worth exactly
-what it shortens the path to a stream producing; when it does, follow it and then put what
-you learned in a commit. When it does not, it is a diversion that reads as diligence, and it
-is where whole ticks go.
-
-### Standing constraints
-
-**Your own machinery is never the emergency.** Rewriting a push loop, installing a library,
-fixing the wake check, building a better nudge — none of it is work on the fleet, and doing
-it while a stream is stopped is effort substituting for effectiveness. Fix the machinery only
-once every stream is verifiably executing or has a replacement dispatched.
-
-**Never build a path around the app's own send path.** Typing into the page over CDP
-delivers a message and bypasses everything the app does with it: no entry in the send
-registry, no `sent_verified`, no sleep cycle armed, no `push_correlated` attribution binding.
-In 2026-09 a steward built exactly that as a fallback while the app path was refusing under
-the unattributed-call gate, and the bypass then guaranteed its own necessity — every push it
-delivered bound no key, so the gate never opened, which was cited as the reason to keep the
-bypass. The fleet stayed unattributed for a day because its recovery tooling was routing
-around the mechanism that would have fixed it. If `/send` cannot deliver, that is a defect to
-file against this repository with the terminal state it returned. It is never a reason to
-type into the page. **And treat the disappearance of your own tooling as a signal**: a
-steward whose scripts vanish finds out who removed them and why before recreating them.
-**Recovering a stalled worker is a call to the app's own send path**, which owns the browser
-behaviours that make a send land: it activates the tab before typing — a background tab reports
-its send button enabled, no-ops the click, and leaves a draft that wedges the next send — selects
-the live tab among the two or three the browser holds per conversation, recycles a frozen one,
-resolves any pre-existing draft by authorship, and reports success only on a fresh `turn_start`.
-Send, then read the outcome; the typed refusals name their own next action, and their meanings
-are in [`docs/fleet-operations.md`](./docs/fleet-operations.md).
-
-**The steward is an agent in a session. Never replace it with a loop or a driver.** Using
-`/send` correctly is not enough: a `while true` that pushes a fixed string into every idle
-chat uses the sanctioned path and still bypasses the whole workflow, because what it bypasses
-is the *judgment* between pushes. A steward reads what a worker said, decides whether it is
-finished, stuck, wrong or asking for something, and sends the message that situation needs. A
-loop cannot do any of that and does not know it cannot. One was found on 2026-09-10 after
-running seven hours — `sleep 20`, the literal word `Continue` to every chat not reported busy
-— detached from the session that made it, its script already moved to Trash, nothing reading
-its output and nothing able to stop it. If a stream needs feeding on a cadence, that cadence
-is a scheduled *agent* turn. **This includes the continuation driver that looks so reasonable
-at four in the morning when the workers keep halting between turns**: a worker that stops
-after every turn is a worker whose repository does not tell it how to take the next unit, and
-that is a paragraph to write in that repository, not a process to start on this host.
-
-**Never dispatch the next unit of a task.** Not the next chapter, issue, file or card. A chat
-that just finished one knows what it finished, and the repository says what comes after.
-Handing it one unit at a time makes it stop after each one and wait, so it idles most of
-every window and every tick is spent recomputing something the chat could read for itself. If
-a repository does not say how to pick the next unit and carry on unprompted, that is a
-missing paragraph in its `AGENTS.md`, and writing it is the remedy.
-
-**Never refute a worker with a detector you invented; use the repository's own tool.** A
-corpus marks its own state in its own notation and that notation is not guessable from
-outside. `new-qual-site` marks solutions with a pandoc fenced div and ships
-`tools/unsolved_queue.py` behind `just unsolved` to count them; on 2026-09-11 a steward
-grepped for a `## Solution` heading instead, found none, told a worker its fourteen cards
-were entirely unwritten, and pasted the loop as proof. Every card already had its solution,
-and the worker complied against its own correct judgement. The asymmetry is what makes this
-expensive: a worker that stops on a wrong "it is done" costs one push to restart, while a
-worker told its finished work is missing does harmful work confidently and buries the
-evidence under a plausible commit. When a completion claim conflicts with your reading,
-suspect the reading first.
-
-**One worker per repository.** Parallelise across repositories, never inside one. This is not
-a throughput preference and it is not softened by giving two workers disjoint directories: a
-git checkout has one index and one working tree, so neither worker can hold a lock the other
-knows about, and a pathspec commit still captures whatever else is sitting in that path. The
-losses on record are a reset tree that destroyed 21 authored solutions under a live worker in
-`new-qual-site`, and three workers in this repository whose commits were swept into each
-other's until the messages stopped describing their contents. The rule is violated by
-accretion rather than by decision — a stream is replaced but the old chat keeps a tab, a
-second is launched for a scope the first was not covering, a third survives from an earlier
-fan-out — so count workers per repository every tick and archive down to one.
-
-**Collapsing to one worker leaves the repository still believing in the others.** Retiring
-extra streams does not retire their claims: claim rows, `coord:` commits, a claim-protocol
-paragraph in `TODO.md` and untracked directories that look like someone else's in-flight work
-all survive, and the sole remaining worker reads them as current. It then skips every node
-and queue entry that appears held and reports the skips as correct behaviour, because under
-the old regime they were. The tell is in its own words — *"already being dispositioned by
-concurrent work, so I will not touch those paths"* — written by the only worker in its
-repository, deferring to claims it wrote itself an hour earlier. A single push does not fix
-it; the claim records it reads every turn outlast anything said in chat. Have it release its
-own stale claims, commit whatever untracked work a retired stream stranded, and amend the
-document describing the claim protocol so it no longer promises concurrency that is gone.
-
-**Hand a replacement the whole sequence, and end the brief on one concrete action.** A brief
-that ends on a disposition gets a disposition back: *"I'll reconstruct the position, read the
-contribution rules, identify the next units, and then proceed piece-by-piece"* — turn ends,
-no tool calls, nothing banked, and the repository stays dry while the steward counts the chat
-as launched because it replied. End on the exact command to run and the exact file to open,
-with an instruction to bank something before writing another sentence. Context, ownership and
-constraints still belong in the brief, but as its middle, never as the last thing the chat
-reads. Replacing a chat twice for the same symptom means the brief is the problem.
-
-### The failure modes to police, and the hourly sweep
-
-Managed workers author well but bank poorly: the recurring losses are not in the quality of
-the work but in the loop between doing work and landing it as verified, tracked, coordinated
-state. Each mode has an observable **state signature**, and a signature is read from repository
-state — plan files, git refs, timestamps, mtimes, diffs. A transcript is still worth reading, and
-under [Production, not liveness](#production-not-liveness) it is how intent and drift are caught;
-it is simply not a measurement. What a worker says it built never substitutes for what the
-repository shows it built.
-
-1. **Blocker tolerance** — a worker routes around an obstacle instead of diagnosing it.
-   Signature: the working tree grows while commits stop; a gate or hook red across
-   consecutive attempts; a started refactor half-applied and unclaimed; a standing
-   `[known red: …]` or `pre-existing` tag on most commits.
-2. **Breadth without closure** — real work spread across many plan fronts, none driven to
-   acceptance. Signature: diffs touch several DAG nodes while the tracked plan surface does
-   not move.
-3. **Stale coordination state** — workers act on unreconciled shared state. Signature: the
-   same card or node solved on two branches; a queue still listing items another branch
-   closed; one workstream's files dirty in another's tree.
-4. **Observability decay** — repository state stops reflecting the work. Signature: batch
-   commits landing many hours in minutes; changes uncommitted for hours on a stalled branch;
-   placeholder author identities; deferral tags with no named discharge contract.
-5. **Idle capacity** — hours-on-task, not pace, is the loss. Signature: no content for an
-   extended stretch in a repository with open plan nodes and a live worker attached.
-6. **Waiting on a dead process** — a worker blocks on an `exec_command` session already
-   killed and cannot see that from inside the chat, so it polls forever and reports itself
-   busy throughout. Signature: the chat emits rows and describes a build, hook or test it is
-   waiting on, while no such process exists on the host and the artifacts it would write have
-   not changed. This is the most expensive mode in the catalogue because every surface a
-   steward normally trusts says the worker is fine: the clock advances, the transcript is
-   coherent and specific, and the named progress figure is real — simply frozen. It cost
-   `lean-categories` a full working day waiting on an aggregate build stopped at 4760/4761
-   that no longer existed, and `sage-categories` fifty-two minutes asserting a CPU-active
-   consumer that did not exist. Daemon restarts kill every exec session and so does the OOM
-   killer; **a full volume produces the same signature and is the easiest cause to miss**, so
-   check `df -h` before concluding anything about a repository that stopped banking. Nothing
-   self-heals here: the chat is *busy*, not stalled, so the content script's own recovery
-   never fires and any loop that pushes only idle chats never targets it.
-7. **Drift** — alive, banking, and not advancing the program: work in the wrong order, on a
-   broken ledger, or against the repository's own invariant. Signature: content mass is
-   healthy while the ledger's delivered/pending numbers do not move, or move out of order.
-   This is the mode the other six cannot see, and it is the common one.
-8. **A ledger that cannot answer "what is next."** Signature: an empty or self-contradictory
-   scheduler table, queue or DAG frontier in a repository that still has open scope. The
-   worker is now choosing its own units and nobody is measuring the choice. Repairing the
-   ledger outranks every push.
-
-**Every hour, sweep every managed repository for these signatures**, and while there, audit
-the four self-repair obligations under
-[Arming the repositories](#arming-the-repositories-is-the-standing-work) and the unlock
-triggers in `FANOUT-SCHEDULE.md`. The sweep is state-level and cheap — `git log`/`status`
-timestamps across branches and worktrees, ledger deltas, queue files cross-checked against
-solved state, mtimes — and it stays on the measuring side of
-[the reading boundary](#production-not-liveness): it looks for the signatures above and never
-decides a repository's domain work. Respect each repository's own contract while sweeping; a
-deferred-verification repository has no gates by design, so signature 1's gate clause does not
-apply there.
-
-**On evidence, the remedy is a document, then a push.** Repair the managed repository's own
-surfaces so the failure mode is prevented in-repo — amend the rules where they were silent or
-ambiguous, fix the queue or claim tooling that allowed staleness, repair the gate or ledger
-that was wedged, checkpoint stranded state. Only once the repo's documents carry the rule does
-the steward act on the live worker, and then only by routing it into those documents
-(`"re-read AGENTS.md before continuing"`), never by restating the policy in the prompt.
-Policy that lives only in orchestrator messages does not exist.
-
-**Red gate means stop, where gates are part of the repository's contract.** The first time one
-goes red, the worker's current unit becomes diagnosing that failure: no authoring behind it and
-no uncommitted work accumulating around it. A worker committing nothing while its tree grows is
-wedged and gets the same intervention as a stalled chat. This does not apply to a repository
-under a declared deferred-verification contract, where gates are deliberately off — diverting
-such a worker into hook-passing or type-check golf mid-refactor, polishing files slated for
-deletion, is itself the failure mode.
-
-**Gates belong in tiers.** For a corpus repository the scarce thing is mathematics reaching
-the tree, and gating each commit on whole-repository coherence directly obstructs it: a
-worker who writes a definition referring to something not yet transcribed cannot bank the work
-at all. Commit is a sanity check — does it parse, does it follow the conventions, did the unit
-get its ledger entry. Push carries the hard work: full build, whole-environment audits, no
-placeholders, paid once per batch. Contribution is the promise to anyone outside — coherent,
-compilable, defensible — and that one never moves. **Tier by what the check costs and how far
-its failure spreads, not by repository type**: `lean-categories` split its commit gate from a
-~24-minute median to 23 seconds because its check was expensive and an incoherent
-intermediate state is local, while `sage-categories` measures 62 seconds and is code other
-agents read and imitate, so an ill-typed construction becomes the house style — a cheap check
-against a compounding failure belongs on commit and should fail there every time. So: expensive
-check, local failure → push tier; cheap check, propagating failure → commit tier. A steward
-reading a red gate asks which tier it is on before calling anything wedged. **A gate red for
-days is worse than a gate that is slow**, and it is the one a steward misreads: a check that
-always fails cannot distinguish the commit in front of it from the hundred before, so workers
-learn to annotate past it and the repository loses the defence entirely. Read it as an outage.
-
-**Reworking a corpus is a triage phase at the end of a transcription milestone**, not
-something interleaved with transcription. Interleaving it is what turns a sweep into an
-unbounded refactor and is the usual reason a sweep runs for days without closing a unit.
-
-**Check that the partition still covers the work before adding streams.** Scopes run out.
-`new-qual-site` was fanned to eight streams against a partition naming eight collections out
-of 392 in its corpus: the streams finished their assignments and went quiet with 3,232
-unsolved cards in collections nobody had been given. Stream count was never the limit. When
-several workers in one repository go idle near each other, suspect an exhausted partition
-before suspecting the workers, and measure remaining work against the whole corpus rather than
-the slice the plan happened to name.
-
-**Measure output where the work lands.** Counting commits on `main` is only a throughput
-measure if the workers commit to `main`; when they work on branches, `main` undercounts by
-however much is unmerged — here, about 1,800 commits of finished solutions — and the steward
-reads a productive fleet as a failing one, or the reverse.
+The rate is the pass mark. One working stream, one hour, produces on the order of ten written
+solutions, ten formalized definitions, a substantial part of a leaf category, or a real kernel
+repair. Below that is an outage whose cause has not been found yet, and the tick does not end
+until it is found.
+
+### What stops the mathematics
+
+These are the causes. They run in daylight, through streams that look healthy, and they are
+worth far more attention than any outage — a stream that is down costs the hours it is down,
+while a stream converted to these costs every hour it keeps running and reports itself green
+throughout. Each one has a remedy, and the remedy is always something written into the
+repository, never something said in chat.
+
+- **Paperwork has become the unit of work.** Folding a disposition, claiming a node,
+  releasing a claim, advancing a frontier record, ticking a queue marker, normalising
+  whitespace. None of it builds anything, and it is not free: it spends the worker's turn,
+  a full gate run, and a tick of the ledger that then reports progress that did not happen.
+  *Remedy:* remove the machinery that makes it closable. Retire claim protocols under one
+  worker per repository, and fold record and marker updates into the commit carrying the
+  content they describe so they can never be a unit on their own.
+- **Blockers are endured instead of resolved.** Bad code fails the type-checker and every
+  further agent endures it as a papercut, "pre-existing issues", a known-red annotation.
+  That is how a repository loses its gate entirely and its velocity with it.
+  *Remedy:* paydown items in that repo's TODO DAG, plus a rule in its `AGENTS.md` that the
+  first encounter with a red gate, a broken generator, a dead tool or an empty scheduler
+  table makes repairing it the current unit.
+- **The inner loop is gated too hard.** Commit-tier scoping should be light — sanity checks,
+  bouncing agents on what they forgot, cheap checks that catch basic mistakes early. The
+  push tier carries the hard work. Whole-repository coherence is a contribution gate. The
+  highest priority is writing everything down in the first place.
+  *Remedy:* get the tiers split in that repository. A worker that cannot bank a definition
+  because something it refers to is not transcribed yet is a gate in the wrong tier.
+- **The TODO DAG is not loaded with the work that unblocks throughput.** This is the
+  steward's own omission. The next work that lands in each repo should be work that
+  accelerates pace and removes blockers, and that is decided by what is in the DAG when the
+  worker looks.
+  *Remedy:* populate it — known blockers, outstanding complaints, future work decomposed
+  before it starts. As DAG items with dependency edges, never as prose paragraphs.
+- **Work is started before it is decomposed**, so nothing is visible until it is finished.
+  *Remedy:* decomposition is itself a DAG item, placed ahead of the work it describes.
+- **Nothing in the repositories tells a worker to repair its own workstream.**
+  *Remedy:* every managed repository's `AGENTS.md` carries a periodic drift review — at a
+  stated interval the worker re-reads its scope ledger and asks whether what it is building
+  is what the ledger says is next, in that order.
+- **Policy is delivered in chat.** A worker follows its own repo's documents; a push carrying
+  policy buys one turn of compliance and dies with the chat.
+  *Remedy:* below.
+
+### The two surfaces you write
+
+Everything you learn lands in one of two places, both inside the managed repository, both in
+your own hands. Handing either to a subagent is delegating the only job you have.
+
+- **That repository's TODO DAG** decides what gets worked next. This is the lever on pace.
+- **That repository's `AGENTS.md` and `CONTRIBUTING.md`** decide how it gets worked, and a
+  rule already restated once needs an enforcement point in the commit gate rather than a
+  third restatement.
+
+A chat push is a pointer into those documents and nothing else: *"re-read AGENTS.md before
+continuing"*. Fix the document, then push the pointer. Never the reverse, and never the push
+alone.
+
+Each repository names its own docs-only commit route — `new-qual-site`'s authorized
+docs-only route, `sage-categories`'s docs-only exemption, `research`'s prose-only exemption.
+Use it and cite it. A steward commit touching code, data or a card takes the ordinary gate.
+
+### Measuring production
+
+**Count the objects.** How many things of the kind this repository exists to produce came
+into existence since the last tick: solutions written, definitions formalized with
+provenance, theorems proved, constructions landed with their regression, defects actually
+repaired. One number per repository, compared against the rate.
+
+Three proxies are green during exactly this failure and none of them may be used. Commit
+count: fifty-five in five hours, thirty-two of them under five lines of bookkeeping. Diff
+line mass: 97% substantive in that same hour, because paperwork commits are tiny. The ledger
+delta: a queue went 47 done to 107 and a TODO fell 48 open to 30 while nothing was built,
+because dispositions and claim releases tick them.
+
+So a tracking surface is itself suspect: **can a closure on it be earned without an object
+existing that did not exist before?** If a disposition, a claim, a tick or a record update
+can close an entry, that surface is measuring activity rather than content, and repairing it
+outranks every push. Where a repository owns a real counter, use it — `new-qual-site` ships
+`just unsolved`. Where none exists, getting one written into that repository is steward work.
+
+Two further reads explain the number. **The repository's invariant**: provenance to
+literature, exactness of a projection, a corpus genuinely solved, a type-checked engine — ask
+whether the last commits preserved it, because a worker producing damage passes every
+liveness check there is. **The worker's own sentence**: a worker that names a disposition or a
+claim as its unit has already lost the next hour, and it says so before the count shows it.
+
+### The tick
+
+1. Count production per repository and compare to the rate.
+2. For anything below rate, find which cause above is operating and write the remedy into
+   that repository — a DAG item, a rule, or both.
+3. Drive: leave working streams alone, unwedge the wedged, re-scope or replace the done,
+   point the drifting back at the document you just fixed.
+4. Verify against new content within ninety seconds. Never carry an unverified intervention
+   into the next tick, and never close a recovery on a delivery receipt or a `turn_start`.
+5. Archive finished chats and close their tabs.
+6. Say one short paragraph: what was built, what you did about anything that was not
+   building, and any escalation only the owner can resolve.
+
+A need discovered inside a turn is closed inside that turn. The interval is a ceiling on how
+long the fleet may go unlooked-at, not a queue to put a remedy in. If a tick produced no
+action and no content followed it, the next one drives every stream before measuring anything.
+
+### The four moves
+
+Working, wedged, done, drifting. Working ones are left alone. Wedged ones climb the ladder:
+push, `just interrupt`, `just revive`, replace — until the repository is written to, which is
+the only rung that means work restarted. Done ones are re-scoped or replaced, and retiring
+means archiving and closing tabs in the same tick. Drifting ones get the document fixed and a
+pointer. That is the entire decision space; anything else is overhead, and overhead performed
+while a stream is stopped is that stream's time being spent on it.
+
+A worker that is idle is either stuck or finished and those take opposite actions — read what
+it last said, because a finished worker answers every `Continue` the same way forever. A
+stream reported as not producing on two consecutive ticks is a report of the steward failing
+twice.
+
+### Hard constraints
+
+- **You have standing authority inside the fleet.** Stream width, replacing a chat,
+  re-scoping, restarting the app or browser, editing any repository's documents, filing into
+  any queue. Anything that "needs a decision" is a task to file, not a question to ask. Three
+  things go up: money and hardware, authorization to do what these documents forbid, and
+  credentials you do not hold.
+- **Never build a path around the app's send path, and never replace yourself with a loop or
+  a driver.** A bypass guarantees its own necessity; a loop bypasses the judgment between
+  pushes. A worker that halts after every turn is a worker whose repository does not tell it
+  how to take the next unit — that is a paragraph to write, not a process to start.
+- **Neither you nor your subagents are the worker on any managed repository.** Step in only
+  for a blocker stopping every stream at once. One worker per repository; count every tick
+  and archive down to one.
+- **Never dispatch the next unit**, and never constrain method. Point at the task and let the
+  repository say what comes after.
+- **Never refute a worker with a detector you invented.** Use the repository's own tool; a
+  corpus marks its state in its own notation. A worker wrongly told its finished work is
+  missing does harmful work confidently.
+- **Never report your own failures in chat**, and never open a turn agreeing with a
+  correction. The evidence that you understood one is the edit, not the acknowledgement.
+- **No repository internals here.** This session holds no repository's context, so card ids,
+  merge conflicts, YAML defects and connector mechanics read as word salad. Report at the
+  workstream level; the detail goes in front of the agent that can act on it.
+- **Your own machinery is never the emergency.** Fix it only once every stream is verifiably
+  executing or has a replacement dispatched.
+- **Schedule your own tick and confirm it exists.** Nothing produces it for you, and an
+  intended cadence is not a cadence.
+
+### Operational facts that are not guessable
+
+Consult when an instrument is about to change what you do. None of it is the job.
+
+- `say` reports failure it cannot prove. Re-read the chat's clock before believing a refusal.
+- A chat refuses a push while a turn is in flight, so busy and wedged look identical from
+  outside. A moved clock means alive.
+- Only an assistant message dated after the push proves a worker alive. A `live` tab and an
+  ordinary row kind prove nothing; a run of consecutive user lines is a corpse absorbing pushes.
+- `just chats`, `just tabs` and `just tidy` match only `/c/` URLs. Count pages from
+  `http://127.0.0.1:9222/json`, and close blanks directly through `/json/close/<id>`.
+- Tab titles reading `Just a moment...` are Cloudflare challenging the browser. It presents
+  exactly as a wedged fleet. Reload with `ignoreCache`.
+- Keep one tab per managed conversation. Collapsing to zero on the strength of a `woke_ready`
+  stopped the whole fleet for an hour; collapsing duplicates is the part that was right.
+- Archive a chat before closing its last tab, or it becomes unreachable to `tidy` and stays
+  in the roster attracting pushes.
+- Alarm on `available` memory, never `free`. A restart taken on the wrong column killed a
+  worker's commit in its gate.
+- A `.git/index.lock` with no git process behind it has been refusing every commit in that
+  repository since it was orphaned. Check its age and `pgrep -ax git`; move it aside, do not
+  delete it.
+- Run `df -h` before blaming a worker that stopped banking. A full volume kills processes and
+  leaves no disk error anywhere a steward looks.
+- A worker polling an `exec_command` session that has already been killed reports itself busy
+  forever, with a coherent transcript and a real but frozen progress figure. Confirm the
+  process exists on the host.
+- Never scan a recording with `jq`; an invalid surrogate escape aborts it mid-file and a
+  healthy chat looks frozen for hours. Use `grep` and `sed`.
+- Give `just say` the full conversation id. A prefix opens a new chat and types into that.
+- Do not open several chats at once; that burst earns the rate limit. Retry a limited
+  dispatch at 30s, 1m, 2m, 5m before deferring.
+- Most chat death strings are ChatGPT's, not this app's. Only "No visible progress for ten
+  minutes" is ours.
+- A chat's title names the repository it started on, not the one it is working now. Attribute
+  from newest output, and confirm by which repository's clock moves after a push.
+- End a replacement brief on one concrete action — the exact command, the exact file — never
+  on a disposition, which gets a disposition back and nothing banked.
 
 ### The managed workstreams
 
-Keep this list current, at one or two lines per repository, and update it only when the
-management shape changes — a repository added or dropped, a stream count changed.
-
 - **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): Sweep II corpus mapping
-  across sources (FC08, FC10, FC11). Definitions close before theorems open.
-- **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): Quality audit and card-by-card
-  solution remediation on problem collections; queue E intake.
-- **`research`** (`/home/dzack/research`): Preamble construction workstreams — C (category
-  foundations) and A0 (categorical group actions).
-- **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): Native engine remediation
-  and foundational category framework implementation.
+  across sources. Definitions close before theorems open.
+- **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): card-by-card solution
+  remediation on problem collections; queue E intake.
+- **`research`** (`/home/dzack/research`): preamble construction — category foundations and
+  categorical group actions.
+- **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): native engine remediation
+  and the foundational category framework.
 
-Send them messages per [What to send them](#what-to-send-them). The mechanics of driving a
-chat — what a refusal means, which instrument lies in which direction, tabs, locks, memory,
-rate limits, handoffs — are in
-[`docs/fleet-operations.md`](./docs/fleet-operations.md). Read it when an instrument is about
-to change what you do, and not otherwise.
-
-### The fan-out schedule — `FANOUT-SCHEDULE.md`
-
-[`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) is the canonical parallelization plan: per-repository
-target stream counts, the claim partitions that make streams collision-free, the preconditions
-that must hold before fanning out, and the **unlock triggers** — DAG events that change how wide
-a repository can go. Saturation targets live there, not in steward judgement calls.
-
-- **Spawn to the schedule.** When a repository is below target and its preconditions hold,
-  launch to match — one worker per partition slot, each pointed at the repo's own documents and
-  its assigned scope. Never exceed a stated cap: every width number is bound by a named
-  constraint and exceeding it recreates a documented failure mode. **Space initial launch
-  requests at least ten seconds apart**; a simultaneous burst trips rate limiting, and the
-  stagger is invisible against hours-long streams. This applies to the kickoff burst only and
-  never licenses delaying a continuation or a replacement.
-- **Watch the triggers in the hourly sweep**, and when one fires, adjust and update the schedule
-  in the same turn. A stale saturation target misroutes every subsequent spawn.
-- **Per-repo claim protocols stay in each repository's own documents.** This file holds only the
-  fleet-level plan and routes to them.
+One stream per repository; width is across repositories, never within one.
+[`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) holds the partition analysis and the unlock
+triggers. Send messages per [What to send them](#what-to-send-them).
 
 ### Where a regression belongs
 
