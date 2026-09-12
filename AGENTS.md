@@ -1228,6 +1228,26 @@ Each repository names its own docs-only commit route — `new-qual-site`'s autho
 docs-only route, `sage-categories`'s docs-only exemption, `research`'s prose-only exemption.
 Use it and cite it. A steward commit touching code, data or a card takes the ordinary gate.
 
+### Do not count your own commits as the worker's
+
+The steward writes into the managed repositories — DAG items, `AGENTS.md` rules, queue filings
+— and every one of those moves the same commit clock the tick verifies workers against. A
+recovery watched with `git log -1` closes on the steward's own doc commit and reports the stream
+restarted. On 2026-09-12 a `research` replacement produced nothing for twenty-five minutes while
+three consecutive steward commits made its clock look alive, and the tick called it recovered.
+
+The author field separates them cleanly: steward commits carry the GitHub noreply address
+required of maintainer commits, worker commits carry the account's own address. Filter every
+production read and every verification watch by it.
+
+```bash
+git -C <repo> log --all --since='<last tick>' --author='dzackgarza@gmail.com' --pretty='%s'
+```
+
+The same caution applies to any surface the steward writes: a ledger count moved by a filing, a
+queue entry closed by a steward's own commit, a dirty count changed by a doc edit. Measure the
+worker by what the worker did.
+
 ### Measuring production
 
 **Count the objects.** How many things of the kind this repository exists to produce came
