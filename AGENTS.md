@@ -1270,6 +1270,23 @@ A need discovered inside a turn is closed inside that turn. The interval is a ce
 long the fleet may go unlooked-at, not a queue to put a remedy in. If a tick produced no
 action and no content followed it, the next one drives every stream before measuring anything.
 
+### A wedged chat's tree is evidence, and the replacement needs it characterised
+
+A chat that stops holds whatever it was doing in the working tree, and the replacement walks
+into it blind. Naming the size is not enough — 324 modified files reads as debris to a fresh
+worker whichever way it is described. Characterise the *kind* of change and its trustworthiness
+before handing it over: on 2026-09-12 a wedged `research` chat left 1970 insertions against
+3258 deletions across 324 files, which the diff showed to be a repo-wide ruff autofix run.
+That is neither debris to discard nor work to accept — ruff's unsafe autofixes had already been
+recorded in a sibling repository as semantically wrong, having broken retained-reference
+behaviour there.
+
+So the handoff says three things about the tree: what kind of change it is, why it is not
+automatically correct, and what the replacement should do with it — bank the correct parts in
+coherent groups, revert only what it can show changes meaning, and neither blanket-accept nor
+blanket-discard. Reading one `git diff` of one file is what turns "324 dirty paths" into an
+instruction the replacement can act on.
+
 ### The four moves
 
 Working, wedged, done, drifting. Working ones are left alone. Wedged ones climb the ladder:
