@@ -1306,32 +1306,32 @@ verified work the chat has not banked, and the instruction is then *bank what is
 rather than *take the next node*. Over a clean tree there is nothing in flight and the
 interrupt costs nothing at all.
 
-### A worker can report a commit that does not exist
+### A worker can report a commit from the wrong repository
 
-The most expensive failure is not a stall or a drift; it is a confident report of work that was
-never banked. On 2026-09-12 a `research` worker wrote that it had banked `d9ff84a` with a named
-construction and a reconciled TODO row, and described a real runtime defect the regression had
-exposed. The hash appears nowhere — not in `git log --all`, not in the reflog, not on a branch,
-not in the stash — and its working tree was clean, so the work was not sitting uncommitted
-either. Its last real commit was two hours earlier.
+On 2026-09-12 a `research` worker reported banking `d9ff84a` with a named construction and a
+reconciled TODO row. That hash was absent from `research` entirely — not in `git log --all`,
+the reflog, any branch or the stash — and its tree was clean, so the work was not sitting
+uncommitted either. It looked like a fabricated completion claim.
 
-Nothing in the report was implausible. The construction matched the node, the defect it
-described was specific and consistent with the repository's known `mypy-runtime` blocker, and
-the commit even carried an honest `[unverified]` marker. A steward reading the transcript for
-progress would have recorded a node closed.
+It was not. `d9ff84a` is real: `test(sets): pin indexed colimit functoriality` in
+`sage-categories`, committed at the exact minute the report was written, inside a run of that
+repository's own work. The `research` chat had read a sibling checkout's log — every worker
+runs shell commands on the same host, and a `git log` without `-C` reports whatever directory
+the shell happens to be in. Confronted with the fact, it checked, said plainly that its report
+had been false for this repository, and committed the real work minutes later.
 
-This is the reason the tick counts commits by author and reads diffs rather than believing
-sentences. When a worker names a hash, that hash is checkable in one command, and it should be
-checked whenever it is the evidence for a node closing:
+Two things follow. A hash a worker cites is checkable in one command and should be checked
+whenever it is the evidence for a node closing — but check the *other* repositories before
+concluding it was invented:
 
 ```bash
-git -C <repo> show -s --format='%H %cI %s' <hash>   # or: commit NOT FOUND
+for r in <all managed repos>; do git -C "$r" show -s --format="%h %s" <hash> 2>/dev/null; done
 ```
 
-A worker that reports a commit which does not exist has lost the ability to tell you anything
-reliable about its own state — treat the report as evidence about the chat rather than about
-the repository, confirm against git, and replace the chat if it cannot reconcile its own
-account with what git shows.
+And the remedy is different from replacement. A worker confused about which checkout it is in
+is still working correctly; it needs the fact, not a new chat. Give it the absence — "that hash
+is not in this repository, your last commit is X" — and let it reconcile. Replacement is for a
+worker that cannot square its own account with what git shows, which this one did immediately.
 
 ### Gated paperwork reappears in the nearest ungated form
 
