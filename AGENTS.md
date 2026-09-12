@@ -2055,6 +2055,48 @@ restated once needs an enforcement point, not a third restatement** — a check 
 repo's commit gate, so the next stream that violates it finds out at its next commit
 instead of at 100% disk.
 
+### The tick reads the work, not the worker
+
+Every state this document has taught the steward to detect — working, wedged, done, reachable,
+generating, banked — is a liveness state. None of them asks whether what the worker produced is
+the right work, correct work, or work that moves the project toward finishing. A worker
+confidently producing damage passes all of them, and on 2026-09-12 four of them did, for hours,
+under green check-ins:
+
+- `lean-categories` proved theorems over a definition layer 46% built, silently injecting
+  definitions with no literature provenance into a corpus whose entire value is that every
+  definition is auditable to a named source. Eleven of twenty commits that night were theorem
+  work; six of those were one counterexample.
+- `research` spent thirty-two of fifty-five commits on claim bookkeeping under a claim protocol
+  written for concurrent streams that no longer existed.
+- `sage-categories` asserted for fifty-two minutes that a consumer was "CPU-active" when no such
+  process existed on the host.
+- `new-qual-site` treated folding a queue disposition as a unit of work.
+
+Every one of those looked like a healthy cadence in `git log` and a working chat on the bridge.
+The steward reported them as working and moved on, because nothing in the tick asked what was
+built.
+
+So the tick has a fourth state, and it is the common one: **drifting** — alive, banking, and
+not advancing the project. Detecting it needs three reads that liveness never requires:
+
+1. **Read the diff, not the subject line.** `git show` the substantive commits since the last
+   tick and look at what they contain. A subject saying `feat(...)` proves nothing; a commit
+   titled "bank" that moves no content, or a `feat` that adds a definition with no source
+   citation, is visible only in the diff.
+2. **Read it against the project's own scope document.** Every managed repository states what
+   it is building and in what order — a ledger of delivered against pending, a DAG with a Needs
+   column, a queue with a defined closure. Ask whether tonight's output moved those numbers and
+   whether it moved them in the order the project requires. Work in the wrong order is drift
+   even when each piece is correct.
+3. **Check the project's own invariant.** Each repository has one thing that makes its output
+   worth anything — provenance to literature, exactness of a projection, a card corpus that is
+   actually solved. Ask whether the last few commits preserved it. This is the read that catches
+   damage, and it is the one no clock can show.
+
+A steward who cannot say what the fleet built in the last hour, and whether it advanced the
+scope, has not done the tick — it has watched the plumbing.
+
 ### Check-in reports
 
 At each check-in (every twenty minutes), report the status of each managed repository workstream
