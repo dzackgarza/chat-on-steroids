@@ -1325,6 +1325,21 @@ minutes in a gate is exactly what memory pressure kills, and a killed commit orp
 and stops the repository — so a slow gate is a reason to protect headroom and leave the worker
 alone, never a reason to push it again.
 
+**Commit age alone cannot tell working from done, and the tick's three-way classification
+collapses without the other two readings.** A repository twenty minutes past its last commit
+looks the same in `git log` whether the worker is deep in a long turn or finished and waiting.
+The two other facts separate them and both are already to hand: whether the turn ended
+(`turn_end` in the rows, `generating: false` on the bridge) and whether the tree is clean. A
+worker mid-turn with a dirty tree is working. A worker whose turn has ended, whose tree holds
+nothing but its own untracked scratch, and whose clock has been quiet is **done** — it has
+banked everything it had and is waiting for an instruction that is not coming.
+
+On 2026-09-12 a steward read a twenty-minute-old commit as "working, leave alone" and moved on;
+the worker had in fact finished both of its repository's in-repo prerequisites, leaving only an
+externally-owned blocker, and had been idle with a clean tree for twenty-five minutes. Done is
+the state that costs the most to misread, because a wedged worker announces itself eventually
+and a done one never will.
+
 **`chat_error` is not a verdict. The only test for reachability is a push.** The bridge reports
 `lastStoredKind: chat_error` for everything from a transient page failure to a conversation the
 app can no longer open, and the accompanying `noProgressForMs` measures the chat, not the
