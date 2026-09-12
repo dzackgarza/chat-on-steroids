@@ -1297,6 +1297,18 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**`chat_error` is not a verdict. The only test for reachability is a push.** The bridge reports
+`lastStoredKind: chat_error` for everything from a transient page failure to a conversation the
+app can no longer open, and the accompanying `noProgressForMs` measures the chat, not the
+worker. On 2026-09-12 two chats in that state were genuinely gone — `say`, `revive` and three
+retries each expired — while a third, showing the same state and fifty-four minutes of no
+progress, accepted a push on the first attempt and resumed. Replacing it on the state alone
+would have thrown away a working chat and its context.
+
+So the ordering is: attempt, then classify. A chat that takes a message is alive whatever its
+last stored row says; a chat that refuses `say` and `revive` in succession is the one to
+replace, and `just new` is what distinguishes a dead chat from a broken substrate.
+
 **A handoff that reads like a plan gets a plan back.** A replacement brief naturally ends on a
 disposition — "keep taking the frontier without stopping between pieces" — and a fresh chat
 answers a disposition in kind: *"I'll reconstruct the position, read the contribution rules,
