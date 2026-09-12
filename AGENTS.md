@@ -1297,6 +1297,24 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A dirty count read while a commit is in its gate measures the tree before the commit, so
+"not banked yet" and "not banking" look identical for minutes.** On a repository whose gate
+walks ten thousand files, a worker can be three minutes into exactly the commit you asked for
+and still show every path dirty, because nothing moves until the gate returns. On 2026-09-12 a
+steward watched `new-qual-site` for ten minutes, saw the count climb from 117 to 279, and was
+one step from replacing a worker that had a live `git commit` in flight for the Berkeley
+collection at that moment.
+
+Pair the count with `pgrep -af 'git commit'` and the lock's owner before concluding anything
+about banking, the same way a lock is read with `pgrep` before being called stale. And read a
+rising count carefully: intake continuing alongside a slow commit raises it, which looks like a
+worker ignoring the instruction and is not.
+
+The genuine risk in that state is the one the steward controls. A pathspec commit sitting
+minutes in a gate is exactly what memory pressure kills, and a killed commit orphans the lock
+and stops the repository — so a slow gate is a reason to protect headroom and leave the worker
+alone, never a reason to push it again.
+
 **`chat_error` is not a verdict. The only test for reachability is a push.** The bridge reports
 `lastStoredKind: chat_error` for everything from a transient page failure to a conversation the
 app can no longer open, and the accompanying `noProgressForMs` measures the chat, not the
