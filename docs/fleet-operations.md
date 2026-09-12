@@ -664,6 +664,21 @@ from outside that the thing exists — the process, and fresh writes to whatever
 find <repo>/<build dir> -newermt '30 minutes ago' -type f | wc -l
 ```
 
+**The poll loop itself is not the signal — the PID is.** A transcript tail full of
+`ps -p 453381` followed by `Waited on session`, repeating for minutes, reads exactly like the
+dead-process trap and is also exactly what correctly watching a live six-minute test looks
+like. The two are indistinguishable from the loop alone, and on 2026-09-12 a steward read a
+worker's careful liveness polling as the trap and was one step from replacing a chat that was
+running the Sets engine suite at 46% CPU. Resolve it the only way that settles it: take the PID
+out of the loop and ask the host whether it exists.
+
+```bash
+ps -p <pid> -o pid=,etime=,pcpu=,args=    # empty output is the trap; a running line is work
+```
+
+A worker that polls with `ps -p <pid>` on every cycle is doing what its own documentation asks
+of it. Punishing that pattern teaches workers to wait blindly instead.
+
 No process and no new artifacts means the wait will never end. Tell the chat plainly — that is
 external context it cannot obtain, not a hint about method — and say what the host looks like
 now, so it does not relaunch a multi-thousand-job build into a machine that cannot carry one.
