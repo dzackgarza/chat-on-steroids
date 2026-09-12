@@ -1325,28 +1325,20 @@ minutes in a gate is exactly what memory pressure kills, and a killed commit orp
 and stops the repository — so a slow gate is a reason to protect headroom and leave the worker
 alone, never a reason to push it again.
 
-**Measure banking by commit size, not by commit count or by share of lines.** A worker
-committing three lines at a time is not banking steadily, it is paying a full gate run to move
-a marker, and the tick reads it as a healthy cadence because the clock keeps moving. The
-metric that exposes it is the count of commits under a size floor:
+**A commit that produces no content is bloat, whatever its size.** Claiming a node, releasing
+a claim, advancing a frontier record, ticking a queue marker — none of it is work, and none of
+it earns a commit. It buys a gate run, a message, and a line of history that says nothing was
+built, and it makes the tick read as a healthy cadence while the repository gains nothing. Size
+is not the test and neither is the ratio of administrative lines to content lines; the test is
+whether the commit carries mathematics, code, or prose that did not exist before.
 
-```bash
-git log --all --since='5 hours ago' --pretty='%H %s' | while read h s; do
-  ins=$(git show --shortstat --oneline "$h" | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')
-  echo "${ins:-0} $s"
-done | awk '{c++; if($1<20)t++} END{print t"/"c" under 20 lines"}'
-```
-
-On 2026-09-12 that read 34/55 for `research` — thirty-two of them under five lines — and 14/34
-for `lean-categories`, while the same history measured as a share of *lines* said administrative
-work was 1–6% and looked fine. Share-of-mass is the wrong denominator precisely because these
-commits are small; their cost is the gate, not the diff.
-
-Both patterns were steward-induced: one worker was told to claim nodes before working them, the
-other to bank the mathematics and then advance the frontier record, which buys a bookkeeping
-commit per unit. Instruct the opposite — fold the record update into the commit carrying the
-content it describes — and check the under-20 count each sweep, because a fleet can grind into
-this while every clock looks healthy.
+On 2026-09-12 `research` produced fifty-five commits in five hours of which thirty-two were
+under five lines of pure claim bookkeeping, and `lean-categories` spent fourteen of thirty-four
+on frontier-record updates. Both patterns were steward-induced — one worker was told to claim
+nodes before working them, the other to bank the mathematics and *then* advance the frontier
+record. Instruct the opposite: a record update rides in the commit carrying the content it
+describes, or it does not happen. A worker that needs a claim protocol at all is a worker
+sharing a repository, which is already forbidden.
 
 **Commit age alone cannot tell working from done, and the tick's three-way classification
 collapses without the other two readings.** A repository twenty minutes past its last commit
