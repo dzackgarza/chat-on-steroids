@@ -1372,6 +1372,13 @@ The restart itself stays worth doing, because memory pressure OOM-kills workers'
 it is not a free reclaim, it is a reclaim that may cost every chat currently open, so take it
 at a moment when the fleet is between turns and be ready to re-establish all of them.
 
+Check for an in-flight commit in a *separate command* before composing the restart, never in
+the same one. On 2026-09-12 a steward chained `pgrep -af 'git commit'` and the restart with
+`&&`, read the output afterwards, and saw `git commit --only corpus/collections/SRC-CH7-GROUP-S`
+in the very output that confirmed the restart had already run. The commit died in its gate and
+orphaned the lock — the outage the rule exists to prevent, caused by the check being inside the
+action instead of before it.
+
 Reach for it second. `just tidy` with the live chats in `keep` closes duplicate and orphaned
 command tabs and costs nothing — each one is a renderer, and on 2026-09-12 closing two of them
 took a host from 261 MB free back to 485 MB with every worker still on the air. Restart only
