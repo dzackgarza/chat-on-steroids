@@ -1228,6 +1228,27 @@ Each repository names its own docs-only commit route — `new-qual-site`'s autho
 docs-only route, `sage-categories`'s docs-only exemption, `research`'s prose-only exemption.
 Use it and cite it. A steward commit touching code, data or a card takes the ordinary gate.
 
+### A chat that stores your message and never starts a turn is dead
+
+There are two silences and they look identical in the repository. In one the chat is mid-turn
+and producing nothing; `interrupt` is the move, because there is a turn to stop. In the other
+the bridge shows your message stored — `lastStoredKind: user_message` — with `generating` false
+and `generatingForMs` at zero, meaning no turn ever began. Nothing can be interrupted, a second
+push only adds another stored message, and the chat has not written a sentence since long
+before either arrived.
+
+On 2026-09-12 a `lean-categories` chat took two pushes that way across 88 minutes without
+starting a turn or emitting one assistant message, while the steward read it as running out of
+push and sent it more work. Check the pair before choosing a rung: a turn that exists and is
+silent is a candidate for `interrupt`; a message stored with no turn behind it goes straight to
+replacement.
+
+Check what it was waiting for before writing the handoff, because the last thing it said is
+often already obsolete. That chat's final message described waiting on an elaboration before
+banking a batch — the batch had been committed twenty minutes later, so there was nothing left
+to wait for and nothing unbanked. A handoff repeating its last stated intent would have sent
+the replacement to redo finished work.
+
 ### A chat that stalls the same way twice earns a shorter horizon
 
 The general signal — a turn generating for many minutes with `turn_start` as the last stored
