@@ -1237,6 +1237,16 @@ and `generatingForMs` at zero, meaning no turn ever began. Nothing can be interr
 push only adds another stored message, and the chat has not written a sentence since long
 before either arrived.
 
+**The same reading is normal for the first minutes after a push.** Between the message being
+stored and the turn beginning there is a window in which `lastStoredKind` is `user_message`,
+`generating` is false and `generatingForMs` is zero — identical to the dead state. A watcher
+that samples there reports a dead chat for a chat that is about to start work: on 2026-09-12
+one fired at six minutes against a `sage-categories` chat whose turn began moments later and
+which had banked six commits in the previous hour. What made the `lean-categories` case a real
+verdict was duration and repetition — 88 minutes across two separate pushes, with no assistant
+message in between. Read the state only after the window a turn normally takes to start, and
+prefer two pushes' worth of evidence to one.
+
 On 2026-09-12 a `lean-categories` chat took two pushes that way across 88 minutes without
 starting a turn or emitting one assistant message, while the steward read it as running out of
 push and sent it more work. Check the pair before choosing a rung: a turn that exists and is
