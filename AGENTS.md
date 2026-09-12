@@ -1228,6 +1228,27 @@ Each repository names its own docs-only commit route — `new-qual-site`'s autho
 docs-only route, `sage-categories`'s docs-only exemption, `research`'s prose-only exemption.
 Use it and cite it. A steward commit touching code, data or a card takes the ordinary gate.
 
+### Check a complaint is open before filing it as work
+
+Promoting outstanding complaints into the DAG is steward work, and the word doing the work in
+that sentence is *outstanding*. A `COMPLAINTS.md` heading is not a backlog item: many such
+files carry resolved entries whose text records the repair, and most carry no status field at
+all, so open and closed are indistinguishable without reading each entry to its end. On
+2026-09-12 a steward promoted three `research` complaints as ready nodes and its worker deleted
+all three the same hour as already delivered, then removed 137 lines of resolved text; the same
+steward had filed 53 `new-qual-site` complaints the same way, of which four in a sample of five
+described their own repair.
+
+Filing already-finished work is worse than filing nothing. It sends a worker to re-derive a
+repair that exists, and it inflates the ledger the tick is measured against, so the fleet reads
+as having more to do and less done than is true.
+
+Read the entry before promoting it. Where the file cannot answer whether an entry is open —
+no status field, no resolution line — that absence is the defect to file first, ahead of any
+individual repair, because every later promotion from that file is guesswork until it is
+fixed. A promoted list whose entries have not been checked must say so in its own preamble,
+so the worker checks before working rather than after.
+
 ### Do not count your own commits as the worker's
 
 The steward writes into the managed repositories — DAG items, `AGENTS.md` rules, queue filings
