@@ -1297,6 +1297,21 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A handoff that reads like a plan gets a plan back.** A replacement brief naturally ends on a
+disposition — "keep taking the frontier without stopping between pieces" — and a fresh chat
+answers a disposition in kind: *"I'll reconstruct the position, read the contribution rules,
+identify the next units, and then proceed piece-by-piece."* Turn ends, no tool calls, nothing
+banked, and the repository stays dry while the steward counts the chat as launched because it
+replied. Eight minutes of that is indistinguishable from a chat that is working.
+
+End the brief on one concrete first action instead: the exact command to run, the exact file to
+open, and an instruction to bank something before writing another sentence. Context, ownership
+and constraints still belong in the brief — a worker that does not know the tree has a live
+predecessor's scratch in it will delete it — but they are the middle, never the last thing the
+chat reads. A chat that has already acknowledged and stopped does not need replacing for it;
+one push naming the first command is usually enough, and replacing a chat twice for the same
+symptom is a sign the brief is the problem rather than the chat.
+
 **A browser restart can strand every chat whose tab was open, and a new chat is the test that
 tells you whose fault it is.** Reclaiming memory by restarting the browser is cheap and usually
 free, but it is not always: on 2026-09-12 a restart left three of four chats at `chat_error`
