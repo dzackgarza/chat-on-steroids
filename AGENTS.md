@@ -1297,6 +1297,19 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**Filing into a busy repository means queueing behind its worker, and the attempt must fail
+loudly.** A queue item is the steward's one sanctioned write into a managed repository, and it
+competes for the same single index the worker is using. A worker committing every few minutes
+holds `.git/index.lock` most of the time, so a filing attempt meets it far more often than not
+— and the append lands in the file while the commit does not, which leaves the item sitting in
+the working tree as more of exactly the churn it was filed to describe.
+
+Wait for the lock rather than clearing it; a lock with a live `git commit` behind it is the
+worker banking, not a stale artifact. But make the waiter report what happened: a retry loop
+that suppresses output and exits zero after its attempts reads as success, and the steward then
+carries a filing it never made into the next tick. Distinguish the lock from every other
+refusal, and say which one ended the wait.
+
 **Classify a dirty tree before characterising it; `--stat` counts lines, not content.** A tree
 of 98 modified paths carrying 1230 insertions reads like a worker sitting on a day of
 unbanked authoring, and on 2026-09-12 a steward told one so, citing the 962 lines this
