@@ -1259,6 +1259,18 @@ banking a batch — the batch had been committed twenty minutes later, so there 
 to wait for and nothing unbanked. A handoff repeating its last stated intent would have sent
 the replacement to redo finished work.
 
+### `noProgressForMs` equal to `generatingForMs` means unrecorded, not stalled
+
+When those two fields match exactly, nothing has been stored since the turn began — and that
+reads as a long silence when it is often a recording gap. On 2026-09-12 two chats showed
+`turn=39m noprog=39m` and `turn=59m noprog=59m` while committing four and ten minutes earlier
+respectively: the work was landing in git and the rows were not reaching the recorder.
+
+So treat the equality as a signal about the *recording*, not the worker. The commit clock and
+the host are unaffected by it and stay authoritative — a stream with recent commits is working
+regardless of what the silence figure says. Reserve the stall reading for a silence that is
+shorter than the turn, which means rows were arriving and then stopped.
+
 ### Ask the host what the worker cannot see
 
 A worker waiting on a build, test or gate has no way to learn that it ended. The chat stays
