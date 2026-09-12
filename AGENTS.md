@@ -1224,6 +1224,16 @@ A chat push is a pointer into those documents and nothing else: *"re-read AGENTS
 continuing"*. Fix the document, then push the pointer. Never the reverse, and never the push
 alone.
 
+**Never run a steward commit detached on a repository with an expensive gate.** Your filings
+compete for the same single index the worker uses, and these gates run for minutes — long
+enough for memory pressure to kill the process mid-run, which orphans `.git/index.lock` and
+stops the repository until someone proves the lock stale. A background task and a `Monitor`
+loop are both detached: on 2026-09-12 a watcher's `test-commit` was terminated by signal 15,
+and the lock it left blocked `new-qual-site` for fifteen minutes while the steward read the
+worker as idle and queued politely behind a lock its own dead process had created. Run the
+commit in the foreground under `timeout` and watch it finish, or hand the file to the worker
+to carry in its next commit — it is already inside that gate and pays nothing extra.
+
 Each repository names its own docs-only commit route — `new-qual-site`'s authorized
 docs-only route, `sage-categories`'s docs-only exemption, `research`'s prose-only exemption.
 Use it and cite it. A steward commit touching code, data or a card takes the ordinary gate.
