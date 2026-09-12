@@ -1228,6 +1228,27 @@ Each repository names its own docs-only commit route — `new-qual-site`'s autho
 docs-only route, `sage-categories`'s docs-only exemption, `research`'s prose-only exemption.
 Use it and cite it. A steward commit touching code, data or a card takes the ordinary gate.
 
+### A chat that stalls the same way twice earns a shorter horizon
+
+The general signal — a turn generating for many minutes with `turn_start` as the last stored
+event and nothing after it — is worth an interrupt whenever it appears. What the general rule
+misses is that this is often a property of the particular chat rather than of the moment. On
+2026-09-12 one `sage-categories` chat did it three times in ninety minutes: forty-six minutes,
+then thirty-nine, then thirty-nine again, each time producing work within a minute of being
+interrupted and producing nothing at all until then.
+
+So track it per chat. The first occurrence is diagnosed at the usual horizon; the second in the
+same chat justifies interrupting as soon as the pattern is recognised, because the evidence
+that waiting longer helps has already been collected and is negative. The cost of interrupting
+a chat that turns out to be working is one lost turn, and the cost of waiting out a chat with
+this habit is the whole interval — which is the trade the horizon exists to make, and it moves
+once the chat has shown you which side it sits on.
+
+Check the tree before interrupting either way: a long silent turn over a dirty tree may hold
+verified work the chat has not banked, and the instruction is then *bank what is verified*
+rather than *take the next node*. Over a clean tree there is nothing in flight and the
+interrupt costs nothing at all.
+
 ### Check a complaint is open before filing it as work
 
 Promoting outstanding complaints into the DAG is steward work, and the word doing the work in
