@@ -1297,6 +1297,20 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A moved clock verifies that a worker acted, not that it did what you asked.** The rule to
+verify against a commit rather than a receipt has a hole in it: any commit moves the clock,
+including one that answers the instruction with paperwork. Told to bank a tree carrying 1230
+uncommitted insertions of authored cards, a `new-qual-site` worker committed a queue document
+titled `docs(queue): bank Pantano PDF intake` and left the dirty count at 98, exactly where it
+started. The clock moved, the subject line used the word, and nothing was banked.
+
+So when an instruction names a measurable state change, verify the measurement and not the
+commit: the dirty count for a banking push, the queue's own regenerated count for a completion
+push, the tracked-file list for an ingest. Put the measurement in the instruction too — say
+what number you are watching and that the commit subject is not what you will read — because a
+worker that knows which number is being checked stops reaching for the paperwork that would
+otherwise satisfy it.
+
 **A turn that starts and emits nothing is the replace signal, and it is quiet.** The familiar
 wedge announces itself — a chat error, a refusal, a stall bar. This one does not: the bridge
 reports `lastStoredKind: turn_start` and `generating` back to false with no rows in between, so
