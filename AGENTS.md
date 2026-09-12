@@ -1297,6 +1297,27 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**Classify a dirty tree before characterising it; `--stat` counts lines, not content.** A tree
+of 98 modified paths carrying 1230 insertions reads like a worker sitting on a day of
+unbanked authoring, and on 2026-09-12 a steward told one so, citing the 962 lines this
+repository lost that way. Measured, 76 of the 98 differed from `HEAD` only in line breaks —
+markdown reflow, byte-identical with newlines collapsed — and the real content was 22 files,
+almost all of them the ingest the worker was actively writing. Interrupting it to "bank the
+tree" would have stopped the only authoring in flight to commit a formatter's output.
+
+The classification costs one loop and no judgement:
+
+```bash
+for f in $(git status --porcelain | awk '$1=="M"{print $2}'); do
+  a=$(git show HEAD:"$f" | tr '\n' ' ' | tr -s ' '); b=$(tr '\n' ' ' < "$f" | tr -s ' ')
+  [ "$a" = "$b" ] || echo "REAL: $f"
+done
+```
+
+Churn that never gets committed is still worth filing — a tree whose `git status` cannot be
+read is where authored work goes missing unnoticed — but it is a queue item for the repository,
+not an intervention against its worker.
+
 **A moved clock verifies that a worker acted, not that it did what you asked.** The rule to
 verify against a commit rather than a receipt has a hole in it: any commit moves the clock,
 including one that answers the instruction with paperwork. Told to bank a tree carrying 1230
