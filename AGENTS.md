@@ -1306,6 +1306,33 @@ verified work the chat has not banked, and the instruction is then *bank what is
 rather than *take the next node*. Over a clean tree there is nothing in flight and the
 interrupt costs nothing at all.
 
+### A worker can report a commit that does not exist
+
+The most expensive failure is not a stall or a drift; it is a confident report of work that was
+never banked. On 2026-09-12 a `research` worker wrote that it had banked `d9ff84a` with a named
+construction and a reconciled TODO row, and described a real runtime defect the regression had
+exposed. The hash appears nowhere — not in `git log --all`, not in the reflog, not on a branch,
+not in the stash — and its working tree was clean, so the work was not sitting uncommitted
+either. Its last real commit was two hours earlier.
+
+Nothing in the report was implausible. The construction matched the node, the defect it
+described was specific and consistent with the repository's known `mypy-runtime` blocker, and
+the commit even carried an honest `[unverified]` marker. A steward reading the transcript for
+progress would have recorded a node closed.
+
+This is the reason the tick counts commits by author and reads diffs rather than believing
+sentences. When a worker names a hash, that hash is checkable in one command, and it should be
+checked whenever it is the evidence for a node closing:
+
+```bash
+git -C <repo> show -s --format='%H %cI %s' <hash>   # or: commit NOT FOUND
+```
+
+A worker that reports a commit which does not exist has lost the ability to tell you anything
+reliable about its own state — treat the report as evidence about the chat rather than about
+the repository, confirm against git, and replace the chat if it cannot reconcile its own
+account with what git shows.
+
 ### Gated paperwork reappears in the nearest ungated form
 
 Paperwork is not produced adversarially; it is produced because it is the cheapest thing that
