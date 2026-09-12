@@ -2106,9 +2106,15 @@ directly in chat:
   counts say about progress since the last check-in. This is the first cell because it is
   the repository's own belief about whether the work is advancing, and it is the one that
   exposes a stream doing the wrong work correctly.
-- **Commits landed since the last check-in**, read from `git log --all` — `--all` because
-  a worker on a branch is invisible without it — never inferred from whether your own
-  pushes succeeded.
+- **What was actually built since the last check-in**, read from the diffs of the substantive
+  commits and not from their subject lines, with the commits themselves read from
+  `git log --all` — `--all` because a worker on a branch is invisible without it, and never
+  inferred from whether your own pushes succeeded. Name the mathematics, the cards, the
+  constructions. A cell that names commit subjects or counts is a liveness cell and does not
+  answer the question.
+- **Whether it advanced the project's stated scope, in the project's required order**, measured
+  against that repository's own ledger, DAG or queue. A row whose work is correct but out of
+  order is drifting, and drifting is reported as such rather than as working.
 - **The worker's own last sentence**, quoted or closely paraphrased from its transcript,
   not the row kind from `just chats`. "page_tool" and "turn_end completed" are not
   activity summaries; "the child Lean process has advanced" and "the sole owned range
