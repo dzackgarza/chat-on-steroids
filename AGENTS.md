@@ -1297,6 +1297,20 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A turn that starts and emits nothing is the replace signal, and it is quiet.** The familiar
+wedge announces itself — a chat error, a refusal, a stall bar. This one does not: the bridge
+reports `lastStoredKind: turn_start` and `generating` back to false with no rows in between, so
+the chat looks like it is simply between turns. Two of those in a row, with the repository's
+clock frozen across both, is a chat that can still accept messages and can no longer act on
+them. Pushing it a third time buys nothing; every push lands, and nothing happens.
+
+When that chat's transcript is also frozen — and it usually is, since the same lost observer
+explains both — the handoff cannot be read from the chat at all. Reconstruct position from the
+repository instead: the ordered list of what it banked before it stopped is a better statement
+of where the frontier is than anything the chat would have said, and any generated scheduling
+document the repo maintains says what comes next. Add the constraints that cost the previous
+workers time rather than the ones in the repo's own docs, which the new worker will read anyway.
+
 **A wedged chat is usually holding unbanked work, and the replacement is the only thing that
 can find out.** The steward must not go into the repository to bank it — that is the worker's
 job and the tree has one index — but the handoff has to name it, because a fresh worker walking
