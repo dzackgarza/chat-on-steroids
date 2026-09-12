@@ -1362,6 +1362,13 @@ The restart itself stays worth doing, because memory pressure OOM-kills workers'
 it is not a free reclaim, it is a reclaim that may cost every chat currently open, so take it
 at a moment when the fleet is between turns and be ready to re-establish all of them.
 
+Reach for it second. `just tidy` with the live chats in `keep` closes duplicate and orphaned
+command tabs and costs nothing — each one is a renderer, and on 2026-09-12 closing two of them
+took a host from 261 MB free back to 485 MB with every worker still on the air. Restart only
+when tidying leaves nothing to close and the floor is still falling, and never while a worker
+has a commit in a slow gate: killing that commit orphans the lock and stops the repository,
+which is worse than the pressure you were trying to relieve.
+
 **The steward filing a queue item is a second agent on that index, and on a slow gate it is
 the one blocking the worker.** One-worker-per-repository is usually read as a rule about
 chats, but a queue filing takes the same single index and runs the same commit gate, and on a
