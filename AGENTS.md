@@ -1502,6 +1502,15 @@ short handoff — ambient task, tracking documents, current item — and `just n
 finding out why one chat will not accept a message is an hour of three chats not working, and
 the handoff costs minutes.
 
+**Alarm on available memory, not free memory.** `free` is the wrong column and watching it
+manufactures emergencies: Linux spends everything it can on page cache, so a healthy host with
+three gigabytes of reclaimable cache reports a hundred megabytes free and looks minutes from
+death. The number that says whether the next allocation succeeds is `available`. On 2026-09-12
+a steward alarmed at 135 MB free while `available` stood at 2.8 GB, restarted the browser on
+that reading, and killed a worker's commit in its gate — the emergency was in the metric, not
+the host. Watch `free -m | awk 'NR==2{print $7}'` and treat a few hundred megabytes *available*
+as the floor, not a few hundred free.
+
 **The browser is a fleet-wide resource and long-running chats exhaust it.** Each managed chat
 holds a renderer whose cost grows with its transcript, and every send opens a command tab that
 a send which never redeems leaves behind. On 2026-09-11 four chats and eleven orphaned command
