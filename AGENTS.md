@@ -1297,6 +1297,23 @@ measurement — a `just` recipe, the tool the commit gate runs, the queue file i
 and quote that. If no such tool exists, the honest move is to ask the worker how completeness
 is marked in that corpus, not to assert a negative from a pattern you chose yourself.
 
+**A lock you keep meeting is not a busy worker — check its age and whether anything holds it.**
+The two cases look identical at the point of failure and mean opposite things. A live
+`git commit` behind the lock is the worker banking, and the steward waits. A lock with no
+process behind it is a dead commit that has been refusing *every* commit in that repository
+since the moment it was orphaned, including the worker's own — so the repository is not slow,
+it is stopped, and waiting politely extends the outage. On 2026-09-12 `new-qual-site` sat
+twenty-two minutes dry behind a lock from a commit that died at 00:27:50, while the steward
+read the repeated refusals as a busy index and queued behind it.
+
+Two facts separate them and both are one command: `ls -l --time-style=+%H:%M:%S
+.git/index.lock` for its age, and `pgrep -ax git` for whether anything is holding it. A lock
+older than the repository's longest gate with no git process behind it is stale. Move it
+aside rather than deleting it — the dead commit's index may be the only copy of what it was
+staging — then tell the worker what happened and to check whether the dead commit left
+anything half-applied, because it will otherwise re-run against a tree it does not know
+changed.
+
 **Filing into a busy repository means queueing behind its worker, and the attempt must fail
 loudly.** A queue item is the steward's one sanctioned write into a managed repository, and it
 competes for the same single index the worker is using. A worker committing every few minutes
