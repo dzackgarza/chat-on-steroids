@@ -1504,6 +1504,29 @@ This is the same rule as fixing the obstruction rather than routing around it, p
 steward's own instructions: a push that asks a worker to absorb a cost the steward has not
 measured is the cheapest thing to send and the least likely to work.
 
+### Closing finished nodes is the steward's work, and an unmarked one stays ready forever
+
+A DAG's whole function is naming what to do next, and a node that is complete but unmarked keeps
+naming itself. On 2026-09-13 three `new-qual-site` nodes — the detector, the repair, the pipeline
+— were finished by 02:37 and still carried `Needs: none` at 08:50. The worker did the only
+sensible thing: it read `extraction-detector` as the first ready node, went to implement it,
+found it already built and wired into the commit gate, and recorded that `TODO.md` was stale
+relative to the code. Two turns spent on the steward's bookkeeping.
+
+Filing is the visible half of maintaining a DAG and closing is the half that makes the filing
+mean anything. A steward that only ever adds nodes is building a list that steadily loses its
+ability to answer the question it exists for, and the damage is silent: nothing fails, the worker
+simply does finished work and reports the file is wrong.
+
+Two habits follow. Close a node in the tick that verifies its acceptance, with the evidence, not
+later. And check that the format *has* a way to be closed — this list used bullets with no
+checkbox and no convention, which is why nothing was ever marked; the other three repositories
+used `- [x]` or a `Closed.` cell and stayed current.
+
+When sweeping for this, match the convention loosely. A sweep for exactly `Closed.` reported a
+node open that in fact read `Closed, superseded at the mechanism level.` — a prose convention
+searched literally will manufacture its own false positives.
+
 ### Correcting a total does not correct the worklist built from it
 
 A bad metric produces two artefacts: the number in the report and the ordering the steward
