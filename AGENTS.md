@@ -1375,6 +1375,32 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Ask whether the work should have existed, not only whether it happened
+
+Counting commits was a proxy, so the tick started counting objects — definitions elaborated,
+statements restored, constructions landed. That is better and it is still a proxy, because an
+object that should never have been made counts exactly like one that should. On 2026-09-13 a
+steward classified `lean-categories` as working for five consecutive ticks on a rate of roughly
+twenty definitions an hour and on the definitions-before-theorems invariant holding, and never
+asked the only question that mattered: whether Mathlib already had them. It did. The owner asked
+after one definition took thirty-seven minutes, and the answer was a mapping sweep that had
+written `unmatched` — the label that clears a unit for repo-local invention — across 70 of 70
+rows in one source and 183 of 188 in another, on the ground that no single library declaration
+realized a whole bundled textbook row. Every hour of that stream's healthy-looking output was
+partly transcription of a textbook into Lean.
+
+A reuse-first program cannot be audited from its output rate, because reinvention and
+formalization produce the same commits at the same cadence and the reinvention is often faster.
+It is audited by sampling: take one recent unit, find what the library actually has, and compare.
+That is a few minutes per stream and it is the only check that distinguishes the two.
+
+Run it on any stream whose product is mathematics against an existing library, and run it
+especially when the stream looks healthy — a stalled stream gets read closely, and a productive
+one gets left alone, which is exactly backwards when the failure mode is fast wrong work. Where
+a repository decides reuse through a generated classification rather than a rule, read that
+classification directly: a rule in a document is followed at a rate, but a table that says
+`unmatched` is obeyed every time.
+
 ### An error rate is not comparable across streams doing different work
 
 A steward with four transcripts will eventually divide errors by calls and compare. On
