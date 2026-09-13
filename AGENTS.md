@@ -1375,6 +1375,31 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### A waiter cannot outlast a turn, and turns grow with the conversation
+
+The send-on-a-gap waiter was written when managed turns lasted a few minutes, and it carries a
+fifteen-minute deadline on that assumption. By 2026-09-13 the same conversations were running
+fifty-two-minute turns, because a turn lengthens as its context does. A waiter launched against a
+chat already deep into one cannot reach a boundary before its deadline, so it waits out the
+entire steward interval and reports `NOT LANDED` — an intervention that was never attempted,
+indistinguishable in the log from one that was refused.
+
+Two things follow. Pick the tool by the chat's current turn length: a waiter for a chat between
+turns or early in one, `interrupt` for a chat already past the deadline, since interrupt injects
+into a running turn and is the only thing that reaches one. The waiter now reads
+`generatingForMs` before committing to wait and escalates itself rather than expiring quietly.
+
+And treat every assumption about timing in this instrumentation as having a shelf life. Turn
+duration, tab memory, gate runtime and transcript size all grow with the conversation, so a
+threshold that was generous when it was written becomes a silent failure later — and it fails by
+doing nothing, which is the hardest failure to notice. When a number in a script encodes "long
+enough", the tick that finds it too small should fix it rather than route around it.
+
+A last note on crediting. During that expired wait `research` banked its tree anyway. The
+intervention did not land and the outcome happened regardless, which is the ordinary case for a
+worker that was already going to do the right thing. Report the push as not landed and the stream
+as working, and never let a coincidence of timing become evidence that a rung did something.
+
 ### `chat_error` is a fifth state: running at the tool layer, storing nothing
 
 A chat whose `lastStoredKind` is `chat_error` can keep executing tool calls indefinitely. On
