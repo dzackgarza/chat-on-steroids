@@ -1375,6 +1375,30 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### A correction can be worse than the mistake; say what was wrong, not what to undo
+
+A steward who finds it wrote something false will want to retract it, and the retraction goes
+out while the worker is already acting. On 2026-09-13 a steward filed a node claiming
+`lean-categories`' mapping catalogue was outside version control, discovered the directory was a
+symlink into a tracked vault, and sent a correction telling the worker to disregard it. The
+worker had by then read the node and gone further than it asked: it moved all 378 records into a
+tracked `corpus/` directory, repointed the frontier generator at it, gave the symlinks an
+explicit ignore rule, and verified that a fresh clone reproduces `FOUNDATIONAL_FRONTIER.md`
+byte-for-byte — which had not been true before. The premise was wrong; the defect underneath it
+was real, and the worker fixed the real one. Had the correction been obeyed, good work would have
+been reverted on the steward's authority.
+
+So a correction states which claim was false and what the evidence now is, and leaves the
+decision about work already underway to whoever can see it. "Disregard that" and "revert it" are
+instructions about work; "the premise was wrong, here is what is actually true" is information,
+and a worker holding the file in front of it is better placed to act on information than the
+steward is. Where the steward does want something undone, that is a fresh instruction with its
+own justification, not a rider on an apology.
+
+And check afterwards what the worker did with it. The correction here was ignored in the right
+direction, which is only visible by reading the commit — a steward that logged the retraction and
+moved on would have recorded a stream as reverted while it was in fact ahead.
+
 ### Verify a blocking node's premise harder than an adding node's
 
 Nodes are not symmetric. One that adds work costs the time it takes; one that blocks work costs
