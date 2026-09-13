@@ -1442,6 +1442,29 @@ This is the same rule as fixing the obstruction rather than routing around it, p
 steward's own instructions: a push that asks a worker to absorb a cost the steward has not
 measured is the cheapest thing to send and the least likely to work.
 
+### Correcting a total does not correct the worklist built from it
+
+A bad metric produces two artefacts: the number in the report and the ordering the steward
+derived from it. On 2026-09-13 a steward found it had been counting a justification phrase
+instead of the route field, corrected the total in the node — and left standing the per-file
+ordering that same phrase had produced. The next thing it did was push a worker at
+`chapter-2-schemes-fc06.md` as "the heaviest file, 203 rows". That file has **three** unmatched
+rows. The phrase is residue: it stays in rows whose route has since moved, so it accumulates
+exactly where work has already been done and points the worker at finished files.
+
+The real ordering was a different set of files entirely — `chapter-4-homotopy-theory-fc07.md` at
+183, `chapter-3-cohomology-fc06.md` at 181 — and none of the top eight by the bad metric matched
+the top of the true list.
+
+So when a measurement is found wrong, find everything derived from it before moving on: the
+totals, the per-item ranking, the node text, and any instruction already sent to a worker. The
+ranking is the dangerous one, because a total that is merely wrong gets reported while a ranking
+that is wrong gets *acted on* — it is the steward's lever on what the fleet does next, and a
+worker will follow it straight into finished work.
+
+And put the recomputation in the node instead of the numbers. A list of file counts is stale the
+moment the worker starts; a one-line command that regenerates it is not.
+
 ### Count the field, not a phrase that happens to appear near it
 
 A steward tracking a structured ledger will reach for `grep` on whatever string it noticed first,
