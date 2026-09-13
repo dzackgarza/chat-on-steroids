@@ -1375,6 +1375,28 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### The acceptance you write into a node is the work the node will produce
+
+A DAG node is a contract, and a worker satisfies the contract as written rather than the one
+you meant. On 2026-09-13 the terminal audit loop in all four managed repositories said to
+append every finding to `COMPLAINTS.md` and that findings need not be fixed in the same pass.
+That is satisfiable in perpetuity by writing notes, and it is the node with the longest
+residence time in the whole DAG — terminal and looping, so it is where a worker ends up and
+stays. The same steward had spent the previous day removing paperwork from those repositories
+and then wrote a node whose acceptance *was* paperwork.
+
+Two things follow. Every node's acceptance must name an object that did not exist in the
+repository before the turn: a solution written, a definition elaborated, a construction landed,
+a refactor committed. "Record", "note", "audit", "review", "reconcile" and "mark" are verbs
+that produce receipts, and a node whose acceptance is one of them will produce receipts. Where
+a record genuinely belongs in the node — a backlog file, a findings log — it is the residue of
+the turn, not its product, and the node must say so: the same turn repairs at least one of what
+it files.
+
+And looping nodes deserve the strictest reading, because a node that closes is audited once
+when it closes, while a node that never closes is audited only by whoever reads the commits it
+produces.
+
 ### Check a complaint is open before filing it as work
 
 Promoting outstanding complaints into the DAG is steward work, and the word doing the work in
