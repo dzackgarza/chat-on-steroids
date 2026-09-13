@@ -1708,6 +1708,29 @@ did not *appear* to work is how a steward spends an interval fighting its own fl
 whether the last message landed before sending a stronger one; a delivered interrupt does not
 need to be repeated because its effect is not visible yet.
 
+### Chain the edit to the commit, or the commit will describe work that did not happen
+
+`git commit -- TODO.md` commits whatever that path holds in the working tree, which is not
+necessarily what the steward just wrote. On 2026-09-13 an edit script failed its anchor assertion
+— a worker's markdown formatter had reflowed the paragraph being matched — and the commit ran
+anyway, because the edit and the commit were separate statements rather than joined by `&&`. The
+result was a commit whose message described a memory measurement, containing instead the worker's
+reflow and its own node closure. A false message in a repository's history is worse than a failed
+edit: it is evidence, and the next reader has no reason to doubt it.
+
+Two mechanical habits. Join the edit and the commit with `&&` so a failed edit stops the commit.
+And name the paths the edit touched, rather than committing a file wholesale, when a worker may
+be writing the same file — in a shared tree `-- <path>` is not a filter on *your* changes, only
+on that path's changes.
+
+When it happens, amend immediately if the commit is still `HEAD` and unpushed, describing what
+the commit actually contains and why the message was wrong. Leaving it and adding a correction
+later means the wrong message is what a log reader sees first.
+
+Editing a file a worker is concurrently formatting is also why the anchor moved. Prefer anchors
+that survive reflow — a node identifier, a heading — over a sentence from the middle of a
+paragraph.
+
 ### Syntax-check an instrument before the intervention that uses it
 
 The edit that added the escalation above placed its check before the helper it calls, so the
