@@ -1442,6 +1442,26 @@ explanation and two data points will write the explanation down, and it will the
 several ticks' decisions. A fleet that is working normally will absorb a great deal of
 intervention aimed at a decline that is not happening.
 
+### A tree signature says nothing on its own, because committing restores an earlier one
+
+Hashing the tracked dirty paths catches the stall that a count cannot: a worker holding the same
+files across ticks looks identical to one batching, until the signature proves it never changed.
+It also produces a false positive that will fool a steward exactly once. A worker that writes
+three files and commits them returns the tree to the signature it had before, so a tick that
+samples on either side of that commit reports `STATIC` for a stream that just banked. On
+2026-09-13 `research` did precisely this — 9 paths, 12 paths, commit, 9 paths — and read as static
+while being the most recently active stream on the board.
+
+The signature is only a stall signal paired with commit age. Static tree *and* no recent commit
+is the stall; static tree with a commit minutes ago is a worker that finished something. Record
+both in the same line so the pair is always read together, and never act on the signature alone.
+
+The general form is worth keeping in view: every cheap signal in this tick is a projection that
+loses information, and each one has a state it cannot distinguish. Counts miss which files;
+signatures miss the commit between two samples; commit age misses whether anything is being
+written; the stored kind misses whether work reaches the repository. The tick works because they
+fail differently, not because any of them is trustworthy.
+
 ### A true explanation becomes an excuse the second time you reach for it
 
 Pricing `new-qual-site`'s gate was right: its commit hook reparses the whole corpus, so batching
