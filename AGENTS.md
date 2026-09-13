@@ -1861,6 +1861,32 @@ meaningful. Correct a false blocker the moment it is found, in the document and 
 and say plainly that it was wrong — a stop-work order left standing on a misreading costs more
 than the misreading did.
 
+### A cleanup loop improves what it finds and never asks whether it should exist
+
+An audit that looks for bloat will find the worst implementation of a thing and make it a better
+implementation of that thing. On 2026-09-13 `sage-categories`' terminal loop closed
+`bloat-scheme-affine-wrapper-identity-cache` by replacing a hand-rolled `id()` dictionary with
+Sage's `MonoDict` — a genuine improvement, recorded with a proper acceptance, and the wrong
+question answered. The method still hand-writes check-dict, compute, store around that container;
+`@cached_method` removes the cache outright, and the repository already uses that decorator 174
+times. The owner spotted it from a one-line summary in a report.
+
+Behind it sat the larger version. `UniqueRepresentation` and `CachedRepresentation` appear
+nowhere in that repository, while `kernel/construction.py` keeps 394 lines of global
+identity-keyed tables mapping every object, element and morphism to the construction that
+produced it. That is precisely what the Sage mechanism provides, and the repository's own rule
+requires verified evidence that no dependency satisfies a requirement before writing one — no
+such evidence was recorded anywhere.
+
+So a loop that audits implementation quality needs the prior question written into its
+acceptance: does this exist because something upstream refused to do it, and is that refusal
+recorded? Otherwise reinvention survives every cleanup pass, looking better each time, because
+each pass is scored on the improvement it made rather than the question it skipped.
+
+For the steward, the tell is a repair whose description names a data structure rather than a
+behaviour. "Replaced X with Y" is a container swap; "removed X, the framework does this" is the
+offload. The first deserves a second look at the mechanism around it.
+
 ### Ask whether the work should have existed, not only whether it happened
 
 Counting commits was a proxy, so the tick started counting objects — definitions elaborated,
