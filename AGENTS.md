@@ -1375,6 +1375,31 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### The ladder is for stopped streams, not for streams doing the wrong thing
+
+A worker that ignores an instruction and a worker that has stopped look different in every
+instrument, and only one of them is what the unwedge ladder is for. On 2026-09-13 a steward
+wanted `lean-categories` to switch from one remap channel to the other, saw the count it cared
+about unchanged across ninety minutes, and climbed straight to `revive` — three times, against a
+chat that was generating, recording progress a minute earlier, and committing. The reloads all
+failed with `No page redeemed`, which is the app refusing to reload a live page, and each attempt
+opened a tab: seven duplicates and 686 MB of browser memory before `tidy` recovered it. The
+instruction had in fact landed on the first interrupt, and the worker was acting on it — its next
+commit was `fix(mapping): audit FC05 chapter 1 routes`, exactly the per-source work that had been
+asked for.
+
+So separate the two readings before choosing a rung. A stopped stream shows an empty tree, no
+commits, and nothing stored; the ladder exists for it. A stream that is committing while not
+doing the thing you asked is a scheduling or priority disagreement, and the remedy is the
+document plus evidence plus time to read it — never a reload, which at best discards the turn
+that was about to comply.
+
+Impatience is the tell. A count that has not moved for ninety minutes is a strong signal about
+priority and a weak one about liveness, and reaching for a stronger rung because a weaker one
+did not *appear* to work is how a steward spends an interval fighting its own fleet. Check
+whether the last message landed before sending a stronger one; a delivered interrupt does not
+need to be repeated because its effect is not visible yet.
+
 ### Syntax-check an instrument before the intervention that uses it
 
 The edit that added the escalation above placed its check before the helper it calls, so the
