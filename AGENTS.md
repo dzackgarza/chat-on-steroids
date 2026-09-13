@@ -1375,6 +1375,25 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### A cleanup step that has never once run looks exactly like a clean fleet
+
+`tidy` takes positional parameters — `quiet` in minutes, then a comma-separated `keep` list —
+and on 2026-09-13 a steward spent the session calling `just tidy quiet keep`, passing the
+parameter names as values. It failed every time with a `float()` traceback from inside the
+generated script, the failure scrolled past in a tick that had louder things in it, and no tab
+was tidied for hours. By the time anyone looked there were duplicate tabs on two managed
+conversations, which is a second typing surface on a chat that is supposed to have one.
+
+The shape generalizes past this recipe. A maintenance step whose only evidence of success is
+the absence of a complaint will be presumed to have run, and a step that never runs is
+indistinguishable from a step with nothing to do. Read what a cleanup command actually printed
+at least once per session rather than only noticing it when it is loud, and prefer a command
+that says what it kept and what it closed over one that says nothing on success.
+
+The recipe now names the mistake instead of raising. That fixes this call and not the class:
+any recipe invoked from a tick script is worth invoking once by hand, with its output read,
+before it is trusted to be quietly working.
+
 ### Check the work is possible before climbing the ladder
 
 A worker doing something other than the node you pointed it at looks identical whether it is
