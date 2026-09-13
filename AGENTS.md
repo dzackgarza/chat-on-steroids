@@ -1375,6 +1375,30 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Verify a blocking node's premise harder than an adding node's
+
+Nodes are not symmetric. One that adds work costs the time it takes; one that blocks work costs
+everything downstream of it for as long as it stands, and it stops a stream that was otherwise
+running. On 2026-09-13 a steward ran `git status` in `lean-categories`, saw `?? .agents`, and
+concluded that the corpus catalogue and every mapping decision — the artifact gating the whole
+program — was outside version control. It filed that as a node blocking the re-mapping work that
+mattered, and interrupted the worker with it. `.agents` is a symlink into the agent-memory
+vault, a separate git repository, where 336 of 378 mapping files are tracked with full history.
+`git status` in one repository cannot report the tracking state of a symlinked tree owned by
+another; it reports only that this repository does not track the link.
+
+So before a node blocks anything, state its premise as a claim and try to break it. Here that
+was one `ls -ld` and one `readlink`. The narrower true finding survived — 42 tables untracked in
+the vault, 23 files modified and uncommitted there, so mapping work is unbanked unless the vault
+is committed too — and it belonged beside the re-mapping rather than in front of it.
+
+The tell that a premise deserves this scrutiny is that it implies something alarming about work
+that has been running for a long time without anyone noticing. A real defect of that size is
+possible; far more often the steward is reading one instrument outside the context that makes it
+meaningful. Correct a false blocker the moment it is found, in the document and to the worker,
+and say plainly that it was wrong — a stop-work order left standing on a misreading costs more
+than the misreading did.
+
 ### Ask whether the work should have existed, not only whether it happened
 
 Counting commits was a proxy, so the tick started counting objects — definitions elaborated,
