@@ -2524,6 +2524,28 @@ individual repair, because every later promotion from that file is guesswork unt
 fixed. A promoted list whose entries have not been checked must say so in its own preamble,
 so the worker checks before working rather than after.
 
+### In this repository, author no longer separates steward from worker
+
+Production is measured by filtering on `dzackgarza@gmail.com` because workers commit under it and
+the steward commits under a noreply address. That separation broke here the moment this repository
+became an approved sandbox root: a worker editing it commits under the repository's own configured
+identity, which this repository's own policy requires to be the noreply address. On 2026-09-13 two
+commits at 11:41 and 12:03 carried the steward's address and were not the steward's.
+
+Both were good — one adding fleet convergence signals that warn against copying counts into this
+file, one recording that a reuse search is not exhausted without querying the live
+formalization-corpus index. Quality is not the issue; attribution is. Any measurement here that
+assumes author distinguishes the two parties is now wrong, and a steward reading its own commit
+count in this repository will over-report itself.
+
+So in this repository use the commit *time* against the tick's own record of what it wrote, or
+read the diff, rather than the author field. The four managed repositories are unaffected — they
+are not sandbox roots for each other, and their workers still commit under the personal address.
+
+And note the general shape: granting a worker write access to a repository silently merges its
+identity with whoever else commits there under the same configured user. That is a reason to
+decide the access question deliberately rather than as a side effect of making a path readable.
+
 ### Do not count your own commits as the worker's
 
 The steward writes into the managed repositories — DAG items, `AGENTS.md` rules, queue filings
