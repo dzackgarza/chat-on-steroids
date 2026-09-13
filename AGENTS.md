@@ -1375,6 +1375,24 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Syntax-check an instrument before the intervention that uses it
+
+The edit that added the escalation above placed its check before the helper it calls, so the
+script died on `status: command not found` at the moment it was launched against a live chat. The
+intervention did not happen. Nothing else reported a problem — the launch was backgrounded, the
+log held one unfamiliar line, and only reading that log distinguished it from a push in flight. A
+steward that had glanced at the exit status and moved on would have spent the interval believing
+a worker had been redirected.
+
+`bash -n` is one command and would have caught it. Run it after editing any script the tick
+depends on, and prefer to exercise the change once against something harmless before aiming it at
+a stream. Editing a tool and using it on a live target in the same step means a defect in the
+tool presents as a defect in the fleet.
+
+This is the same shape as a maintenance step that silently never runs: the failure mode of
+instrumentation is doing nothing while reporting nothing, and the only defence is reading what it
+actually printed rather than assuming the absence of a complaint.
+
 ### A waiter cannot outlast a turn, and turns grow with the conversation
 
 The send-on-a-gap waiter was written when managed turns lasted a few minutes, and it carries a
