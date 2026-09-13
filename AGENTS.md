@@ -1396,6 +1396,29 @@ only staying to watch showed it resume properly and come down to 85. A steward t
 watcher and moved on would have recorded "banking, verified" from one commit and missed that the
 first push had barely been obeyed.
 
+### A recorded failure set goes stale in one direction and nobody is watching it
+
+An observed failure set is the right artefact: it turns "the suite is red" into a list a worker
+can close one item at a time. Its weakness is that items naming another repository are verified
+once, at observation, and then re-read as current forever. Nothing in the observing repository
+re-checks them, and the fixing repository does not know the item exists.
+
+On 2026-09-13 `research` carried "`sage-categories` importing `typing.TypeIs` under Sage's Python
+3.12" in its terminal failure set. `sage-categories` had closed a node named
+`bloat-role-typeis-import` and its `kernel/roles.py` now reads `if TYPE_CHECKING: from typing
+import TypeIs`, so nothing imports it at runtime. The item had been dead for hours while the
+worker treated it as outstanding work.
+
+The steward reads both repositories and is the only party that can notice. So when a failure set
+names another repository, re-check those items against that repository each time the set is
+reviewed — it is a `grep` per item — and send the result rather than editing the set, because the
+set is the worker's observational record and overwriting it destroys the provenance of what was
+actually seen.
+
+Send what was verified and no more. Here the guard was confirmed present; whether the whole import
+succeeds was not, because the probe ran outside a real session and hit an unrelated circular
+import. Reporting "it works now" from that would have replaced one stale item with a false one.
+
 ### A blocker that spans two repositories is only visible to the steward
 
 Each worker sees one repository. When a failure's cause is in another, the consumer reports a
