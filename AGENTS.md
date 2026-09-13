@@ -1443,6 +1443,27 @@ repro trees is small, and the rule that stops them accumulating belongs in the r
 makes them. Everything else on that list is an owner decision about retention, and should be
 reported as one rather than carried as a fleet problem.
 
+### `git log --diff-filter=A` does not see merges, and a jump is as likely a merge as production
+
+A corpus that grows by 581 files in two hours looks like a worker producing at an implausible
+rate, and on 2026-09-13 that reading was one step from a scope intervention against
+`new-qual-site` — "ingesting faster than it solves, the queue will never converge". The
+author-filtered query meant to confirm it returned **zero** files added in five hours, which
+should have settled the question and instead produced a contradiction the steward nearly ignored.
+
+Both halves were artefacts. `git log --diff-filter=A --name-only` omits merge commits entirely
+unless asked for them, so in a repository doing branch consolidation every file that arrives by
+merge is invisible to it. And `HEAD@{5 hours ago}` is a reflog reference, not a point in time;
+comparing against it measures wherever HEAD happened to be. The truth came from
+`git rev-list -1 --before=` for the anchor and a per-commit diff against each parent: one commit,
+`merge: reconcile Core2 and remote main`, carrying the whole jump. Nothing was over-produced;
+existing work was absorbed, which the DAG has open items for.
+
+So when a count jumps, look for a merge before inferring a rate. Use `git rev-list -1 --before=`
+for historical anchors, never `HEAD@{time}`. And treat a contradiction between two measurements
+as the finding — the steward here had "581 added" and "0 added" in hand simultaneously and the
+temptation was to act on the one that fit the story.
+
 ### One tick is a sample; a trend needs the buckets
 
 A tick shows twenty-one minutes, and twenty-one minutes of four workers is noisy enough to
