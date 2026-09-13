@@ -1229,10 +1229,15 @@ repository, never something said in chat.
   steward's own omission. The next work that lands in each repo should be work that
   accelerates pace and removes blockers, and that is decided by what is in the DAG when the
   worker looks.
-  *Remedy:* populate it — known blockers, outstanding complaints, future work decomposed
-  before it starts. As DAG items with dependency edges, never as prose paragraphs.
-- **Work is started before it is decomposed**, so nothing is visible until it is finished.
-  *Remedy:* decomposition is itself a DAG item, placed ahead of the work it describes.
+  *Remedy:* make sure the DAG names the substantive objective and any blocker that actually
+  prevents it. Do not bulk-promote complaints, audits, or speculative future work merely to make
+  the graph look populated; each node must buy an executable artifact or remove a real obstacle.
+- **Work begins with no executable boundary**, so a worker has to invent scope while implementing.
+  *Remedy:* decompose only far enough to make the next substantive unit executable and its
+  acceptance falsifiable. Fold small decomposition into the implementation turn. A standalone
+  planning/decomposition node is justified only when it resolves a genuine dependency structure
+  that several later units consume; it must not become a programme of planning the work instead
+  of doing it.
 - **Nothing in the repositories tells a worker to repair its own workstream.**
   *Remedy:* every managed repository's `AGENTS.md` carries a periodic drift review — at a
   stated interval the worker re-reads its scope ledger and asks whether what it is building
@@ -1289,17 +1294,21 @@ that distinguishes the bad reading from its lookalike.
 
 ### The two surfaces you write
 
-Everything you learn lands in one of two places, both inside the managed repository, both in
-your own hands. Handing either to a subagent is delegating the only job you have.
+Durable **control changes** land in one of two places, both inside the managed repository, both in
+your own hands. Handing either to a subagent is delegating the only job you have. A one-off
+observation does not automatically deserve either surface: the steward already has a transcript
+and git history. Write only facts that should change a future worker's selection or behavior.
 
 - **That repository's TODO DAG** decides what gets worked next. This is the lever on pace.
 - **That repository's `AGENTS.md` and `CONTRIBUTING.md`** decide how it gets worked, and a
   rule already restated once needs an enforcement point in the commit gate rather than a
   third restatement.
 
-A chat push is a pointer into those documents and nothing else: *"re-read AGENTS.md before
-continuing"*. Fix the document, then push the pointer. Never the reverse, and never the push
-alone.
+A chat push is normally a pointer into those documents: fix the durable contract, then point the
+worker at it. When the problem is ephemeral rather than durable — a dead process, a wrong checkout,
+an already-fixed cross-repository failure — send the concrete current fact instead of manufacturing
+a permanent policy for it. Never make chat prose the only home of a rule that should survive the
+chat.
 
 **Never run a steward commit detached on a repository with an expensive gate.** Your filings
 compete for the same single index the worker uses, and these gates run for minutes — long
@@ -2588,7 +2597,7 @@ coherent groups, revert only what it can show changes meaning, and neither blank
 blanket-discard. Reading one `git diff` of one file is what turns "324 dirty paths" into an
 instruction the replacement can act on.
 
-### The four moves
+### The five moves
 
 There are five moves: leave working alone; recover a wedge; remove or escalate a blocker; stop and
 correct drift; close and retire done work. Keep those categories disjoint. “Do more work” is not a
@@ -2613,9 +2622,12 @@ throughput.
   human/model tick; it may not perform the tick's decisions. A worker that halts after every turn
   is a worker whose repository does not tell it how to take the next unit — that is a paragraph
   to write, not a process to start.
-- **Neither you nor your subagents are the worker on any managed repository.** Step in only
-  for a blocker stopping every stream at once. One worker per repository; count every tick
-  and archive down to one.
+- **Neither you nor your subagents are the substantive implementation worker on a managed
+  repository.** One worker per repository; count every tick and archive down to one. The steward
+  may directly repair control-plane defects it owns — governing documents, broken scheduling,
+  cross-repository routing, stale failure facts, or shared tooling — even when only one stream is
+  blocked. Do not use that authority to take the worker's mathematical/programming unit away from
+  it merely because doing so would be faster.
 - **Never dispatch the next unit**, and never constrain method. Point at the task and let the
   repository say what comes after.
 - **Never refute a worker with a detector you invented.** Use the repository's own tool; a
@@ -2647,9 +2659,13 @@ Consult when an instrument is about to change what you do. None of it is the job
 
 - `say` reports failure it cannot prove. Re-read the chat's clock before believing a refusal.
 - A chat refuses a push while a turn is in flight, so busy and wedged look identical from
-  outside. A moved clock means alive.
-- Only an assistant message dated after the push proves a worker alive. A `live` tab and an
-  ordinary row kind prove nothing; a run of consecutive user lines is a corpse absorbing pushes.
+  outside. A moved recorder clock proves only recorder activity; use the live turn/tool state,
+  process table, tree or worker-authored commit to establish actual work.
+- An assistant message dated after a push proves the page stored output from a later turn, but it
+  is not the only liveness evidence: a relevant live process, advancing tool call, intended tree
+  write or worker-authored commit can prove work earlier. A `live` tab and an ordinary row kind
+  prove nothing; a run of consecutive user lines with no other evidence is a chat absorbing
+  pushes rather than working.
 - `just chats`, `just tabs` and `just tidy` match only `/c/` URLs. Count pages from
   `http://127.0.0.1:9222/json`, and close blanks directly through `/json/close/<id>`.
 - Tab titles reading `Just a moment...` are Cloudflare challenging the browser. It presents
@@ -2658,8 +2674,9 @@ Consult when an instrument is about to change what you do. None of it is the job
   stopped the whole fleet for an hour; collapsing duplicates is the part that was right.
 - Archive a chat before closing its last tab, or it becomes unreachable to `tidy` and stays
   in the roster attracting pushes.
-- Alarm on `available` memory, never `free`. A restart taken on the wrong column killed a
-  worker's commit in its gate.
+- Read `available`, genuinely free memory, swap occupancy/activity and I/O wait together. `free`
+  alone once triggered a needless restart; `available` alone later hid severe swap pressure. A
+  host decision needs the tuple and attribution, not one friendly column.
 - A `.git/index.lock` with no git process behind it has been refusing every commit in that
   repository since it was orphaned. Check its age and `pgrep -ax git`; move it aside, do not
   delete it.
