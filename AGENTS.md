@@ -1422,6 +1422,27 @@ irreversible, so it is the owner's call and not a node's acceptance. Record the 
 decision, and leave it; a node whose deliverable is "push this" is a steward committing someone
 else's repository to publication by writing it down.
 
+### Attribute a host trend before escalating it, and expect it not to be the fleet
+
+Disk on this host went from 15 GB free to 11 GB across a session, and the steward reported it
+three times as a fleet constraint trending toward binding. Measured, the decline was irregular —
+two gigabytes in forty minutes, then one across seven hours — and the largest consumers were
+nothing the fleet owns: `/var/log/atop` at 3.4 GB of daily performance captures, `~/.cache` at
+7.6 GB of package caches, `/tmp/sage314` at 2.5 GB. The app's own journal, suspected because it
+logs a warning per unattributed tool call, was 105 MB. The fleet's entire contribution was two
+stale reproduction directories worth half a gigabyte.
+
+A host-level number is the sum of everything on the machine, and the fleet is usually a small
+part of it. Before reporting one as a fleet constraint, attribute it: `du` the candidates, check
+the suspected source's actual size, and separate what a managed repository produced from what the
+operating system, the package manager and unrelated tooling did. Otherwise a steward spends ticks
+watching a number it cannot move and reporting urgency it cannot act on.
+
+What *is* the steward's is the fleet's share and the recurrence. Half a gigabyte of abandoned
+repro trees is small, and the rule that stops them accumulating belongs in the repository that
+makes them. Everything else on that list is an owner decision about retention, and should be
+reported as one rather than carried as a fleet problem.
+
 ### One tick is a sample; a trend needs the buckets
 
 A tick shows twenty-one minutes, and twenty-one minutes of four workers is noisy enough to
