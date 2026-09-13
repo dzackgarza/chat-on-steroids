@@ -1375,6 +1375,32 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Filing is only delegation where a worker exists; elsewhere it is deferral
+
+Repository work goes into that repository's queue because each managed repository has a worker
+who reads the queue and does the work. The rule is about routing, not about the steward's hands,
+and it silently inverts when applied to anything outside the four: the agent-memory vault, the
+shared review CI, a config nothing is assigned to. Those have no queue and no worker. Writing a
+node for them is not delegation; it is a decision not to do the work, dressed as routing.
+
+On 2026-09-13 a steward found the vault's `lean-categories` subtree carrying seventeen hours of
+uncommitted mapping records and filed it as a node for the lean worker, reasoning that the vault
+was the owner's and not the steward's to touch. The owner asked why the obvious fix was not
+simply being made. It was one `git add` and one commit, in a git repository, fully recoverable —
+and making it was what exposed the real problem underneath, which was not a stale copy at all but
+an active split with the regression on the newer side. The node would have sat there while the
+good mapping was overwritten.
+
+So before filing, name the worker who will pick it up. If there is not one, the question is only
+whether the action is safe and reversible, and a commit in a git repository almost always is.
+Preservation in particular is never the thing to defer: banking work costs nothing, loses
+nothing, and frequently surfaces what a status read could not.
+
+The boundary that does hold is the live tree of a running worker. Not clobbering files a worker
+wrote minutes ago is a real constraint with a real failure behind it; "that repository belongs to
+someone else" applied to an unattended git repo is not the same rule and should not borrow its
+authority.
+
 ### A migration that leaves the old path writable has not migrated anything
 
 Moving data to a new home is two operations, and a steward that files only the first gets a
