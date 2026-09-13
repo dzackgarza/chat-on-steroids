@@ -1375,6 +1375,27 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### An error rate is not comparable across streams doing different work
+
+A steward with four transcripts will eventually divide errors by calls and compare. On
+2026-09-13 that produced `lean-categories` at 13.8% against `sage-categories` at 1.6%, and a
+first draft of a fleet-wide instrument defect. Reading the errors dissolved it: half were `lake
+env lean` exiting 1 because a file did not elaborate, which in a proof assistant is not a fault
+but the feedback loop itself — the worker reads the error, patches, and elaborates again. A
+stream whose tool reports failure as its normal output will always look broken beside one whose
+tool reports success.
+
+The rate is not the finding; it is at best a pointer at which transcript to read. Classify the
+errors by what failed before comparing anything, and expect the denominators to be
+incommensurable — a Lean elaboration, a Sage suite and a pandoc render are not the same event.
+
+Reading them did find something real, and much narrower than the rate suggested: thirteen
+`cat > Foo.lean <<'EOF'` file writes failed in that one chat against zero in the three
+repositories that do not write Lean, with the patch tool succeeding on the same content every
+time. That is worth a rule in the repository that hits it. It is not worth the fleet-wide claim
+the ratio was about to support, and the difference between the two was one command spent
+reading the errors instead of counting them.
+
 ### Repair the document that states the rule, not the one that describes the work
 
 A repository's documents are not interchangeable, and a worker blocked by one of them is
