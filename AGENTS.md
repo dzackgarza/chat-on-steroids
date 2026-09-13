@@ -1526,6 +1526,29 @@ whether new files are being read; for a slow gate it is whether the gate is actu
 A cause that is real is the most durable way to stop seeing, precisely because it survives
 scrutiny the first time.
 
+### Shared tooling that prints for a human is a context tax on every agent that calls it
+
+A gate's output is free when a person runs it and scrolls past. It is not free when the caller is
+an agent: every line enters a conversation that is already the scarcest resource in the fleet. On
+2026-09-13 `_semgrep-autofix` in the shared review CI was found printing all 41 findings with code
+snippets on every invocation — 177 lines, 8.4 KB, measured — while its own comment says CI-tier
+verification owns those findings and the recipe itself only checks the exit status. A repository
+committing twenty times an hour pushed roughly 200 KB an hour of output nobody could act on into
+its worker's context, in four repositories at once.
+
+That is a plausible part of why one chat kept ending in `chat_error`: it commits most, so it
+absorbed most. The fix was to capture the scan, print the autofix result and a finding count, and
+replay the log only on failure — three lines instead of 177, with behaviour and exit codes
+unchanged.
+
+So when a fleet's conversations grow faster than the work explains, audit what the gates print,
+not only what the workers write. The question for any shared recipe is what the caller can act on:
+output that exists to be read by a human reviewing a terminal is a defect when the caller is an
+agent that must carry it forward. Capture it, summarise it, and replay it on failure.
+
+This lives upstream in the tooling repository, not in the consumers — a per-repo workaround would
+leave the tax in place for everyone else.
+
 ### When a worker will not do a cheap thing, price it before pushing again
 
 A steward that asks twice for something obvious and does not get it has learned something about
