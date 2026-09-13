@@ -1487,6 +1487,27 @@ reported a fabricated regression, from switching between `Strict bundle` and `St
 semantics reject` between two measurements and comparing them — a metric whose definition changes
 mid-session is worse than no metric, because it manufactures events.
 
+### The app's send registry is not a complete record of what starts turns
+
+A steward reasons as though the only things that begin a managed turn are its own pushes and its
+continuation driver. The app says otherwise, in its own words: `send-origin: … a turn started
+that this app did not send; … the send registry, draft ledger and push-correlated attribution
+simply do not describe this turn`. On 2026-09-13 it logged **23** of those, spread across the
+session — 04:24, 05:24, 05:42, 05:45, 05:53 twice, 06:14, 06:22, then three chats at 06:25:30,
+:33 and :36 within six seconds of each other, with the observer healthy throughout.
+
+The mechanism was not established, and guessing at it is not the point. The consequence is: two
+inferences the tick leans on are unsound. A turn beginning shortly after a push is not evidence
+the push started it, and a chat that begins working after an interval of silence has not
+necessarily been reached by anything the steward did. Attributing fleet behaviour to
+interventions on timing alone will credit the steward for work that was going to happen.
+
+So verify interventions against content, which was already the rule, and treat turn starts as
+observations rather than receipts. When three turns begin within seconds of each other, look for
+a common cause before reading three separate stories into it — and check `turnStartedAt` rather
+than `generatingForMs`, since the latter is a duration and the former is the timestamp that makes
+coincidence visible.
+
 ### An outlier turn duration is the signal, not silence against commit age
 
 The decisive miss happened twenty minutes before that revive. `research` read `4 commits/21m`
