@@ -1375,6 +1375,28 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### A migration that leaves the old path writable has not migrated anything
+
+Moving data to a new home is two operations, and a steward that files only the first gets a
+second writable copy rather than a move. On 2026-09-13 `lean-categories` moved 378 mapping
+records out of a vault symlink into a tracked `corpus/`, correctly and verifiably — and the
+symlink stayed live, because it also carries plans and decisions that had nothing to do with the
+migration. Within half an hour the two copies had diverged in both directions, and the newer one
+was the worse one: rows the worker had correctly re-mapped to `PrimeSpectrum.zariskiTopology` and
+`CofiniteTopology` in the old path were back at `unmatched` in the new path, and two more had
+been rewritten to point at the repository's own files instead of the library. Work was being
+destroyed by being done twice.
+
+So a migration closes the old path in the same operation that opens the new one, and when the
+old path cannot be removed wholesale — because something else legitimately lives behind it — the
+thing to close is the specific subtree that moved. "Ignored by git" does not close a path; git
+stops seeing it while every tool, script and worker still reads and writes it.
+
+Until the old path is closed, the two copies are the steward's to reconcile, and reconciling
+means reading the diff rather than taking the newer file. Freshness is not correctness here: the
+regression arrived last, and a steward that resolved by timestamp would have discarded the good
+mapping and kept the one that recorded reinvention as a route.
+
 ### A correction can be worse than the mistake; say what was wrong, not what to undo
 
 A steward who finds it wrote something false will want to retract it, and the retraction goes
