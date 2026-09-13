@@ -1375,6 +1375,27 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Fix a failure mode in one repository, then sweep the other three for it
+
+The fleet is four repositories with one steward, so a habit of that steward is present in all
+four and a defect in how it writes is never local. On 2026-09-13 a steward found that a count
+it had measured by hand and written into `new-qual-site`'s DAG was wrong, recorded the general
+rule — route the node to the tool, never to the steward's arithmetic — committed it, and went
+back to the tick. Twenty minutes later `lean-categories` turned out to carry the same mistake
+twelve times over, one per source, with `fc05-definitions` still reading "199 definitions
+pending of 376" after that source had closed at 371 of 371 and the denominator had moved twice
+under classifier repairs. `research` carried a third instance in the steward's own prose.
+
+Recording a failure mode is not the same as repairing it, and the repair is not the instance
+that exposed it. When a tick produces a rule about how documents are written, the rest of that
+tick is spent grepping the other three repositories for the same shape — before the next
+measurement, because the stale documents are steering workers the whole time it is deferred.
+
+The shapes worth grepping for are the ones that duplicate something a command regenerates: a
+count, a percentage, a file list, a "N of M" in a node body, a frontier figure restated. A
+record of finished work is different and belongs frozen — an audit that verified ten cards at a
+named commit is a historical fact, not a stale worklist, and rewriting it destroys evidence.
+
 ### Sampling a detector's hits proves precision and says nothing about recall
 
 A steward who writes a detector to size a defect will check it, and the natural check is to
