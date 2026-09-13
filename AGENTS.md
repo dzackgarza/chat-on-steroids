@@ -1549,6 +1549,24 @@ reported a fabricated regression, from switching between `Strict bundle` and `St
 semantics reject` between two measurements and comparing them — a metric whose definition changes
 mid-session is worse than no metric, because it manufactures events.
 
+### A transcript tail of generic lines is not evidence of inactivity
+
+`just transcript` renders tool calls, and many of them render as `Ran a command · ✓ 0ms` with no
+text. A tail of four such lines looks like a worker idling on trivia. On 2026-09-13 a steward
+read exactly that and reported that `sage-categories` "has not visibly taken the node yet" —
+while, in the same window, it was committing `@cached_method` conversions at 08:24:33, 08:25:57
+and 08:27:58, which is precisely the work the node asked for. The commit log said so plainly and
+was one command away.
+
+The transcript is the right instrument for *what kind* of thing a worker is doing — a repeated
+`write_stdin` wait is a loop, a run of `rg` and file reads is a search. It is a poor instrument
+for whether anything is happening, because its most common rendering carries no content, and a
+tail is a slice. Never report a negative from it. Pair it with the commit log and the tree, which
+answer "is there output" directly.
+
+This is the ordinary rule about partial reads, pointed at the steward's own tooling: a slice
+supports "not found in what I looked at", never "not happening".
+
 ### The app's send registry is not a complete record of what starts turns
 
 A steward reasons as though the only things that begin a managed turn are its own pushes and its
