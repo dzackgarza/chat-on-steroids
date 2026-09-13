@@ -1422,6 +1422,28 @@ irreversible, so it is the owner's call and not a node's acceptance. Record the 
 decision, and leave it; a node whose deliverable is "push this" is a steward committing someone
 else's repository to publication by writing it down.
 
+### A true explanation becomes an excuse the second time you reach for it
+
+Pricing `new-qual-site`'s gate was right: its commit hook reparses the whole corpus, so batching
+is a rational response and per-card pushes were asking it to pay a tax. The steward recorded
+that, stopped pushing, and classified the stream "working — batching under its gate tax". It then
+used the same sentence the following tick, and the tick after, while twenty-three written cards
+sat unbanked for roughly two hours. The explanation had stopped describing what was happening and
+become the reason not to look.
+
+The discriminator was in the tree the whole time. A worker that is batching keeps writing: its
+dirty set grows and its paths change. This one held the same twenty-three
+`SRC-PERUTZ-ALGEBRAIC-TOPOLOGY-I-2008` cards across every reading, with nothing recorded for
+twenty-four minutes and no tool calls in flight. Static tree plus silence is a stall wearing the
+costume of a known-good behaviour, and one revive banked the batch immediately.
+
+So when a diagnosis explains a stream's behaviour, write down what would distinguish that
+behaviour from its failure mode, and check *that* on later ticks rather than re-asserting the
+diagnosis. For batching it is whether the tree is still moving; for a long reuse search it is
+whether new files are being read; for a slow gate it is whether the gate is actually running.
+A cause that is real is the most durable way to stop seeing, precisely because it survives
+scrutiny the first time.
+
 ### When a worker will not do a cheap thing, price it before pushing again
 
 A steward that asks twice for something obvious and does not get it has learned something about
