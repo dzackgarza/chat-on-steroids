@@ -1671,6 +1671,25 @@ explanation and two data points will write the explanation down, and it will the
 several ticks' decisions. A fleet that is working normally will absorb a great deal of
 intervention aimed at a decline that is not happening.
 
+### Read the age distribution of a dirty tree, not its size or its signature
+
+A growing dirty tree reads as a worker mid-batch, and a changing signature reads as a worker still
+writing. Both pass while a stratum at the bottom never lands. On 2026-09-13 `new-qual-site` held
+112 tracked paths of which **78 were older than thirty minutes**, the oldest — a whole
+`SRC-UGA-MATH8155-STARTER-PROBLEMS` collection — written at 02:45 and still uncommitted eleven
+hours later. Every tick had seen the count rise and the signature change, because each new source
+piled a fresh layer on top, and every tick had concluded the stream was banking normally.
+
+So bucket the modification times: how many dirty paths are under ten minutes old, how many over
+thirty, and when was the oldest written. A healthy tree is mostly recent with an old tail of
+nothing; a stream in trouble has a floor that never moves while the ceiling churns. Swept across
+the fleet the same reading separated them cleanly — `lean-categories` carried zero dirty paths at
+all, `sage-categories` four all older than thirty minutes, `research` two of twelve.
+
+The instruction that follows is the one to give a worker: before starting a new unit, commit
+anything in the tree older than the unit you are about to start. That makes the floor impossible
+to accumulate without requiring anyone to remember what is down there.
+
 ### A tree signature says nothing on its own, because committing restores an earlier one
 
 Hashing the tracked dirty paths catches the stall that a count cannot: a worker holding the same
