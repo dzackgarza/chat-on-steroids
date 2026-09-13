@@ -1396,6 +1396,26 @@ only staying to watch showed it resume properly and come down to 85. A steward t
 watcher and moved on would have recorded "banking, verified" from one commit and missed that the
 first push had barely been obeyed.
 
+### When a worker will not do a cheap thing, price it before pushing again
+
+A steward that asks twice for something obvious and does not get it has learned something about
+the request, not about the worker. On 2026-09-13 `new-qual-site` held twenty-two written cards
+across half an hour and ignored two pushes to bank them per collection. The reason was in its own
+commit gate: every commit touching `corpus` materializes the entire corpus, vocabularies and wiki
+into a temporary tree and reparses roughly 5900 cards, observed at sixty seconds. Per-card
+banking costs twenty to forty minutes of gate for that batch. The worker was not undisciplined;
+it was avoiding a tax, and both pushes were asking it to pay one.
+
+So when an instruction is cheap to state and is not being followed, open the recipe it implies
+and price it before repeating yourself. A gate whose cost scales with the whole repository
+rather than the change is an incentive against small commits, and no amount of doctrine about
+banking will outweigh it — the fleet's granularity is set by what the gate charges, not by what
+the documents ask.
+
+This is the same rule as fixing the obstruction rather than routing around it, pointed at the
+steward's own instructions: a push that asks a worker to absorb a cost the steward has not
+measured is the cheapest thing to send and the least likely to work.
+
 ### `noProgressForMs` far exceeding time-since-commit means producing without storing
 
 The decisive miss happened twenty minutes before the revive. `research` read `4 commits/21m` and
