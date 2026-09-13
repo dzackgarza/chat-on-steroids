@@ -1576,6 +1576,31 @@ its tree and its commits, and if those are empty too, revive. Reading the four t
 catches the case where every turn is long at once, which is a host problem rather than four
 worker problems.
 
+### Revive fixes a page; it does not fix a loop, and the rungs are not ordered by strength
+
+The ladder reads as increasing force — push, interrupt, revive, replace — and that ordering is
+about how much of the chat each rung disturbs, not about how likely each is to work. On
+2026-09-13 `research` stalled with `chat_error`, a static tree and no commits for twenty-one
+minutes. A revive reloaded the page, the turn restarted, and ten minutes later the tree was byte
+for byte identical and nothing had been stored. Reading the transcript showed why: its last
+several calls were `write_stdin … Waited on session` against an exec session with no process
+behind it. The worker was in a wait loop, and a reload restored the conversation faithfully —
+including the loop.
+
+What broke it was an interrupt, nominally a weaker rung, carrying the one thing a reload cannot:
+a description of what the worker was doing wrong. "You are waiting on a session that will not
+produce anything; abandon it and use short bounded commands." Its tree moved within two minutes.
+
+So diagnose the stall's layer before choosing a rung. A page-layer problem — an error state, a
+frozen composer, a conversation that will not store — is what revive is for. A behaviour-layer
+problem is information-shaped, and no amount of reloading supplies information; the worker will
+resume the behaviour because the behaviour is in the conversation the reload just restored.
+Reaching for a weaker rung after a stronger one failed is the correct move when the stronger one
+addressed the wrong layer.
+
+The transcript is what separates them, and it is one command. A stalled stream whose tool calls
+are all the same call is looping; one with no calls at all is stopped.
+
 ### The ladder is for stopped streams, not for streams doing the wrong thing
 
 A worker that ignores an instruction and a worker that has stopped look different in every
