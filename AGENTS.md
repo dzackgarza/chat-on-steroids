@@ -1823,6 +1823,25 @@ answer "is there output" directly.
 This is the ordinary rule about partial reads, pointed at the steward's own tooling: a slice
 supports "not found in what I looked at", never "not happening".
 
+### A burst of unsent turn-starts predicts stalls in exactly those chats
+
+The app logs `send-origin: … a turn started that this app did not send` and those events arrive in
+bursts. On 2026-09-13 five fired between 11:20:56 and 11:21:05; three of them began the current
+turns of `research`, `lean-categories` and `sage-categories`, at 11:20:59, 11:21:05 and 11:21:05.
+Fifty minutes later all three sat in `chat_error` with no tool calls running, nothing stored for
+thirty-nine minutes, and between them one `todo` commit. The same shape appeared at 06:25, when a
+three-chat burst was followed by the same three needing revives.
+
+Two bursts is not a mechanism and this does not explain what starts the turns. What it does give
+is an early signal the tick was not using: `journalctl --user -u chat-on-steroids.service | grep
+'did not send'` names the chats and the minute, and a burst there is a reason to look hard at
+those specific chats on the next pass rather than waiting for the commit drought to accumulate.
+
+Read it as a predictor, never as a diagnosis. Some externally started turns produce normally —
+the count today ran to dozens against a handful of stalls — so the burst narrows where to look
+and the tree, the commit log and `pendingTools` still decide. All three revived here and two had
+committed within four minutes.
+
 ### The app's send registry is not a complete record of what starts turns
 
 A steward reasons as though the only things that begin a managed turn are its own pushes and its
