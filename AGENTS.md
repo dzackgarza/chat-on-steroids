@@ -1396,6 +1396,32 @@ only staying to watch showed it resume properly and come down to 85. A steward t
 watcher and moved on would have recorded "banking, verified" from one commit and missed that the
 first push had barely been obeyed.
 
+### A blocker that spans two repositories is only visible to the steward
+
+Each worker sees one repository. When a failure's cause is in another, the consumer reports a
+symptom it cannot explain and the producer reports nothing at all, because nothing in the
+producing repository consumes its own published artifact. On 2026-09-13 `research` recorded that
+`just test-push` could not resolve `sage-categories@66efc15b`. From inside `research` that reads
+as a bad pin. It is not: the revision exists, ten hours old, an ancestor of `sage-categories`'
+local `main` — and that repository's `origin/main` is **1341 commits behind it**, so every
+revision `research` could sensibly pin is equally absent, and the newest one the remote carries is
+1341 commits stale.
+
+Neither worker could have found that. The steward is the only reader of both, so cross-repository
+resolution failures are the steward's to diagnose: take the identifier the consumer could not
+resolve, look for it in the producer, and compare the producer's local history against the remote
+the consumer fetches from.
+
+File it on both sides, differently. The consumer needs to know the failure is not repairable
+locally, and specifically that the tempting local fix — a filesystem path dependency — hides a
+publication gap affecting every other consumer. The producer needs to know a consumer exists at
+all, and what it owes that consumer.
+
+Then stop at the decision. Publishing 1341 commits of accumulated history is outward-facing and
+irreversible, so it is the owner's call and not a node's acceptance. Record the question, name the
+decision, and leave it; a node whose deliverable is "push this" is a steward committing someone
+else's repository to publication by writing it down.
+
 ### When a worker will not do a cheap thing, price it before pushing again
 
 A steward that asks twice for something obvious and does not get it has learned something about
