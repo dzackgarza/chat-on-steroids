@@ -1566,6 +1566,26 @@ irreversible, so it is the owner's call and not a node's acceptance. Record the 
 decision, and leave it; a node whose deliverable is "push this" is a steward committing someone
 else's repository to publication by writing it down.
 
+### Gate churn accumulates in caches, and the reclaim is smaller than the tool claims
+
+Running four repositories whose commit gates each resolve `uvx` tools puts the fleet's disk cost
+somewhere a steward does not think to look. On 2026-09-13 `~/.cache/uv` stood at 5.2 GB and had
+grown 749 MB in two and a half hours while every managed repository's own size was flat and
+`.lake` had not moved at all. The growth was not work; it was the same tools being resolved on
+every commit, four repositories over.
+
+`uv cache prune` is the right response and it reports optimistically. It removed 176301 files and
+announced 4.9 GiB, while the directory shrank 570 MB and free space rose 300 MB — most of what it
+counts is hardlinked and shared. It also declines to touch entries in use, which on a host where
+gates run continuously means a partial pass. Report the measured delta in `df`, never the tool's
+own figure.
+
+The rest of a `/tmp` at 6 GB divides cleanly. Fleet debris with a worker to route it to — a
+merge snapshot, a reproduction tree — goes to that worker with the rule that prevents recurrence.
+Everything else is retention: a 2.5 GB tool directory from three days ago, a 949 MB pytest tree, a
+3.5 GB monitoring log. Those are the owner's to decide and a steward should say so rather than
+carrying them tick to tick as a fleet problem.
+
 ### Attribute a host trend before escalating it, and expect it not to be the fleet
 
 Disk on this host went from 15 GB free to 11 GB across a session, and the steward reported it
