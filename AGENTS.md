@@ -1442,19 +1442,31 @@ This is the same rule as fixing the obstruction rather than routing around it, p
 steward's own instructions: a push that asks a worker to absorb a cost the steward has not
 measured is the cheapest thing to send and the least likely to work.
 
-### `noProgressForMs` far exceeding time-since-commit means producing without storing
+### An outlier turn duration is the signal, not silence against commit age
 
-The decisive miss happened twenty minutes before the revive. `research` read `4 commits/21m` and
-`silent=71m` in the same line: four commits had landed in the repository while the page had
-recorded nothing for seventy-one minutes. The steward took the commit count as evidence of health
-and left the stream alone for a full interval.
+The decisive miss happened twenty minutes before that revive. `research` read `4 commits/21m`
+alongside `silent=71m`, and the steward took the commit count as health and left it for a full
+interval. The first attempt to name the signal said that `noProgressForMs` greatly exceeding time
+since the last commit means producing without storing — and the very next tick showed that rule
+firing on two healthy streams at once, `research` at `silent=17m` with a commit a minute earlier
+and `sage` at `silent=14m` with the same. Both were fine.
 
-Those two numbers disagreeing is itself the finding. `noProgressForMs` measures the page's own
-recording, so when it greatly exceeds the time since the last commit, work is reaching the
-repository while nothing is reaching the conversation — the same storing-nothing family as
-`chat_error`, and the state a chat is in shortly before it stops entirely. Act on the divergence
-at the tick that sees it. There is no reading of a seventy-minute recording gap that makes waiting
-another twenty minutes correct.
+The reason is that `noProgressForMs` tracks the current turn's recording, so it sits at roughly
+the turn's own age whenever a turn is under way and has not stored yet. `silent ≈ turn` is the
+ordinary reading and says nothing. Silence against commit age is therefore not the comparison to
+make.
+
+What distinguished the real case was the turn itself: seventy-two minutes, against a fleet whose
+turns otherwise run two to twenty. `sage` was at sixty-five minutes in the same tick and also
+needed reviving. A turn far outside the fleet's own current range means the worker has not
+reached a turn boundary in that whole time — no boundary, no stored output, and nothing the
+composer can reach — and it precedes the stopped state rather than following it.
+
+So compare each turn duration against the other three, not against a fixed threshold, because the
+normal range moves with conversation length. An outlier is the tick's business that tick: read
+its tree and its commits, and if those are empty too, revive. Reading the four together also
+catches the case where every turn is long at once, which is a host problem rather than four
+worker problems.
 
 ### The ladder is for stopped streams, not for streams doing the wrong thing
 
