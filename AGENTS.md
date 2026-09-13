@@ -1134,9 +1134,18 @@ about how to work. Open-ended, but clear and precise about what the task is.
 **They are not one-shots.** One chat runs for many turns — typically tens of minutes, often
 hours. Leave it alone while it works.
 
-**Wedged, or gone quiet part-way through a larger task: send `Continue`.** One word. The chat
-already holds the whole ambient task, and explaining it again spends both contexts for
-nothing.
+**Do not send a bare `Continue` until you have classified the stop.** A quiet chat can be
+working on a long process, wedged, done, blocked by its own repository rules, or producing the
+wrong work. Those states require opposite actions. `Continue` is appropriate only when the
+current repository objective is still open, the next substantive unit is genuinely ready, no
+host/process/document blocker explains the stop, and the chat merely ended a turn early. Even
+then prefer a pointer to the durable source of truth — “continue the current TODO/AGENTS.md
+objective” — over a generic imperative.
+
+If the chat is repeating a behaviour, an interrupt carries the missing fact. If the page cannot
+store or start turns, revive it. If the task is complete, retire it. If the worker is producing
+wrong work, fix the governing repository document first and then point the worker at the corrected
+contract. A continuation is never a substitute for deciding which of those cases you are in.
 
 **Give `say` the whole conversation id, never a prefix.** `say` passes its first argument
 straight through as the `conversationId` of the queued command, so an eight-character prefix is
@@ -1154,18 +1163,40 @@ progress. Nothing more.
 ### The steward's job
 
 Four repositories are each finishing a defined body of mathematics, one worker chat attached
-to each. **Your product is mathematics landing in those repositories that would not have
-landed if nobody were watching.** Nothing else this session produces is worth anything: not
-the report, not the diagnosis, not the mechanism you now understand.
+to each. **Your product is correct substantive progress on those repositories' actual objectives
+that would not have happened without supervision.** A large amount of wrong mathematics,
+reinvention, cleanup churn, bookkeeping, or unverified code is negative progress even when it
+lands quickly. A stopped stream is obvious; a fast stream on the wrong invariant is the dangerous
+case because every liveness signal is green.
 
-> If workers are doing work, there is nothing to do. If they are wedged, unwedge them. If
-> they are done, launch new work. If they are building the wrong thing, fix the document
-> that told them to.
+Every tick therefore starts by recovering four facts for each stream, in this order:
 
-The rate is the pass mark. One working stream, one hour, produces on the order of ten written
-solutions, ten formalized definitions, a substantial part of a leaf category, or a real kernel
-repair. Below that is an outage whose cause has not been found yet, and the tick does not end
-until it is found.
+1. **Objective:** what accepted repository contract is this stream advancing now?
+2. **Artifact:** what concrete mathematical/software object should exist after the current unit?
+3. **Invariant:** what must remain true while that artifact is produced — source fidelity, reuse
+   before authorship, phase ordering, exact public behavior, solved-card correctness, etc.?
+4. **Evidence:** what direct observation says the worker is advancing that objective rather than
+   merely moving?
+
+Do not substitute activity for any of those. A worker can be busy, committing, and wrong. A
+worker can also be quiet because a correct gate is still running. Liveness is checked only after
+goal and invariant alignment.
+
+Output rate is a diagnostic, never a pass mark. Compare rates to find something worth reading,
+but never certify a stream from a count. Ten reinvented definitions are worse than one correct
+reuse mapping; sixty cache refactors after the functional DAG is closed are not sixty units of
+the project. Sample semantics, not just cadence.
+
+The governing loop is:
+
+> Reground on the repository's current objective; inspect the direct evidence; classify the
+> stream; act only on that classification; verify the intervention in the same tick; then audit
+> whether your own model of the stream was falsified by what happened.
+
+That last clause is mandatory. The steward is part of the control system and repeatedly becomes
+the source of stale metrics, impossible nodes, wrong rankings, duplicate work, and self-sustaining
+cleanup. A tick is incomplete until new evidence has been compared with the prediction that
+caused the action.
 
 ### What stops the mathematics
 
@@ -1209,6 +1240,52 @@ repository, never something said in chat.
 - **Policy is delivered in chat.** A worker follows its own repo's documents; a push carrying
   policy buys one turn of compliance and dies with the chat.
   *Remedy:* below.
+- **Motion is mistaken for the objective.** A terminal audit/refactor loop, a recurring cleanup
+  queue, or a generic continuation driver can keep a repository active forever after its actual
+  acceptance is closed. The worker appears exemplary because it never stops.
+  *Remedy:* once the substantive objective is accepted, stop the stream unless a new substantive
+  objective already exists. Maintenance loops are bounded work triggered by concrete defects,
+  not perpetual employment for a worker.
+- **A phase boundary is rewritten to legitimize work that crossed it.** Mapping becomes
+  definition authoring; definition work quietly proves theorems; an audit starts implementing
+  what it was meant to classify. The repository then changes its rule so the already-written work
+  counts as compliant.
+  *Remedy:* preserve the prior contract, classify the authored material as material needing later
+  audit, and restore the phase boundary. A policy edit may correct a false rule; it may not launder
+  work into the phase merely because reverting or auditing it is inconvenient.
+- **The steward rewards honest reporting of a stall instead of resolving the stall.** A worker
+  can accurately say a process died, a gate is red, or nothing has landed and still leave the
+  repository stopped for another tick.
+  *Remedy:* an accurate diagnosis is input to an action, never the product. Resolve the blocker,
+  change the runnable contract, or replace the dead execution path in the same tick.
+
+### Observed pitfall index — use this as differential diagnosis
+
+The detailed incidents below are retained because they show how these failures actually present.
+Use this index before inventing a new explanation. The right column names the falsifier or action
+that distinguishes the bad reading from its lookalike.
+
+| Apparent healthy signal | Failure it can hide | What to check instead |
+| --- | --- | --- |
+| many commits / high output rate | fast wrong work or reinvention | sample one recent artifact against the source/dependency/acceptance |
+| terminal audit still finding things | self-sustaining cleanup after acceptance | ask whether the repository's substantive DAG is already closed |
+| `unmatched` / local-owner mapping | false gap or laundering through project code | inspect the external/library route and trace project-existing code to its own owner |
+| worker says a blocker is known | blocker being endured forever | reproduce at the blocker owner and repair or make the runnable contract explicit |
+| same explanation across ticks | a true diagnosis that became an excuse | test the discriminator that separates the healthy behavior from its failure mode |
+| chat is busy | dead session polling or unrecorded loop | inspect process liveness, tool pattern, tree movement, and commit clock |
+| chat is quiet | done, blocked, wedged, or merely between turns | read the objective and acceptance before sending anything |
+| `Continue` gets activity | generic continuation created cheap/admin work | verify the resulting artifact advances the current substantive objective |
+| TODO keeps offering a node | stale completion state | compare the node's acceptance with repository state and close it when proven |
+| a metric improved | field/denominator/ranking may be wrong | recompute from the canonical field and update every derivative ranking/instruction |
+| detector samples are all correct | detector may have poor recall | audit the enumeration/domain or compare an independent implementation |
+| worker changed code after a push | timing correlation credited as causation | verify the change matches the pushed objective and could not predate the intervention |
+| a stronger escalation failed | escalation addressed the wrong layer | diagnose page-layer vs behavior-layer vs repository/document blocker |
+| cache/refactor got cleaner | hand-rolled mechanism still exists | ask whether the dependency/framework should own the mechanism at all |
+| failure set still lists an item | cross-repository observation may be stale | re-check the producer repository before assigning local repair work |
+| verification is intentionally deferred | bank grows after verification became ready | treat a ready-but-unstarted verification phase as a wedge |
+| steward doc commit moved the clock | worker may still be stopped | filter worker production from steward-authored changes |
+| a watcher will report later | intervention is being carried into another tick | stay with the intervention until it lands or fails |
+| automated driver keeps chats alive | judgment has been replaced by unconditional motion | stop the driver; every send/interrupt/revive requires a fresh classification |
 
 ### The two surfaces you write
 
@@ -1860,6 +1937,23 @@ intervention did not land and the outcome happened regardless, which is the ordi
 worker that was already going to do the right thing. Report the push as not landed and the stream
 as working, and never let a coincidence of timing become evidence that a rung did something.
 
+### After an app restart, `lastStoredKind` is empty, not dead
+
+The recorder's per-conversation state lives in the MCP server process, so restarting
+`chat-on-steroids.service` clears it. Every managed chat then reports `lastStoredKind: None` until
+it next stores something — which is indistinguishable, in that field alone, from a chat that has
+never stored anything, and adjacent to the dead-chat reading the tick escalates on.
+
+So a restart costs the stall detector its primary signal for a few minutes per chat. Fall back to
+the tree and the commit log, which are unaffected, and do not classify on `None` until each chat
+has stored once. On 2026-09-13 two of four chats read `None` immediately after a restart while
+both were generating normally.
+
+The restart itself is cheap if aimed correctly: `chat-on-steroids.service` is the MCP server, and
+the browser and tunnel are separate units, so restarting it leaves every tab and conversation
+intact. Wait for `pendingTools` to reach zero across all managed chats first — an in-flight
+`exec_command` dies with the process and the worker sees an unexplained tool failure.
+
 ### `chat_error` is a fifth state: running at the tool layer, storing nothing
 
 A chat whose `lastStoredKind` is `chat_error` can keep executing tool calls indefinitely. On
@@ -2307,45 +2401,175 @@ worker by what the worker did.
 
 ### Measuring production
 
-**Count the objects.** How many things of the kind this repository exists to produce came
-into existence since the last tick: solutions written, definitions formalized with
-provenance, theorems proved, constructions landed with their regression, defects actually
-repaired. One number per repository, compared against the rate.
+Measure **falsifiable artifacts that advance the current accepted objective**. Counts are
+secondary summaries after that classification, never the classification itself. A solution counts
+only if it solves the card; a mapping counts only if it identifies the correct owner; a definition
+counts only if the current phase permits authoring and the source/dependency comparison supports
+it; a refactor counts only if the repository actually has an open refactor objective. The same
+diff under a different phase can be useful work, premature work, or damage.
 
-Three proxies are green during exactly this failure and none of them may be used. Commit
-count: fifty-five in five hours, thirty-two of them under five lines of bookkeeping. Diff
-line mass: 97% substantive in that same hour, because paperwork commits are tiny. The ledger
-delta: a queue went 47 done to 107 and a TODO fell 48 open to 30 while nothing was built,
-because dispositions and claim releases tick them.
+For each stream keep these six facts in working memory for the current tick; do not create a new
+persistent ledger for them:
 
-So a tracking surface is itself suspect: **can a closure on it be earned without an object
-existing that did not exist before?** If a disposition, a claim, a tick or a record update
-can close an entry, that surface is measuring activity rather than content, and repairing it
-outranks every push. Where a repository owns a real counter, use it — `new-qual-site` ships
-`just unsolved`. Where none exists, getting one written into that repository is steward work.
+```text
+objective        the current accepted repository goal
+unit contract    the ready node / acceptance being executed
+artifact         the concrete thing this unit should add or repair
+invariant        the semantic constraint that must survive
+execution        the test/build/source comparison that can falsify the artifact
+direct state     worker turn, tree, process and worker-authored commit evidence
+```
 
-Two further reads explain the number. **The repository's invariant**: provenance to
-literature, exactness of a projection, a corpus genuinely solved, a type-checked engine — ask
-whether the last commits preserved it, because a worker producing damage passes every
-liveness check there is. **The worker's own sentence**: a worker that names a disposition or a
-claim as its unit has already lost the next hour, and it says so before the count shows it.
+A number is useful only after those six facts agree. Three common proxies stay forbidden as
+certificates: commit count, changed-line mass, and queue/TODO deltas. All can increase while the
+project goes backwards. A repository-owned scalar such as `just unsolved` can measure one stated
+property, but it cannot certify the quality or legitimacy of the work that changed it.
+
+A tracking surface is suspect whenever an entry can close without the artifact named by its
+contract existing. Fix that surface. Conversely, do not invent a counter merely because a thing is
+hard to supervise: where correctness is semantic, sample the semantics.
+
+Every periodic audit samples at least one recent substantive artifact from every active stream.
+For reuse-first formalization this means opening the actual upstream/library candidates. For
+source-backed content it means comparing the actual source statement. For runtime/framework work
+it means exercising the public consumer or reading the exact regression. A productive stream is
+not exempt; it is the one for which semantic sampling matters most.
 
 ### The tick
 
-1. Count production per repository and compare to the rate.
-2. For anything below rate, find which cause above is operating and write the remedy into
-   that repository — a DAG item, a rule, or both.
-3. Drive: leave working streams alone, unwedge the wedged, re-scope or replace the done,
-   point the drifting back at the document you just fixed.
-4. Verify against new content within ninety seconds. Never carry an unverified intervention
-   into the next tick, and never close a recovery on a delivery receipt or a `turn_start`.
-5. Archive finished chats and close their tabs.
-6. Say one short paragraph: what was built, what you did about anything that was not
-   building, and any escalation only the owner can resolve.
+Run these steps in order. Skipping the early ones and starting from chat liveness is the failure
+mode that produced most of the incidents in this section.
 
-A need discovered inside a turn is closed inside that turn. The interval is a ceiling on how
-long the fleet may go unlooked-at, not a queue to put a remedy in. If a tick produced no
-action and no content followed it, the next one drives every stream before measuring anything.
+0. **Finish the previous intervention first.** If the prior tick sent, interrupted, revived,
+   replaced, edited a governing document, or started a corrective run and its result is not yet
+   known, resolve that before measuring anything else. An unverified intervention is not allowed
+   to become background state.
+1. **Reground each stream from durable state.** Read the current TODO/DAG node and its acceptance,
+   plus any governing rule that materially constrains it. Do not rely on the previous tick's
+   summary. Establish the objective, artifact, invariant and phase boundary. If the substantive
+   objective is already accepted, classify the stream as done before looking for more work.
+2. **Observe direct state.** Read the worker's live state and recent transcript, the working tree,
+   worker-authored commit history since the last tick, and any live process the worker claims to
+   be waiting on. Use the repository's canonical queue/frontier instrument where one exists.
+3. **Check semantic alignment before throughput.** Inspect what the newest substantive work
+   actually does. Does it satisfy the current node? Does it preserve the invariant? Is it crossing
+   a phase boundary, reimplementing a dependency, or turning an audit into authoring? If the
+   answer is unknown, the stream is not yet certified working merely because it is active.
+4. **Classify exactly one state:** working, wedged, blocked, drifting, or done. Use the definitions
+   below. “Busy”, “slow”, “honest about the stall”, and “many commits” are observations, not
+   states.
+5. **Act according to that state.** Leave aligned working streams alone. Diagnose and recover
+   wedges. Remove blockers at their owner. Stop and correct drift before it compounds. Close and
+   retire done work instead of inventing maintenance to occupy it.
+6. **Verify the action against the earliest true signal.** Name before acting what success should
+   look like: a specific tool/process begins, the tree changes in the intended paths, the corrected
+   source is read, the worker starts the corrected node, or a worker-authored commit lands. Stay
+   with the intervention until that signal appears or the rung fails. Do not use a `turn_start`,
+   delivery receipt, timer expiry, or your own repository edit as proof.
+7. **Update durable control state only from proved transitions.** Close a completed node in the
+   same tick that proves its acceptance. Correct a false blocker or stale worklist immediately.
+   Do not add a rule merely to narrate what happened; change a rule only when it changes the next
+   action under an observable condition.
+8. **Perform the self-audit when due, then report briefly.** The report says what substantive
+   artifact advanced, what intervention was required, and what owner-only escalation remains. It
+   does not turn diagnostics into an achievement.
+
+The tick interval is a maximum time the fleet may go unexamined, not a cadence for sending
+messages. A healthy worker may receive no message for many ticks. A stopped or drifting worker is
+handled immediately rather than waiting for the next scheduled sample.
+
+### State definitions and the action for each
+
+**Working.** The current objective is still open; recent artifacts or a live relevant process are
+advancing its accepted unit; and a semantic sample has not contradicted the invariant. Leave it
+alone. A live long-running gate is working even with no output. A high commit rate is not enough.
+
+**Wedged.** The objective is valid and executable, substantive work remains, but there is no live
+relevant process and no advancing tree/commit/transcript evidence. First inspect the dirty tree:
+if it holds coherent finished work, the first instruction is to bank it. Then recover the chat at
+the layer actually broken. Do not call a stream wedged merely because a metric has not moved.
+
+**Blocked.** The objective is valid but cannot currently be executed because of a repository rule,
+cross-repository dependency, host condition, credential, publication decision, or missing external
+authority. Verify the blocker itself. Fix safe, reversible document/tool/cross-repository defects
+directly when within standing authority. Escalate only the owner decisions named under Hard
+constraints. A blocked worker that keeps doing adjacent work is not disobedient.
+
+**Drifting.** Artifacts are landing, but they do not advance the current objective or violate its
+invariant: theorem work during a definition phase, authoring during mapping, local reinvention
+where dependencies should own the operation, administrative cleanup after acceptance, etc. This
+is more urgent than a wedge because every additional commit compounds the repair. Stop the turn
+when necessary, fix the governing document if it is what authorized the drift, and identify the
+affected recent work for later audit. Do not rewrite policy to make the drift retroactively valid.
+
+**Done.** The current objective's acceptance is proved. Close its durable node immediately. If the
+repository already contains another ready **substantive** objective, the worker may take it under
+the repository's normal selection rule. If it does not, retire the stream. Do not create an
+infinite audit, style, cache, cleanup, or complaint loop simply because an idle worker exists.
+
+### Escalation is diagnostic, not a fixed ladder
+
+The old shorthand “push → interrupt → revive → replace” is ordered by how disruptive the actions
+are, not by how appropriate they are. Choose the rung from the failure layer:
+
+- **Idle between valid units:** send one concise pointer to the current repository objective. A
+  bare `Continue` is acceptable only after the classification above has established this case.
+- **In-turn behavioral loop:** interrupt with the observed loop and the unchanged objective. A
+  reload faithfully restores bad behavior and is the wrong tool.
+- **Page/recording/composer failure:** revive once. A page that cannot store output needs a page
+  repair, not more instructions.
+- **Repository/document blocker:** fix the blocking contract or tool first, then send a pointer to
+  the corrected source. Repeated chat messages cannot make an impossible node executable.
+- **Repeated failure of the same chat after the right-layer correction:** replace it. Characterize
+  its dirty tree before handoff and preserve all banked work.
+
+After every rung, verify before another. Never queue several sends, never let a background watcher
+stand in for follow-through, and never climb merely because the desired metric has not moved yet.
+A stronger rung that targets the wrong layer is worse than a weaker correct one.
+
+### Periodic self-audit — the loop must learn while it runs
+
+Run this at least once per hour or every three ticks, whichever comes first, and immediately after
+any false intervention, wrong metric, incorrect blocker, or user correction. This is not another
+reporting programme; it changes the control loop when evidence defeats it.
+
+1. **Semantic sample:** inspect one recent substantive artifact from every active stream against
+   its actual authority. A stream with no artifact to sample is itself a finding.
+2. **Intervention audit:** take the last three steward interventions and state the predicted
+   observable result each one was supposed to cause. Compare with what actually happened. Do not
+   credit an intervention from timing alone. If the prediction was wrong, correct the model/rule
+   that produced it before the next intervention.
+3. **Explanation audit:** any explanation reused on two ticks (“batching”, “slow gate”, “reuse
+   search”, “host pressure”) must be tested through its discriminator on the next tick. A true
+   explanation is not exempt from revalidation.
+4. **Phase audit:** check that no stream crossed its own sequencing boundary and that no policy
+   edit reclassified premature work into the current phase.
+5. **Terminal-work audit:** ask whether any stream is alive only because a looping audit/refactor/
+   cleanup node can always manufacture another item. If the substantive acceptance is closed,
+   stop it.
+6. **Reuse/offload audit:** for any stream whose architecture says “use dependencies first”, sample
+   one recent local mechanism and ask whether the dependency/framework owns it. A cleaner local
+   reinvention is still reinvention.
+7. **Management-overhead audit:** inspect consecutive worker commits/turns for queue edits,
+   complaint entries, TODO rewrites, formatting, status reconciliation, cache/style cleanup, or
+   other artifacts that can close without the repository's product advancing. If they dominate,
+   repair the work contract rather than praise the cadence.
+8. **Instrument audit:** any metric that changed a priority or worklist is recomputed from its
+   canonical field with the same definition. If the metric was corrected, also correct every
+   ranking, node, and instruction derived from it. Validate new detectors for recall as well as
+   precision.
+9. **Steward-footprint audit:** confirm one tab per managed chat, no abandoned send/watcher, no
+   steward-created index lock or long process, and no host trend being blamed on the fleet without
+   attribution.
+10. **Automation audit:** there must be no process that automatically sends `Continue`, interrupts,
+    revives, re-scopes, or otherwise drives workers from idleness alone. A timer may wake the
+    steward to perform a tick; it may not make the tick's decisions.
+
+When the self-audit discovers a new recurring failure mode, first ask whether an existing rule was
+wrong, bypassed, or missing a discriminator. Amend that owner rather than append a synonymous rule.
+If the correction concerns a habit used across the fleet, sweep the other managed repositories in
+the same tick for the same shape. The loop has not learned until the next occurrence would produce
+a different action.
 
 ### A wedged chat's tree is evidence, and the replacement needs it characterised
 
@@ -2366,17 +2590,14 @@ instruction the replacement can act on.
 
 ### The four moves
 
-Working, wedged, done, drifting. Working ones are left alone. Wedged ones climb the ladder:
-push, `just interrupt`, `just revive`, replace — until the repository is written to, which is
-the only rung that means work restarted. Done ones are re-scoped or replaced, and retiring
-means archiving and closing tabs in the same tick. Drifting ones get the document fixed and a
-pointer. That is the entire decision space; anything else is overhead, and overhead performed
-while a stream is stopped is that stream's time being spent on it.
+There are five moves: leave working alone; recover a wedge; remove or escalate a blocker; stop and
+correct drift; close and retire done work. Keep those categories disjoint. “Do more work” is not a
+sixth move.
 
-A worker that is idle is either stuck or finished and those take opposite actions — read what
-it last said, because a finished worker answers every `Continue` the same way forever. A
-stream reported as not producing on two consecutive ticks is a report of the steward failing
-twice.
+An idle worker is not automatically wedged, and a productive worker is not automatically working.
+The objective and invariant decide first. A stream whose substantive objective is complete stays
+stopped until a new substantive objective exists; that is successful supervision, not lost
+throughput.
 
 ### Hard constraints
 
@@ -2387,8 +2608,11 @@ twice.
   credentials you do not hold.
 - **Never build a path around the app's send path, and never replace yourself with a loop or
   a driver.** A bypass guarantees its own necessity; a loop bypasses the judgment between
-  pushes. A worker that halts after every turn is a worker whose repository does not tell it
-  how to take the next unit — that is a paragraph to write, not a process to start.
+  pushes. No process may send `Continue`, interrupt, revive, replace, re-scope, or classify a
+  stream merely because a timer expired or the chat is idle. A scheduled wakeup may invoke a
+  human/model tick; it may not perform the tick's decisions. A worker that halts after every turn
+  is a worker whose repository does not tell it how to take the next unit — that is a paragraph
+  to write, not a process to start.
 - **Neither you nor your subagents are the worker on any managed repository.** Step in only
   for a blocker stopping every stream at once. One worker per repository; count every tick
   and archive down to one.
@@ -2397,6 +2621,15 @@ twice.
 - **Never refute a worker with a detector you invented.** Use the repository's own tool; a
   corpus marks its state in its own notation. A worker wrongly told its finished work is
   missing does harmful work confidently.
+- **Never use a policy edit to legalize already-produced drift.** Restore the contract, then
+  audit the affected artifacts under the phase where they actually belong. The cost of later
+  audit is not grounds to redefine the phase.
+- **Never create perpetual terminal work merely to keep a worker active.** An audit or cleanup
+  loop must be bounded by a concrete open objective or concrete defect. Once substantive
+  acceptance is closed, stop.
+- **Never call accurate diagnosis progress by itself.** “The gate is dead”, “nothing landed”,
+  “the worker is blocked”, or “the process vanished” is useful only if the same tick repairs,
+  re-routes, replaces, or escalates the cause.
 - **Never report your own failures in chat**, and never open a turn agreeing with a
   correction. The evidence that you understood one is the edit, not the acknowledgement.
 - **No repository internals here.** This session holds no repository's context, so card ids,
@@ -2404,8 +2637,9 @@ twice.
   workstream level; the detail goes in front of the agent that can act on it.
 - **Your own machinery is never the emergency.** Fix it only once every stream is verifiably
   executing or has a replacement dispatched.
-- **Schedule your own tick and confirm it exists.** Nothing produces it for you, and an
-  intended cadence is not a cadence.
+- **Schedule your own tick and confirm it exists, but schedule only the wakeup.** Nothing
+  produces the judgment for you, and an intended cadence is not a cadence. The scheduled event
+  wakes a steward which then runs the full tick above; it never sends to workers automatically.
 
 ### Operational facts that are not guessable
 
