@@ -1375,6 +1375,41 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### A watcher that reports next tick is carrying the intervention into the next tick
+
+The rule is verify against new content within ninety seconds and never bridge an unverified push.
+A steward can violate it while appearing to honour it, by arming a background watcher, reporting
+"not verified, watching", and reading the result twenty minutes later. That is the bridging the
+rule forbids, dressed as diligence. On 2026-09-13 nearly every intervention in a long session was
+discharged that way, and the cost came due on `research`: revived at 05:33, reported unverified,
+and only looked at again after the owner asked how a stream could be forty-five minutes dry.
+
+Stay with an intervention until content appears or the rung fails. Watching a repository for a
+commit costs a loop and a few minutes of the interval, and the interval exists so the fleet is
+never unlooked-at for longer than it — not so the steward has somewhere to put unfinished
+follow-through. A background watcher is for a second stream while you attend to the first, never
+for the one you just acted on.
+
+The same session shows what the delay buys. `research` had gone from one dirty path to 102 with
+nothing committed in forty-nine minutes; the push to bank produced a single token commit, and
+only staying to watch showed it resume properly and come down to 85. A steward that had armed a
+watcher and moved on would have recorded "banking, verified" from one commit and missed that the
+first push had barely been obeyed.
+
+### `noProgressForMs` far exceeding time-since-commit means producing without storing
+
+The decisive miss happened twenty minutes before the revive. `research` read `4 commits/21m` and
+`silent=71m` in the same line: four commits had landed in the repository while the page had
+recorded nothing for seventy-one minutes. The steward took the commit count as evidence of health
+and left the stream alone for a full interval.
+
+Those two numbers disagreeing is itself the finding. `noProgressForMs` measures the page's own
+recording, so when it greatly exceeds the time since the last commit, work is reaching the
+repository while nothing is reaching the conversation — the same storing-nothing family as
+`chat_error`, and the state a chat is in shortly before it stops entirely. Act on the divergence
+at the tick that sees it. There is no reading of a seventy-minute recording gap that makes waiting
+another twenty minutes correct.
+
 ### The ladder is for stopped streams, not for streams doing the wrong thing
 
 A worker that ignores an instruction and a worker that has stopped look different in every
