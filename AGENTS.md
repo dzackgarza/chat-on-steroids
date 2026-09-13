@@ -1392,9 +1392,21 @@ next turn, and reloading incidentally drops a long conversation's DOM, which on 
 is worth having anyway.
 
 So read `lastStoredKind` every tick alongside `generating` and the clocks. `chat_error` standing
-while tool calls continue means revive now rather than climbing from the bottom of the ladder,
-and `user_message` standing means a push landed and the turn has not been stored yet — normal for
-a few minutes, and the same reading as a dead chat if it persists.
+while tool calls continue means revive now rather than climbing from the bottom of the ladder.
+
+But the stored kind alone never decides it, and the first draft of this section got that wrong
+within the hour. It said a standing `user_message` reads as a dead chat once it persists past a
+few minutes; the next tick found `research` with `user_message` standing for thirty-two minutes
+and forty-eight minutes since its last commit, which under that rule is a revive. It was working:
+the process table had its commit gate running, and its transcript was a live source search
+through `IsoCategoryConstruction` and `FixedIsoCategory`. Reviving would have thrown away a long
+analysis at the moment it was banking.
+
+The stored kind says where a chat's output is going; only the tree, the process table and the
+commit log say whether there is output. `chat_error` earned its rung because it came with an
+empty tree, no commits, and nothing stored across twenty-seven minutes — the kind plus the
+absence, never the kind alone. A long silence with a gate running is a worker thinking, and the
+one intervention guaranteed to waste it is the one that reloads the page.
 
 ### The steward's own footprint does not appear in the steward's instruments
 
