@@ -1375,6 +1375,27 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Check the work is possible before climbing the ladder
+
+A worker doing something other than the node you pointed it at looks identical whether it is
+ignoring you or blocked, and the unwedge ladder treats both as the first case. On 2026-09-13
+`research` took a push, then an interrupt, and committed another unrelated repair after each —
+by the ladder, two rungs spent and `revive` next. The node was `terminal-reference`, whose
+deliverable comes from `just preamble-megadoc`, which surveys a live Sage session; the
+repository's own phase rule forbids running Sage until a terminal phase the document never said
+had started. The worker was doing the only thing it believed it was permitted to do, and
+reviving it would have produced the same behaviour from a fresh chat, with the tree lost.
+
+So before the second rung: open the node, find the command that produces its deliverable, and
+check that the repository's own rules let the worker run it. A node that cannot be built as
+written is a document defect, and it is the steward's defect, because the DAG is the steward's
+surface. Escalating against it spends the fleet's time proving the same block twice.
+
+The tell is a worker that keeps producing real work of the wrong kind. Genuine ignoring tends
+to look like nothing, or like the same thing again; a blocked worker is busy, competent and
+consistently adjacent — it has found the nearest thing it is allowed to do, and it will keep
+finding it for as long as the gate stays shut.
+
 ### Production nobody has executed is not production
 
 Counting objects rather than commits was the fix for one proxy and it quietly installed
