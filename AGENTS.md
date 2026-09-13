@@ -1295,6 +1295,38 @@ that distinguishes the bad reading from its lookalike.
 | a watcher will report later | intervention is being carried into another tick | stay with the intervention until it lands or fails |
 | automated driver keeps chats alive | judgment has been replaced by unconditional motion | stop the driver; every send/interrupt/revive requires a fresh classification |
 
+### Fleet-specific convergence signals
+
+Use these repository-owned distinctions when summarizing or steering the current four streams. Do
+not copy their current counts into this document; recompute from the named live surfaces each tick.
+
+- **`new-qual-site`: separate solution closure from intake.** While PDF/source intake is open, a
+  falling solved percentage or rising Queue C count can accompany high solution throughput because
+  new problems enlarge the denominator. Compare the problem population and Queue C at two revisions
+  and report four values together: current total problems, current unsolved problems, Queue C exits
+  (gross solution closures), and Queue C entries (new unsolved problems, normally intake). Completion
+  percentage is secondary. Never pressure a worker to slow correct intake merely to improve it.
+- **`research`: the terminal preamble is a live session, not a graph count.** The first convergence
+  question is whether a fresh active Sage process can execute
+  `from dzack_research.preamble.all import *` and expose the core `Cat`/`Lattices` surface. The
+  megadoc and category/functor graph must be regenerated from that same tree and agree with the live
+  session. A generated graph, large category count, or prior green import cannot certify a later
+  revision. A current import/session failure belongs to `terminal-repairs`/`terminal-session`.
+- **`sage-categories`: acceptance is revision-scoped.** Historical closed acceptance remains useful
+  evidence, but any later Cat/kernel/bootstrap regression makes current HEAD substantive repair work,
+  not terminal-audit work. Use the repository's declared Sage/Python runtime, not an older host Sage,
+  for this decision. `bloat-audit-loop` is eligible only after `current-head-acceptance` is closed.
+  When sampling reinvention, inspect whether GAP/CAP, Catlab/GATlab, Sage, OSCAR, DisCoPy, SymPy, or
+  another mature owner can delete the mechanism; counting imports is not delegation evidence.
+- **`lean-categories`: distinguish catalogue coverage, mapping coverage, and invention.** Compare the
+  frozen catalogue unit IDs with the canonical parsed mapping records before trusting a checked
+  Mapping box. Missing mapping rows are incomplete mapping, not `unmatched`. While
+  `remap-strict-bundle` remains open, the current `unmatched` fraction is a negative-search worklist
+  under audit, not a forecast of repo-local invention. Report definitional progress as
+  delivered/directly reusable versus pending, and split pending routes into Mathlib/interface repair,
+  reference-port/package reuse, unmatched, and missing coverage. Only a source whose remap is closed
+  may treat its remaining `unmatched` units as eligible for authorship.
+
 ### The two surfaces you write
 
 Durable **control changes** land in one of two places, both inside the managed repository, both in
