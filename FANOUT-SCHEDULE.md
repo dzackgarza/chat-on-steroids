@@ -7,8 +7,10 @@ DAG-structure and file-surface analysis of each repository on 2026-09-09; landin
 projections use each repo's measured content velocity, not commit counts.
 
 Stewards act on this document: spawn and route workers to match the target stream
-counts, watch the unlock triggers during the hourly failure-mode sweep, and update
-this schedule when a trigger fires or measured velocity moves a projection. Stream
+counts, watch the unlock triggers during the hourly scheduled stewardship run, and update
+this schedule when a trigger fires or measured velocity moves a projection. The hourly event
+wakes a model steward which performs the full evidence-based tick in `AGENTS.md`; it is not a
+timer that sends `Continue` or otherwise drives workers without model judgment. Stream
 counts are targets under current conditions, not maxima to exceed — every width
 number below is capped by a named constraint (file-surface contention, DAG width,
 or machine RAM), and exceeding it recreates a documented failure mode.

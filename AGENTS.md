@@ -1162,6 +1162,16 @@ progress. Nothing more.
 
 ### The steward's job
 
+**Scheduled stewardship and automatic worker-driving are different mechanisms.** A ChatGPT/native
+schedule that wakes a steward agent is expected: each scheduled run starts a fresh model turn,
+rereads the current repository contracts, observes the fleet, makes evidence-based decisions,
+drives chats where needed through the normal app path, and verifies the resulting state. That is
+what "schedule your own tick" means everywhere in this document. By contrast, a shell loop, cron
+job, timer callback, or other non-model process that sends `Continue`, interrupts, revives,
+replaces, or re-scopes a worker merely because time elapsed or a chat is idle is forbidden. The
+difference is not automation versus no automation; it is **scheduled model judgment versus
+judgment-free automatic action**.
+
 Four repositories are each finishing a defined body of mathematics, one worker chat attached
 to each. **Your product is correct substantive progress on those repositories' actual objectives
 that would not have happened without supervision.** A large amount of wrong mathematics,
@@ -2411,26 +2421,27 @@ in the earliest instrument that can show it — which process it starts, which t
 and look there. Reserve mtimes and commit subjects for confirming something the direct
 instruments have already indicated.
 
-### Check the continuation driver is alive every tick, because its death is silent
+### Historical failure: the continuation driver replaced stewardship judgment
 
-The continuation driver exists so a stream that ends a turn does not wait up to twenty minutes
-for the next tick. It is one unsupervised `bash` loop with no restart policy, and when it stops
-nothing announces it: the log simply has no further lines, and the symptom is two chats sitting
-at `turn_end` that a steward reads as ordinary idleness.
+A 2026-09-13 experiment used an unsupervised `bash` continuation driver so streams ending a turn
+would not wait for the next stewardship tick. It sent work from timer/idleness state rather than
+from a fresh reading of repository objective, artifact, invariant and evidence. That mechanism is
+now prohibited. **Do not restart `driver.sh`, recreate it under another name, or treat its absence
+as a fleet defect.** If such a process is still present, it is stale control machinery to retire
+after the managed streams are safely accounted for.
 
-On 2026-09-13 it died sometime after its 10:35:58 entry — no error in its log, no OOM record
-reachable — and was noticed thirty-five minutes later only because two streams were idle at once.
-Its per-chat cooldown files had gone too, which is itself the tell: they are rewritten on every
-send, so their absence means the loop is not running rather than merely quiet.
+The replacement is a **scheduled steward agent**. A native scheduler may wake a fresh model turn
+on a fixed cadence (for example hourly). That model turn rereads the current durable contracts,
+inspects all managed streams, classifies each one, chooses any send/interrupt/revive/replacement
+from the evidence, and verifies the effect before ending. The scheduler decides only *when the
+steward wakes*; the steward model decides *what to do*. This is active orchestration, not an
+automatic continuation script.
 
-So the tick reads `pgrep -f driver.sh` alongside the four chats, and restarts it when absent.
-That is one command against thirty-five minutes of fleet idleness, and the same reasoning applies
-to anything else this watch relies on that has no supervisor: a background loop that fails by
-stopping is indistinguishable from a background loop with nothing to do.
-
-Note what this does not license: reading idleness as a driver problem. Two chats at `turn_end`
-after recent commits are working chats between turns, and they are also exactly what a dead
-driver looks like. The driver check is cheap enough to run first and settle which it is.
+For shorter intra-run cadence, the app's native sleep/wake state may be used to park and remount
+conversation tabs and to expose `woke_ready`/sleep status as evidence. It does not authorize a
+script to turn those events into unconditional `Continue` messages. A model stewardship tick may
+use those events as one input to its normal classification and then drive the chat through the app
+when the classification calls for it.
 
 ### A cleanup step that has never once run looks exactly like a clean fleet
 
