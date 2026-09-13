@@ -1556,6 +1556,25 @@ This is the same shape as a maintenance step that silently never runs: the failu
 instrumentation is doing nothing while reporting nothing, and the only defence is reading what it
 actually printed rather than assuming the absence of a complaint.
 
+### Never wrap a sender in a timeout shorter than its own deadline
+
+The waiter reports `LANDED`, `NOT LANDED`, or that it escalated — and prints nothing at all while
+it is still waiting, which is its normal state for up to fifteen minutes. On 2026-09-13 a steward
+ran it under `timeout 150`. The timeout killed it mid-wait, the pipeline exited zero, the log held
+a blank line, and the steward reported the message as in flight. It had never been sent, and the
+worker spent the next interval on a file the steward had already discovered was finished.
+
+Silence from a sender means nothing either way, so never truncate one and never read its absence
+of output as progress. Run it in the background and let it reach its own conclusion, or use
+`interrupt`, which returns a delivery line immediately. Where a wrapper timeout is unavoidable,
+make it longer than the sender's deadline, and treat an empty log as a failed send rather than a
+pending one.
+
+This is the third time in one session that an instrument failed by doing nothing: a cleanup that
+never ran, a waiter that expired unattempted, and now one killed from outside. The pattern is
+worth the generalisation — every component of this tick reports success by silence, so the
+steward has to know which silences are meaningful and check the rest against the world.
+
 ### A waiter cannot outlast a turn, and turns grow with the conversation
 
 The send-on-a-gap waiter was written when managed turns lasted a few minutes, and it carries a
