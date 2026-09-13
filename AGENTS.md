@@ -1375,6 +1375,30 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### The steward's own footprint does not appear in the steward's instruments
+
+An interrupt against a sleeping chat does not return quickly: the app discards a tab after a
+verified push, has to wake it, and answers `that chat is sleeping … Waiting`. On 2026-09-13 a
+steward read that as a stalled command and sent the next one, five times into `lean-categories`
+across one session. It ended the session holding three duplicate tabs on that conversation — one
+per wake attempt — against one on `sage-categories`, which was interrupted once. Duplicate tabs
+on a managed chat are both a second typing surface and, for a long ChatGPT conversation,
+hundreds of megabytes of DOM apiece.
+
+Meanwhile the tick was reading `free -m`'s available column every twenty minutes and reporting
+three or four gigabytes, which looked unremarkable. Swap was at 48% with roughly five hundred
+megabytes genuinely free and pages faulting back in. Available memory cannot show swap pressure,
+so the instrument that was supposed to notice the host filling up was structurally incapable of
+it, and the thing filling it up was the steward's own retry behaviour.
+
+Two changes. Read swap and truly-free alongside available, because a host that is swapping is
+slowing every worker on it and the friendly number will not say so. And treat a pending wake as
+pending: one interrupt per chat until it lands or fails, then `tidy` afterwards, because the
+cleanup is what turns an abandoned wake into nothing rather than into a resident duplicate.
+
+A steward that never measures its own cost will attribute it to the fleet. The workers were slow;
+the reason was partly the watching.
+
 ### Filing is only delegation where a worker exists; elsewhere it is deferral
 
 Repository work goes into that repository's queue because each managed repository has a worker
