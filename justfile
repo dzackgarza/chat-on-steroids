@@ -374,7 +374,13 @@ tabs quiet="30":
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
 
-    quiet = float("{{quiet}}") * 60
+    try:
+        quiet = float("{{quiet}}") * 60
+    except ValueError:
+        raise SystemExit(
+            'quiet must be a number of minutes, not "{{quiet}}" — '
+            'the parameters are positional: `just tidy 30 "id1,id2"`'
+        )
     now = time.time()
     seen = set()
     for target in targets:
@@ -466,7 +472,13 @@ tidy quiet="30" keep="":
         except Exception:
             return None
 
-    quiet = float("{{quiet}}") * 60
+    try:
+        quiet = float("{{quiet}}") * 60
+    except ValueError:
+        raise SystemExit(
+            'quiet must be a number of minutes, not "{{quiet}}" — '
+            'the parameters are positional: `just tidy 30 "id1,id2"`'
+        )
     now = time.time()
     seen = set()
     for target in targets:
