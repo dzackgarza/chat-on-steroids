@@ -1375,6 +1375,26 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Repair the document that states the rule, not the one that describes the work
+
+A repository's documents are not interchangeable, and a worker blocked by one of them is
+blocked by a specific one. On 2026-09-13 `research` would not start its verification phase
+because a policy in `CONTRIBUTING.md` suspended all execution "while that work remains open".
+The steward diagnosed it correctly and then wrote the correction into `TODO.md` — that the
+suspension's condition was satisfied and the phase had begun — which is the work document. The
+policy text did not change. The fix happened to reach the worker, but a worker consulting the
+governing policy, which is what a policy is for, would have read the same prohibition and drawn
+the same conclusion, and the next worker in that chat still would.
+
+The rule states a condition; something else records whether the condition holds. When those are
+different documents, the policy has to name where its own condition is checked, or it reads as
+unconditional to everyone who does not already know the answer. That is the repair: not
+restating the state somewhere convenient, but making the rule point at its own evidence.
+
+So when a worker is blocked by a rule, find the text that actually blocked it before writing
+anything. The document that describes the work is the tempting place to put a correction,
+because it is the one the steward edits every tick; it is rarely the one that caused the block.
+
 ### Fix a failure mode in one repository, then sweep the other three for it
 
 The fleet is four repositories with one steward, so a habit of that steward is present in all
