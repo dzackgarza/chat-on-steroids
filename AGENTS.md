@@ -1245,12 +1245,15 @@ repository, never something said in chat.
 - **Policy is delivered in chat.** A worker follows its own repo's documents; a push carrying
   policy buys one turn of compliance and dies with the chat.
   *Remedy:* below.
-- **Motion is mistaken for the objective.** A terminal audit/refactor loop, a recurring cleanup
-  queue, or a generic continuation driver can keep a repository active forever after its actual
-  acceptance is closed. The worker appears exemplary because it never stops.
-  *Remedy:* once the substantive objective is accepted, stop the stream unless a new substantive
-  objective already exists. Maintenance loops are bounded work triggered by concrete defects,
-  not perpetual employment for a worker.
+- **Motion is mistaken for the objective.** A generic continuation driver or a terminal loop that
+  rewards finding *something* can keep a repository active forever while teaching nothing about
+  its quality. The worker appears exemplary because it never stops. A repository-defined terminal
+  **convergence audit** is different: it rotates independent semantic/style/test/type/offload
+  lenses, permits a full clean pass to make no commit, and treats that absence as evidence rather
+  than failure.
+  *Remedy:* after substantive feature acceptance, transition to that repository's convergence
+  audit when one is defined. Repair loops that manufacture findings, complaints, or commits merely
+  to prove activity. Never replace the steward's per-tick judgment with an automatic driver.
 - **A phase boundary is rewritten to legitimize work that crossed it.** Mapping becomes
   definition authoring; definition work quietly proves theorems; an audit starts implementing
   what it was meant to classify. The repository then changes its rule so the already-written work
@@ -1273,7 +1276,7 @@ that distinguishes the bad reading from its lookalike.
 | Apparent healthy signal | Failure it can hide | What to check instead |
 | --- | --- | --- |
 | many commits / high output rate | fast wrong work or reinvention | sample one recent artifact against the source/dependency/acceptance |
-| terminal audit still finding things | self-sustaining cleanup after acceptance | ask whether the repository's substantive DAG is already closed |
+| terminal audit still finding things | either real post-feature defects or self-sustaining churn | check whether the loop rotates independent skill-backed lenses, permits clean no-commit passes, and ties changes to real behavior/dependency ownership |
 | `unmatched` / local-owner mapping | false gap or laundering through project code | inspect the external/library route and trace project-existing code to its own owner |
 | worker says a blocker is known | blocker being endured forever | reproduce at the blocker owner and repair or make the runnable contract explicit |
 | same explanation across ticks | a true diagnosis that became an excuse | test the discriminator that separates the healthy behavior from its failure mode |
@@ -2277,6 +2280,27 @@ in the earliest instrument that can show it — which process it starts, which t
 and look there. Reserve mtimes and commit subjects for confirming something the direct
 instruments have already indicated.
 
+### Check the continuation driver is alive every tick, because its death is silent
+
+The continuation driver exists so a stream that ends a turn does not wait up to twenty minutes
+for the next tick. It is one unsupervised `bash` loop with no restart policy, and when it stops
+nothing announces it: the log simply has no further lines, and the symptom is two chats sitting
+at `turn_end` that a steward reads as ordinary idleness.
+
+On 2026-09-13 it died sometime after its 10:35:58 entry — no error in its log, no OOM record
+reachable — and was noticed thirty-five minutes later only because two streams were idle at once.
+Its per-chat cooldown files had gone too, which is itself the tell: they are rewritten on every
+send, so their absence means the loop is not running rather than merely quiet.
+
+So the tick reads `pgrep -f driver.sh` alongside the four chats, and restarts it when absent.
+That is one command against thirty-five minutes of fleet idleness, and the same reasoning applies
+to anything else this watch relies on that has no supervisor: a background loop that fails by
+stopping is indistinguishable from a background loop with nothing to do.
+
+Note what this does not license: reading idleness as a driver problem. Two chats at `turn_end`
+after recent commits are working chats between turns, and they are also exactly what a dead
+driver looks like. The driver check is cheap enough to run first and settle which it is.
+
 ### A cleanup step that has never once run looks exactly like a clean fleet
 
 `tidy` takes positional parameters — `quiet` in minutes, then a comma-separated `keep` list —
@@ -2468,8 +2492,9 @@ mode that produced most of the incidents in this section.
    below. “Busy”, “slow”, “honest about the stall”, and “many commits” are observations, not
    states.
 5. **Act according to that state.** Leave aligned working streams alone. Diagnose and recover
-   wedges. Remove blockers at their owner. Stop and correct drift before it compounds. Close and
-   retire done work instead of inventing maintenance to occupy it.
+   wedges. Remove blockers at their owner. Stop and correct drift before it compounds. Close done
+   feature work and transition to the next substantive node or the repository's defined terminal
+   convergence audit; retire only when neither exists or the owner has explicitly paused it.
 6. **Verify the action against the earliest true signal.** Name before acting what success should
    look like: a specific tool/process begins, the tree changes in the intended paths, the corrected
    source is read, the worker starts the corrected node, or a worker-authored commit lands. Stay
@@ -2512,9 +2537,13 @@ when necessary, fix the governing document if it is what authorized the drift, a
 affected recent work for later audit. Do not rewrite policy to make the drift retroactively valid.
 
 **Done.** The current objective's acceptance is proved. Close its durable node immediately. If the
-repository already contains another ready **substantive** objective, the worker may take it under
-the repository's normal selection rule. If it does not, retire the stream. Do not create an
-infinite audit, style, cache, cleanup, or complaint loop simply because an idle worker exists.
+repository contains another ready **substantive** objective, the worker takes it under the normal
+selection rule. Otherwise, if the repository defines a terminal convergence audit, that audit is
+the next objective and remains open indefinitely: each pass loads its prescribed policy/skill
+lenses, may repair real findings or hydrate broad ones into DAG children, and may legitimately
+produce no commit when the tree survives the lens. A clean pass increases confidence; it does not
+close the loop. Retire only when no substantive node or convergence audit exists, or the owner has
+explicitly paused the repository.
 
 ### Escalation is diagnostic, not a fixed ladder
 
@@ -2553,9 +2582,12 @@ reporting programme; it changes the control loop when evidence defeats it.
    explanation is not exempt from revalidation.
 4. **Phase audit:** check that no stream crossed its own sequencing boundary and that no policy
    edit reclassified premature work into the current phase.
-5. **Terminal-work audit:** ask whether any stream is alive only because a looping audit/refactor/
-   cleanup node can always manufacture another item. If the substantive acceptance is closed,
-   stop it.
+5. **Terminal-work audit:** distinguish convergence from churn. A valid terminal audit rotates
+   independent skill-backed lenses, tests actual behavior/architecture/dependency ownership,
+   permits no-change passes with no receipt commit, and hydrates large real findings into explicit
+   DAG children. If the loop instead must manufacture a complaint, TODO tick, cache refactor, or
+   commit every pass, repair the loop before letting it continue. Substantive acceptance being
+   closed is what makes the convergence audit relevant; it is not by itself a reason to stop it.
 6. **Reuse/offload audit:** for any stream whose architecture says “use dependencies first”, sample
    one recent local mechanism and ask whether the dependency/framework owns it. A cleaner local
    reinvention is still reinvention.
@@ -2600,13 +2632,14 @@ instruction the replacement can act on.
 ### The five moves
 
 There are five moves: leave working alone; recover a wedge; remove or escalate a blocker; stop and
-correct drift; close and retire done work. Keep those categories disjoint. “Do more work” is not a
-sixth move.
+correct drift; close the finished objective and transition to the next repository-defined one.
+Keep those categories disjoint. “Do more work” is not a sixth move.
 
 An idle worker is not automatically wedged, and a productive worker is not automatically working.
-The objective and invariant decide first. A stream whose substantive objective is complete stays
-stopped until a new substantive objective exists; that is successful supervision, not lost
-throughput.
+The objective and invariant decide first. Completion of the feature DAG transitions to the
+repository's terminal convergence audit when it defines one; the steward does not invent a new
+feature merely to occupy the worker, and it does not short-circuit a legitimate convergence loop
+because the previous feature node closed.
 
 ### Hard constraints
 
@@ -2636,9 +2669,13 @@ throughput.
 - **Never use a policy edit to legalize already-produced drift.** Restore the contract, then
   audit the affected artifacts under the phase where they actually belong. The cost of later
   audit is not grounds to redefine the phase.
-- **Never create perpetual terminal work merely to keep a worker active.** An audit or cleanup
-  loop must be bounded by a concrete open objective or concrete defect. Once substantive
-  acceptance is closed, stop.
+- **Never create terminal busywork merely to keep a worker active.** A permanent convergence
+  audit is legitimate when the repository explicitly defines it and its passes are interpretive,
+  skill/policy loaded, behavior- and dependency-grounded, capable of hydrating large findings into
+  real DAG work, and allowed to make no commit when no issue survives scrutiny. What is forbidden
+  is a loop whose acceptance requires a complaint, refactor, cache change, or other artifact every
+  pass. Do not short-circuit a valid convergence loop merely because substantive feature
+  acceptance is closed.
 - **Never call accurate diagnosis progress by itself.** “The gate is dead”, “nothing landed”,
   “the worker is blocked”, or “the process vanished” is useful only if the same tick repairs,
   re-routes, replaces, or escalates the cause.
