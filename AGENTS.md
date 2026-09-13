@@ -1375,6 +1375,31 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Verify against the fastest true signal, not the most convenient one
+
+An intervention is verified against new content, and content arrives in the repository last. On
+2026-09-13 a steward pushed `research` onto its verification phase and then watched two proxies
+for it: the mtime of the document that phase regenerates, and whether the next commit subject
+stopped starting with `fix(`. Both said nothing for fifteen minutes and the steward reported the
+intervention unverified twice. The worker had started two minutes after the push — `just
+test-ci` and `just test-push` were in the process table, `scripts/build_graph.py` had just been
+restored from an earlier commit, and the chat's own tool-call record showed Sage running under
+half a dozen `exec_command` calls. The `fix(` commits the steward was discounting were the
+repairs those runs were producing.
+
+The instruments are ordered, and the order is not the order they come to mind in. The chat's
+in-flight tool calls and stored transcript show what the worker is doing *now*. The process
+table shows what it started and when, with real timestamps. The working tree shows what it has
+written but not banked. The commit log shows what survived a gate, minutes later. A file's mtime
+shows only that one particular path was touched, and a commit's subject line is a worker's
+prose. Reaching for the last two when the first two are one command away is how a stream gets
+reported stopped while it is running the suites.
+
+So when a push aims a worker at a *kind* of work, name in advance what that work will look like
+in the earliest instrument that can show it — which process it starts, which tool call it makes —
+and look there. Reserve mtimes and commit subjects for confirming something the direct
+instruments have already indicated.
+
 ### A cleanup step that has never once run looks exactly like a clean fleet
 
 `tidy` takes positional parameters — `quiet` in minutes, then a comma-separated `keep` list —
