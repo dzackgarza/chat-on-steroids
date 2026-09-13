@@ -1442,6 +1442,28 @@ This is the same rule as fixing the obstruction rather than routing around it, p
 steward's own instructions: a push that asks a worker to absorb a cost the steward has not
 measured is the cheapest thing to send and the least likely to work.
 
+### Count the field, not a phrase that happens to appear near it
+
+A steward tracking a structured ledger will reach for `grep` on whatever string it noticed first,
+and that string is almost never the field. On 2026-09-13 a whole session of reporting on
+`lean-categories` counted the *justification text* `Strict bundle semantics reject` as a stand-in
+for rows whose route is `unmatched`. Counting the route cell instead gives 6563 unmatched rows of
+8888, seventy-four percent of the corpus; the phrase covers 1305 of them. The same session
+reported `project-existing` falling from 465 to 321 by matching that word anywhere in a row — the
+route cell carries it on 195. Every figure was wrong, in both directions, and they were wrong
+consistently enough to look like a trend.
+
+Two corrections. Anchor a count to the column it lives in — `| \`unmatched\` |`, not `unmatched` —
+and print the denominator beside it, because a bare numerator hides exactly this: 1305 sounded
+like most of the problem and was a fifth of it.
+
+And when a count refuses to move while related work visibly lands, suspect the measurement before
+the worker. That reading persisted here for over an hour and produced a push, a node edit and a
+paragraph of reporting about a stream that was working the whole time. The same tick also nearly
+reported a fabricated regression, from switching between `Strict bundle` and `Strict bundle
+semantics reject` between two measurements and comparing them — a metric whose definition changes
+mid-session is worse than no metric, because it manufactures events.
+
 ### An outlier turn duration is the signal, not silence against commit age
 
 The decisive miss happened twenty minutes before that revive. `research` read `4 commits/21m`
