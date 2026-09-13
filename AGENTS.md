@@ -1783,6 +1783,24 @@ worker will follow it straight into finished work.
 And put the recomputation in the node instead of the numbers. A list of file counts is stale the
 moment the worker starts; a one-line command that regenerates it is not.
 
+### A count with a moving denominator is not a progress measure
+
+The third way the same ledger misled a steward in one session: after fixing which field to count
+and which files to rank by, the raw number still lied, because the population itself grows while
+the work is done. Matching a bundled source row clause by clause correctly splits it into several
+rows, so a good remapping pass *adds* rows. Between 06:29 and 12:30 on 2026-09-13
+`lean-categories` went from 8888 route-bearing rows to 9066; `unmatched` fell 6563 to 6409 and
+ticked upward across one twenty-minute window while the work was going well.
+
+Report the fraction, and report a monotone companion. Here that is 73.8% to 70.7% unmatched,
+alongside `mathlib` routes rising 1795 to 2127 — a count that can only go up as reuse is
+established, and therefore cannot be confused by resizing.
+
+The general test before trusting any ledger number as progress: ask what happens to it when the
+work goes perfectly. If the answer involves the denominator, the numerator alone is not a measure,
+and a steward watching it will eventually report a stall or push a worker that is doing exactly
+what was asked.
+
 ### Count the field, not a phrase that happens to appear near it
 
 A steward tracking a structured ledger will reach for `grep` on whatever string it noticed first,
