@@ -1375,6 +1375,34 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Production nobody has executed is not production
+
+Counting objects rather than commits was the fix for one proxy and it quietly installed
+another. A stream that lands definitions, constructions and repairs at rate reads as the
+healthiest thing on the board, and the count never asks whether anything has ever run them. On
+2026-09-13 `research` had produced its last sixty commits under a phase rule that suspends all
+tests, gates and executions until a terminal node — sixty consecutive constructions, each
+committed with the specimens that would falsify it and none of them executed — while the tick
+scored it as working every twenty minutes for hours.
+
+The bank is not the defect; deferring verification to a phase is a legitimate way to build, and
+the repository says so in its own policy. The defect is a steward whose measurement cannot see
+the difference between work that has been checked and work that merely exists, and who
+therefore never asks the question the arrangement depends on: is the phase that retires this
+still reachable, and is anyone moving toward it. There it had been reachable for some time —
+twenty-eight work nodes closed, the terminal node carrying no prerequisites — and the worker
+was spending its turns on further unverified repairs instead.
+
+So the count has a second column. For each stream, what has executed the work it produced, and
+when. Where the answer is a future phase, the phase's readiness is part of the tick: a
+verification node that is ready and unstarted is a wedged stream however fast the commits
+arrive, because everything landing meanwhile enlarges what that node has to survive.
+
+And a repair made before the suite has run is a guess about what it would have said. If the
+construction was sound, the repair changed working mathematics on no evidence. Repairs belong
+after execution, against observed failures — which is what a terminal repairs node is for, and
+why it sits downstream of execution rather than beside it.
+
 ### The acceptance you write into a node is the work the node will produce
 
 A DAG node is a contract, and a worker satisfies the contract as written rather than the one
