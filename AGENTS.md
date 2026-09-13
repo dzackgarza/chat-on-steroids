@@ -1375,6 +1375,28 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### Sampling a detector's hits proves precision and says nothing about recall
+
+A steward who writes a detector to size a defect will check it, and the natural check is to
+read some of what it caught. On 2026-09-13 one scanned `new-qual-site` for unicode mathematics
+outside LaTeX, got 182 cards, and validated it by reading samples from five unrelated
+collections — every one genuinely damaged, so the detector was declared sound and its counts
+were written into three DAG nodes as the worklist. When the repository's own tool landed it
+reported 168 against a corpus the hand scan called 153: it caught U+2212 minus, the asterisk
+operator, the tilde operator and the wedge, none of which were in the hand-written character
+class. Every figure the steward had published was low, and no amount of reading the hits could
+ever have revealed it — the misses are invisible to that check by construction.
+
+Two rules follow. When a detector is a character class, an extension list or any other
+enumeration, the thing to review is the enumeration itself against the domain, not a sample of
+its output; and the cheapest real test of recall is a second implementation by someone else,
+which is exactly what the worker's tool turned out to be.
+
+And a count a steward measured by hand does not belong in a document a worker will work from.
+Route the node to the tool that produces the number, so the worklist moves as the corpus moves
+and so the steward's arithmetic is never the thing the worker is trusting. A number written
+into a DAG is stale at the next commit even when it was right.
+
 ### Verify against the fastest true signal, not the most convenient one
 
 An intervention is verified against new content, and content arrives in the repository last. On
