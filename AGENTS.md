@@ -1570,6 +1570,25 @@ irreversible, so it is the owner's call and not a node's acceptance. Record the 
 decision, and leave it; a node whose deliverable is "push this" is a steward committing someone
 else's repository to publication by writing it down.
 
+### Space `du` cannot account for is held by deleted-but-open files
+
+A steward chasing disk will `du` the candidates, find nothing that moved, and report the decline
+as diffuse. On 2026-09-13 free space fell 1.1 GB in twenty minutes while every measured directory
+was flat and `/tmp` had actually shrunk by 461 MB. The space was in files already unlinked but
+still held open: **1347 MB** across 597 deleted descriptors, the largest being an `opencode.db`
+at 583 MB and a `.hermes/state.db` at 305 MB held twice. Both are long-running tools that rewrite
+a database and keep the old file descriptor, so each rewrite leaks another copy until the process
+restarts. `du` walks directory entries and these have none.
+
+So when `du` cannot account for a drop, that *is* the finding, not a dead end. One loop over
+`/proc/*/fd` readlinks for `(deleted)` and stats through the descriptor gives the total and names
+the holder. Space is reclaimed by restarting that process, never by deleting anything.
+
+And note whose it is before acting. Here the holders were the owner's own tooling, not a managed
+repository or this app, so the finding is reported rather than fixed — restarting someone's
+editor or agent runtime to reclaim disk is not a steward's call, and the fleet was not the cause
+of a decline it had been blamed for across three ticks.
+
 ### Gate churn accumulates in caches, and the reclaim is smaller than the tool claims
 
 Running four repositories whose commit gates each resolve `uvx` tools puts the fleet's disk cost
