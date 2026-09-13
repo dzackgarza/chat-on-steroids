@@ -1375,6 +1375,27 @@ arrived under `docs(...)`, alongside genuine card authoring that carried the sam
 sampled `docs(prelim)` commit added real mathematical statements to two cards, while two others
 touched only an index. Nothing in the subject line separated them.
 
+### `chat_error` is a fifth state: running at the tool layer, storing nothing
+
+A chat whose `lastStoredKind` is `chat_error` can keep executing tool calls indefinitely. On
+2026-09-13 `lean-categories` sat that way for twenty-seven minutes — `generating` true,
+`exec_command`s starting and completing, and across the whole stretch not one file written, not
+one commit, and not one stored message. Every instrument the tick normally reads said busy.
+`noProgressForMs` said ten minutes, not twenty-seven, because the page was still doing something;
+the working tree said clean; the commit log said quiet, which for a worker mid-analysis is
+unremarkable. Only `lastStoredKind` distinguished it, and only because someone went looking.
+
+The state is worth naming because its remedy is different. A push or an interrupt puts a message
+into a page that has already shown it cannot store what it produces, so both are wasted rungs.
+The fix is `revive`, which reloads the page: the stored kind moved to `assistant_message` on the
+next turn, and reloading incidentally drops a long conversation's DOM, which on a swapping host
+is worth having anyway.
+
+So read `lastStoredKind` every tick alongside `generating` and the clocks. `chat_error` standing
+while tool calls continue means revive now rather than climbing from the bottom of the ladder,
+and `user_message` standing means a push landed and the turn has not been stored yet — normal for
+a few minutes, and the same reading as a dead chat if it persists.
+
 ### The steward's own footprint does not appear in the steward's instruments
 
 An interrupt against a sleeping chat does not return quickly: the app discards a tab after a
