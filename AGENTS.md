@@ -1322,10 +1322,14 @@ not copy their current counts into this document; recompute from the named live 
   frozen catalogue unit IDs with the canonical parsed mapping records before trusting a checked
   Mapping box. Missing mapping rows are incomplete mapping, not `unmatched`. While
   `remap-strict-bundle` remains open, the current `unmatched` fraction is a negative-search worklist
-  under audit, not a forecast of repo-local invention. Report definitional progress as
-  delivered/directly reusable versus pending, and split pending routes into Mathlib/interface repair,
-  reference-port/package reuse, unmatched, and missing coverage. Only a source whose remap is closed
-  may treat its remaining `unmatched` units as eligible for authorship.
+  under audit, not a forecast of repo-local invention. The reuse search is not exhausted unless it
+  includes the live [`formalization-corpus`](https://dzackgarza.github.io/formalization-corpus/)
+  index, preferably through `POST https://formalization-corpus.dzackgarza.com/api/search`, with
+  multiple source/synonym/type-shape queries; its GitHub `SOURCES.md` is the external registry, while
+  final mapping evidence still pins the actual upstream repository/commit/path. Report definitional
+  progress as delivered/directly reusable versus pending, and split pending routes into
+  Mathlib/interface repair, reference-port/package reuse, unmatched, and missing coverage. Only a
+  source whose remap is closed may treat its remaining `unmatched` units as eligible for authorship.
 
 ### The two surfaces you write
 
