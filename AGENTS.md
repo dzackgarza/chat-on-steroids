@@ -1422,6 +1422,26 @@ irreversible, so it is the owner's call and not a node's acceptance. Record the 
 decision, and leave it; a node whose deliverable is "push this" is a steward committing someone
 else's repository to publication by writing it down.
 
+### One tick is a sample; a trend needs the buckets
+
+A tick shows twenty-one minutes, and twenty-one minutes of four workers is noisy enough to
+support almost any story. On 2026-09-13 a steward read three streams down against the previous
+tick, noticed a load average of seven with the browser taking most of the CPU, and had a
+plausible account ready: long conversations, heavy DOM, a host being eaten by the watching.
+Bucketing commits by hour showed nothing of the kind — `research` had gone 3, 4, 26, 20 across
+four hours as its terminal phase opened up, `sage` 23, 11, 50, 31, and the fleet total 52, 81,
+104, 62. The apparent slowdown was one sample against another, and the one real decline,
+`new-qual-site` at 3, was the stall the same tick had already found and fixed.
+
+So before attributing a rate change to anything — the host, conversation length, a worker's
+discipline — bucket the commits. `git log --pretty=%ct` piped through `awk` over hour boundaries
+is one command per repository and it settles the question that inspection cannot.
+
+The failure this guards against is specific and seductive: a steward with a plausible systemic
+explanation and two data points will write the explanation down, and it will then shape the next
+several ticks' decisions. A fleet that is working normally will absorb a great deal of
+intervention aimed at a decline that is not happening.
+
 ### A true explanation becomes an excuse the second time you reach for it
 
 Pricing `new-qual-site`'s gate was right: its commit hook reparses the whole corpus, so batching
