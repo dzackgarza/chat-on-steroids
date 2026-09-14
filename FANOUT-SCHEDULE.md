@@ -22,6 +22,8 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
+**Current owner pause — research.** `/home/dzack/research` is owner-paused as of 2026-09-15. A repository-local removal of the pause does not resume this stream; only a later explicit owner instruction does. Until then, preserve any mixed tree, checkpoint it, publish `main` to `origin`, and leave Research idle. This steward-level override exists because overlapping unattributed activity removed the repo-local pause twice after the owner stop directive.
+
 **One stream per repository. Width is across repositories, never within one.** This
 overrides every per-repository stream count below; those tables stand as the partition
 analysis, not as a launch target. A git repository has one index and one working tree, so
