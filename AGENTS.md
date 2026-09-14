@@ -2712,6 +2712,15 @@ authority. Verify the blocker itself. Fix safe, reversible document/tool/cross-r
 directly when within standing authority. Escalate only the owner decisions named under Hard
 constraints. A blocked worker that keeps doing adjacent work is not disobedient.
 
+Block the **smallest objective the evidence actually blocks**. A failed push, unpublished revision,
+optional transfer consumer, unavailable external service, or cross-repository subcheck does not
+turn the whole repository into `blocked` unless the current DAG node's acceptance actually depends
+on that action. Read the dependency edge, not the severity of the error message. If the repository
+explicitly says to record the external failure and carry on with local terminal review, session
+verification, refactor audit, type audit, or convergence work, then those nodes remain executable
+and the stream is not blocked. Promote an external observation to a stream-level blocker only when
+no current substantive node can satisfy its acceptance without the missing authority/dependency.
+
 **Drifting.** Artifacts are landing, but they do not advance the current objective or violate its
 invariant: theorem work during a definition phase, authoring during mapping, local reinvention
 where dependencies should own the operation, administrative cleanup after acceptance, etc. This
