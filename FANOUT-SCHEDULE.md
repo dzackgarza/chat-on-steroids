@@ -24,6 +24,8 @@ hours-long streams.
 
 **Current owner pause — research.** `/home/dzack/research` is owner-paused as of 2026-09-15. A repository-local removal of the pause does not resume this stream; only a later explicit owner instruction does. Until then, preserve any mixed tree, checkpoint it, publish `main` to `origin`, and leave Research idle. This steward-level override exists because overlapping unattributed activity removed the repo-local pause twice after the owner stop directive.
 
+**Current execution block — sage-categories.** The active `bloat-indexed-module-public-construction` child requires the canonical non-disposable Python-3.14 Sage wrapper at `/usr/local/sage-env/sage` for its public-consumer acceptance. While that wrapper is absent, the stream is blocked at that child: do not substitute Sage 10.7/Python 3.12, broaden the declared Python contract, provision a temporary Sage, or work adjacent DAG/category/runtime units. Preserve the mixed tree and re-test the blocker each steward tick; resume the child only when the canonical wrapper becomes executable or the owner changes the contract.
+
 **One stream per repository. Width is across repositories, never within one.** This
 overrides every per-repository stream count below; those tables stand as the partition
 analysis, not as a launch target. A git repository has one index and one working tree, so
