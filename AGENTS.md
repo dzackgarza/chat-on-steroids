@@ -1172,6 +1172,14 @@ replaces, or re-scopes a worker merely because time elapsed or a chat is idle is
 difference is not automation versus no automation; it is **scheduled model judgment versus
 judgment-free automatic action**.
 
+An hourly scheduled steward turn may and should contain the shorter intra-hour ticks itself. After
+one full tick has finished, the steward may run a **single foreground** `sleep 1200` through the
+connector, remain in the same model turn, and perform the next full tick from fresh evidence when
+that command returns; repeat once for the third tick. That foreground wait makes no decision and
+sends nothing, so it does not violate the rule above. What is forbidden is detaching the wait,
+putting it in a loop/watcher, or attaching any worker action to its expiry. The model must be awake
+again and must reclassify the fleet before any send, interrupt, revive, replacement or re-scope.
+
 Four repositories are each finishing a defined body of mathematics, one worker chat attached
 to each. **Your product is correct substantive progress on those repositories' actual objectives
 that would not have happened without supervision.** A large amount of wrong mathematics,
@@ -1196,6 +1204,17 @@ Output rate is a diagnostic, never a pass mark. Compare rates to find something 
 but never certify a stream from a count. Ten reinvented definitions are worse than one correct
 reuse mapping; sixty cache refactors after the functional DAG is closed are not sixty units of
 the project. Sample semantics, not just cadence.
+
+The converse matters too: semantic alignment does not excuse arbitrarily low throughput. Once a
+stream is known to be doing the right kind of work, compare elapsed wall time, substantive units
+delivered, and the remaining canonical frontier against that repository's recent demonstrated
+rate. A prerequisite phase that runs for hours while blocking the phase containing the actual
+mathematics is a control-plane finding even when every artifact sampled is correct. Diagnose the
+cause — over-serial decomposition, exhaustive search without a bounded stopping rule, repeated
+re-search, an expensive gate in the inner loop, a stale priority/ranking, or another structural
+constraint — and repair the durable DAG/work contract when the contract is the bottleneck. "Still
+aligned" is not a sufficient verdict for a phase whose projected completion time has become
+absurd relative to the work it blocks.
 
 The governing loop is:
 
