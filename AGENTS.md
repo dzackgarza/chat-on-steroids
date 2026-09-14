@@ -2794,6 +2794,19 @@ reporting programme; it changes the control loop when evidence defeats it.
 9. **Steward-footprint audit:** confirm one tab per managed chat, no abandoned send/watcher, no
    steward-created index lock or long process, and no host trend being blamed on the fleet without
    attribution.
+   Treat disk hygiene as a provenance problem, not a blanket cache purge. After every stream is
+   accounted for, periodically inspect repository `.tmp`/build/test-cache surfaces and registered
+   Git worktrees. Reclaim only state that is both rebuildable/absorbed and unreferenced by a live
+   process or active worker; prune a worktree only after its work is banked or merged and the
+   worktree itself is clean. Expensive warm state such as Lean `.lake/packages`, Julia depots and
+   package environments, or Julia-backed package caches is retained by default because deleting it
+   converts disk recovery into later download/precompile stalls. Prefer the ecosystem's own GC or
+   prune operation when one exists, and measure the real `df` delta rather than the tool's claimed
+   reclaim. When an environment is unexpectedly large, compare it with its explicit environment
+   specification before deleting packages: pip-installed layers outside that specification are a
+   contamination candidate, but remove them only at an idle point with a smoke test of the owning
+   runtime. A clean Git repository can still contain ignored runtime state; inventory that state
+   before migrating an inactive project, verify the destination copy, then remove the source copy.
 10. **Automation audit:** there must be no process that automatically sends `Continue`, interrupts,
     revives, re-scopes, or otherwise drives workers from idleness alone. A timer may wake the
     steward to perform a tick; it may not make the tick's decisions.
