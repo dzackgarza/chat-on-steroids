@@ -3015,7 +3015,9 @@ Consult when an instrument is about to change what you do. None of it is the job
 - **`research`** (`/home/dzack/research`): preamble construction — category foundations and
   categorical group actions.
 - **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): native engine remediation
-  and the foundational category framework.
+  and the foundational category framework. Its current required execution DAG is closed; do not
+  fabricate standing audit work to keep a worker occupied. Reopen it only for a concrete regression,
+  a newly requested capability, or another substantive repository-defined node.
 
 One stream per repository; width is across repositories, never within one.
 [`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) holds the partition analysis and the unlock

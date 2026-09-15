@@ -34,8 +34,8 @@ REPO_COPY = {
         "progress": "Problem archive",
     },
     "sage-categories": {
-        "objective": "Keep the category framework executable while removing duplicated, misplaced, or hand-rolled framework logic found by repeated repository-wide audits.",
-        "progress": "Framework convergence audit",
+        "objective": "Maintain the accepted category framework and reopen implementation work only when a concrete regression or newly requested capability appears.",
+        "progress": "Required implementation status",
     },
 }
 
@@ -95,7 +95,9 @@ def public_task(text: str, fallback: str) -> str:
     text = re.sub(r"\bfrontier\b", "remaining eligible work", text, flags=re.I)
     text = re.sub(r"\bresidue\b", "unresolved prior-art search", text, flags=re.I)
     text = re.sub(r"\bcanonical\b", "established", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\b(?:ARC|API|STY|OWN|LEX|CON|CAT|SET|DEV|ENG|BND)-\d+(?:--\d+)?\b", "", text)
+    text = re.sub(r"(?:,\s*){2,}", ", ", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,;:. ")
     if not text or len(text) < 18:
         return fallback
     # The first two prose sentences are enough to explain the work without leaking
@@ -285,16 +287,22 @@ def nq_progress(repo: Path) -> dict[str, object]:
 
 def research_progress(summary: dict[str, int]) -> dict[str, object]:
     return {
-        "headline": f"{summary['ready']} architecture repairs can be worked now",
-        "detail": f"{summary['open']} repair or verification tasks remain in the repository dependency graph. Ready means all listed prerequisites are complete; it does not mean the task is small.",
+        "headline": f"{summary['ready']} architecture repairs are unblocked",
+        "detail": f"{summary['open']} repair or verification tasks remain in the dependency graph. An unblocked task has no unfinished prerequisites; task size is independent of that status.",
         "remaining": summary["open"],
     }
 
 
 def sage_progress(summary: dict[str, int]) -> dict[str, object]:
+    if summary["open"] == 0:
+        return {
+            "headline": "Required implementation and acceptance work is complete",
+            "detail": "The execution plan has no open required tasks. Future implementation restarts only for a concrete regression, newly requested capability, or another substantive repository-defined requirement.",
+            "remaining": 0,
+        }
     return {
-        "headline": "The permanent framework audit is the active quality programme",
-        "detail": f"{summary['open']} currently recorded audit or verification tasks are open. The final audit loop is intentionally permanent, so no completion ETA is inferred from this count.",
+        "headline": f"{summary['open']} required implementation or verification tasks remain",
+        "detail": "These are explicit execution-plan tasks, not periodic review activity.",
         "remaining": summary["open"],
     }
 
