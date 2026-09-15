@@ -1375,6 +1375,35 @@ plain-language tooltip or popover at the point where it is displayed. Do not use
 advertising: words such as “canonical”, “healthy”, “productive”, or “converged” carry no evidence
 by themselves and should be replaced by the measured fact or omitted.
 
+The audience is the repository owner deciding where attention is needed, not the agents managing
+their own implementation. **Dashboard prose must stand on its own for an external technical
+manager.** Do not expose task IDs, phase labels, internal coinages, worker instructions, provenance
+rules, acceptance-lawyer language, or sentences that only make sense after reading a repository's
+AGENTS/TODO files. Translate the underlying state into the thing being accomplished and the
+measurable remaining work. For example, say “95 textbook definitions still lack a located Lean
+implementation” rather than naming an FC unit or “definition frontier”; say “refactoring public
+mathematical operations onto their owning objects/categories” rather than naming an architecture
+node. Internal identifiers may remain in the generated data for graph joins, but they are not
+presentation copy. A detail view expands the same externally comprehensible description in place;
+it must not replace it with raw worker-contract prose or navigate the reader to an unrelated block.
+
+Order the page by management value. Recent accepted commits and current file writes, with absolute
+and relative times, come before dependency detail. Progress-over-time and burn rate should be
+visible at a glance rather than reconstructed from a wall of counters. Every activity statistic
+that admits a time derivative should expose the derivative: commits/hour, inserted lines/hour and
+deleted lines/hour over selectable windows of **1h, 6h, 12h, 18h, 1d, 3d, 7d, 14d, 1mo, and all**.
+Use plots and robust trend/projection models where the repository owns a meaningful remaining-work
+denominator; state the model and uncertainty/fit limits instead of presenting an ETA as a promise.
+Do not report file sizes as progress. Commit diffs use the conventional GitHub-like presentation:
+human-readable “N files changed”, green `+insertions`, red `−deletions`, never compressed tokens such
+as `4f +22 -15` or an unsigned `±` aggregate.
+
+Use mature interaction/visualization libraries rather than hand-rolling widgets already solved by
+the browser ecosystem. Popovers/tooltips must clamp to the viewport, remain readable on touch, and
+show the complete requested text; truncation is allowed only in a compact row that has a real
+in-place expansion for the omitted text. A “details” interaction must expand details, not scroll or
+jump to another section.
+
 Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
 
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the

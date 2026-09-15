@@ -1,257 +1,482 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, csv, datetime as dt, html, json, math, os, re, statistics, subprocess
+
+import argparse
+import csv
+import datetime as dt
+import html
+import json
+import os
+import re
+import subprocess
 from pathlib import Path
 
-ROOT = Path('/home/dzack/gitclones/chat-on-steroids')
+
+ROOT = Path("/home/dzack/gitclones/chat-on-steroids")
 REPOS = {
-    'research': Path('/home/dzack/research'),
-    'lean-categories': Path('/home/dzack/gitclones/lean-categories'),
-    'new-qual-site': Path('/home/dzack/gitclones/new-qual-site'),
-    'sage-categories': Path('/home/dzack/gitclones/sage-categories'),
-}
-GLOSSARY = {
-    'frontier': 'The next repository-defined work that is eligible after dependency and phase rules are applied.',
-    'ready node': 'A DAG task whose listed prerequisites are already closed.',
-    'residue': 'Items still lacking an accepted reuse/reference route after an earlier search pass; not permission to invent them.',
-    'Milestone 1': 'Lean-categories gate where definitional prior-art search is exhausted before definition implementation begins.',
-    'terminal audit': 'A permanent post-feature review loop that rotates independent quality lenses and may legitimately make no commit.',
-    'Queue C': 'new-qual-site generated list of problem cards that currently lack a solution.',
-    'Queue E': 'new-qual-site PDF-source intake list; an unchecked row can be source-locally blocked without blocking solution writing.',
+    "research": Path("/home/dzack/research"),
+    "lean-categories": Path("/home/dzack/gitclones/lean-categories"),
+    "new-qual-site": Path("/home/dzack/gitclones/new-qual-site"),
+    "sage-categories": Path("/home/dzack/gitclones/sage-categories"),
 }
 
-def run(repo: Path, *args: str, check=True) -> str:
-    p = subprocess.run(args, cwd=repo, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if check and p.returncode:
-        raise RuntimeError(f"{' '.join(args)}: {p.stderr.strip()}")
-    return p.stdout
+REPO_COPY = {
+    "research": {
+        "objective": "Refactor the mathematical preamble so public operations live on the mathematical objects and categories that own them, then re-run the public Sage session against the repaired architecture.",
+        "progress": "Architecture repair work",
+    },
+    "lean-categories": {
+        "objective": "Locate and verify existing Lean implementations for textbook mathematics before any new formal definitions are written.",
+        "progress": "Reference discovery",
+    },
+    "new-qual-site": {
+        "objective": "Build and solve a source-faithful archive of qualifying-exam and advanced-course problems while continuing to ingest recoverable source PDFs.",
+        "progress": "Problem archive",
+    },
+    "sage-categories": {
+        "objective": "Keep the category framework executable while removing duplicated, misplaced, or hand-rolled framework logic found by repeated repository-wide audits.",
+        "progress": "Framework convergence audit",
+    },
+}
 
-def git(repo: Path, *args: str, check=True) -> str:
-    return run(repo, 'git', *args, check=check)
+WINDOWS = [
+    ("1h", 3600),
+    ("6h", 6 * 3600),
+    ("12h", 12 * 3600),
+    ("18h", 18 * 3600),
+    ("1d", 24 * 3600),
+    ("3d", 3 * 86400),
+    ("7d", 7 * 86400),
+    ("14d", 14 * 86400),
+    ("1mo", 30 * 86400),
+    ("all", None),
+]
 
-def parse_iso(s: str) -> dt.datetime:
-    return dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
 
-def commits(repo: Path, days=7, limit=300):
-    fmt = '%H%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e'
-    raw = git(repo, 'log', f'--since={days} days ago', f'-n{limit}', f'--format={fmt}', '--numstat')
-    out=[]
-    for block in raw.split('\x1e'):
-        block=block.strip('\n')
-        if not block.strip(): continue
-        lines=block.splitlines(); meta=lines[0].split('\x1f')
-        if len(meta)<5: continue
-        ins=dele=files=0
+def run(repo: Path, *args: str, check: bool = True) -> str:
+    proc = subprocess.run(
+        args,
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and proc.returncode:
+        raise RuntimeError(f"{' '.join(args)}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def git(repo: Path, *args: str, check: bool = True) -> str:
+    return run(repo, "git", *args, check=check)
+
+
+def parse_iso(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def plain(text: str) -> str:
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip(" -.:")
+    return text
+
+
+def public_task(text: str, fallback: str) -> str:
+    """Extract manager-facing work description; never expose the scheduling identifier."""
+    text = plain(text)
+    text = re.sub(r"^Needs:\s*[^.]*\.\s*", "", text, flags=re.I)
+    text = re.sub(r"^(Closed|Completed)(?:\s+[^.]*)?\.\s*", "", text, flags=re.I)
+    text = re.sub(r"^Terminal convergence loop;?\s*", "", text, flags=re.I)
+    text = re.sub(r"\bFC\d{2}(?:-[A-Z0-9]+)*\b", "the current textbook source", text)
+    text = re.sub(r"\bU\d{3}\b", "the current item", text)
+    text = re.sub(r"\bQueue [A-Z]\b", "the generated work list", text)
+    text = re.sub(r"\bMilestone \d+\b", "the current phase gate", text)
+    text = re.sub(r"\bfrontier\b", "remaining eligible work", text, flags=re.I)
+    text = re.sub(r"\bresidue\b", "unresolved prior-art search", text, flags=re.I)
+    text = re.sub(r"\bcanonical\b", "established", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or len(text) < 18:
+        return fallback
+    # The first two prose sentences are enough to explain the work without leaking
+    # the repository's worker-management contract into the owner dashboard.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(sentences[:2]).strip()
+
+
+def commits(repo: Path) -> list[dict[str, object]]:
+    fmt = "%H%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e"
+    raw = git(repo, "log", f"--format={fmt}", "--numstat")
+    out: list[dict[str, object]] = []
+    for block in raw.split("\x1e"):
+        block = block.strip("\n")
+        if not block.strip():
+            continue
+        lines = block.splitlines()
+        meta = lines[0].split("\x1f")
+        if len(meta) < 5:
+            continue
+        insertions = deletions = files = 0
         for line in lines[1:]:
-            parts=line.split('\t')
-            if len(parts)>=3:
-                files+=1
-                if parts[0].isdigit(): ins += int(parts[0])
-                if parts[1].isdigit(): dele += int(parts[1])
-        out.append({'hash':meta[0][:9],'time':meta[1],'author':meta[2],'email':meta[3],'subject':meta[4],
-                    'files':files,'insertions':ins,'deletions':dele})
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            files += 1
+            if parts[0].isdigit():
+                insertions += int(parts[0])
+            if parts[1].isdigit():
+                deletions += int(parts[1])
+        out.append(
+            {
+                "hash": meta[0][:9],
+                "time": meta[1],
+                "author": meta[2],
+                "email": meta[3],
+                "subject": meta[4],
+                "files": files,
+                "insertions": insertions,
+                "deletions": deletions,
+            }
+        )
     return out
 
-def hourly(commits_, hours=48):
-    now=dt.datetime.now(dt.timezone.utc); start=now-dt.timedelta(hours=hours)
-    vals=[0]*hours
-    for c in commits_:
-        t=parse_iso(c['time']).astimezone(dt.timezone.utc)
-        k=int((t-start).total_seconds()//3600)
-        if 0 <= k < hours: vals[k]+=1
-    ew=[]; x=0.0
-    for v in vals:
-        x=.35*v+.65*x; ew.append(round(x,3))
-    return [{'t':(start+dt.timedelta(hours=i)).isoformat(),'n':v,'ewma':ew[i]} for i,v in enumerate(vals)]
 
-def mark_terms(text: str) -> str:
-    escaped=html.escape(text)
-    for term in sorted(GLOSSARY, key=len, reverse=True):
-        escaped=escaped.replace(term, f"<span class='gloss' data-g='{html.escape(term)}'>{html.escape(term)}</span>")
-    return escaped
-
-def age_label(iso: str) -> str:
-    delta=dt.datetime.now(dt.timezone.utc)-parse_iso(iso).astimezone(dt.timezone.utc)
-    minutes=max(0, round(delta.total_seconds()/60))
-    if minutes < 60: return f'{minutes}m'
-    if minutes < 1440: return f'{round(minutes/60)}h'
-    return f'{round(minutes/1440)}d'
-
-def recent_files(repo: Path, limit=30):
-    names=git(repo,'ls-files','-co','--exclude-standard').splitlines(); rows=[]
+def recent_files(repo: Path, limit: int = 80) -> list[dict[str, object]]:
+    names = git(repo, "ls-files", "-co", "--exclude-standard").splitlines()
+    rows: list[tuple[float, str]] = []
     for name in names:
-        p=repo/name
-        try: st=p.stat()
-        except OSError: continue
-        rows.append((st.st_mtime, name, st.st_size))
-    rows.sort(reverse=True)
-    return [{'time':dt.datetime.fromtimestamp(t,dt.timezone.utc).isoformat(),'path':n,'bytes':z} for t,n,z in rows[:limit]]
-
-def dirty(repo: Path):
-    lines=git(repo,'status','--short').splitlines(); c={}
-    for line in lines:
-        code=line[:2]; c[code]=c.get(code,0)+1
-    return {'count':len(lines),'by_status':c}
-
-def checkbox_dag(path: Path):
-    text=path.read_text(errors='replace').splitlines(); nodes=[]
-    pat=re.compile(r'^- \[([ x])\] \*\*`([^`]+)`\*\*\. \*\*Needs:\*\* (.*)')
-    for i,line in enumerate(text):
-        m=pat.match(line)
-        if not m: continue
-        closed=m.group(1)=='x'; id_=m.group(2); tail=m.group(3)
-        needs=[] if re.match(r'none\.?$', tail.strip()) else re.findall(r'`([^`]+)`',tail.split('.',1)[0])
-        body=[line]
-        j=i+1
-        while j<len(text) and not pat.match(text[j]) and not re.match(r'^#{1,4} ',text[j]):
-            if text[j].strip(): body.append(text[j])
-            j+=1
-        acceptance=' '.join(x.strip() for x in body if '**Acceptance:**' in x)
-        nodes.append({'id':id_,'closed':closed,'needs':needs,'text':' '.join(x.strip() for x in body)[:1400], 'acceptance':acceptance[:900]})
-    return nodes
-
-def table_dag(path: Path):
-    nodes=[]
-    for line in path.read_text(errors='replace').splitlines():
-        if not line.startswith('| `'): continue
-        cols=[x.strip() for x in line.strip().strip('|').split('|')]
-        if len(cols)<3: continue
-        id_=cols[0].strip('`'); desc=cols[1]; needs=re.findall(r'`([^`]+)`',cols[2])
-        closed=('**Closed' in desc or '**Completed' in desc or 'Completed ' in desc)
-        acc=''
-        m=re.search(r'\*\*Acceptance:\*\*(.*)',desc)
-        if m: acc=m.group(1).strip()
-        nodes.append({'id':id_,'closed':closed,'needs':needs,'text':re.sub(r'\*+','',desc)[:1400], 'acceptance':acc[:900]})
-    return nodes
-
-def process_rows(repo: Path):
-    rows=[]
-    for e in os.listdir('/proc'):
-        if not e.isdigit(): continue
-        p=Path('/proc')/e
+        path = repo / name
         try:
-            cwd=Path(os.readlink(p/'cwd'))
-            if cwd != repo and repo not in cwd.parents: continue
-            cmd=(p/'cmdline').read_bytes().replace(b'\0',b' ').decode(errors='replace').strip()
-            stat=(p/'stat').read_text().split()[2]
-        except Exception: continue
-        if cmd: rows.append({'pid':int(e),'state':stat,'cwd':str(cwd.relative_to(repo)) if cwd!=repo else '.', 'cmd':cmd[:240]})
+            stamp = path.stat().st_mtime
+        except OSError:
+            continue
+        rows.append((stamp, name))
+    rows.sort(reverse=True)
+    return [
+        {
+            "time": dt.datetime.fromtimestamp(stamp, dt.timezone.utc).isoformat(),
+            "path": name,
+        }
+        for stamp, name in rows[:limit]
+    ]
+
+
+def dirty(repo: Path) -> dict[str, object]:
+    lines = git(repo, "status", "--short").splitlines()
+    by_status: dict[str, int] = {}
+    for line in lines:
+        code = line[:2]
+        by_status[code] = by_status.get(code, 0) + 1
+    return {"count": len(lines), "by_status": by_status}
+
+
+def checkbox_dag(path: Path, fallback: str) -> list[dict[str, object]]:
+    text = path.read_text(errors="replace").splitlines()
+    nodes: list[dict[str, object]] = []
+    pat = re.compile(r"^- \[([ x])\] \*\*`([^`]+)`\*\*\. \*\*Needs:\*\* (.*)")
+    for index, line in enumerate(text):
+        match = pat.match(line)
+        if not match:
+            continue
+        closed = match.group(1) == "x"
+        ident = match.group(2)
+        tail = match.group(3)
+        needs = [] if re.match(r"none\.?$", tail.strip()) else re.findall(r"`([^`]+)`", tail.split(".", 1)[0])
+        body = [tail.split(". ", 1)[1] if ". " in tail else ""]
+        cursor = index + 1
+        while cursor < len(text) and not pat.match(text[cursor]) and not re.match(r"^#{1,4} ", text[cursor]):
+            if text[cursor].strip():
+                body.append(text[cursor])
+            cursor += 1
+        description = public_task(" ".join(body), fallback)
+        nodes.append({"id": ident, "closed": closed, "needs": needs, "public": description})
+    return nodes
+
+
+def table_dag(path: Path, fallback: str) -> list[dict[str, object]]:
+    nodes: list[dict[str, object]] = []
+    for line in path.read_text(errors="replace").splitlines():
+        if not line.startswith("| `"):
+            continue
+        cols = [item.strip() for item in line.strip().strip("|").split("|")]
+        if len(cols) < 3:
+            continue
+        ident = cols[0].strip("`")
+        description = cols[1]
+        needs = re.findall(r"`([^`]+)`", cols[2])
+        closed = "**Closed" in description or "**Completed" in description or "Completed " in description
+        public = fallback if ident == "bloat-audit-loop" else public_task(description, fallback)
+        nodes.append(
+            {
+                "id": ident,
+                "closed": closed,
+                "needs": needs,
+                "public": public,
+            }
+        )
+    return nodes
+
+
+def open_ready(nodes: list[dict[str, object]]) -> dict[str, int]:
+    open_ids = {str(node["id"]) for node in nodes if not node["closed"]}
+    for node in nodes:
+        node["ready"] = (not node["closed"]) and all(str(dep) not in open_ids for dep in node["needs"])
+    return {
+        "open": sum(not bool(node["closed"]) for node in nodes),
+        "closed": sum(bool(node["closed"]) for node in nodes),
+        "ready": sum(bool(node.get("ready")) for node in nodes),
+    }
+
+
+def process_rows(repo: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        proc = Path("/proc") / entry
+        try:
+            cwd = Path(os.readlink(proc / "cwd"))
+            if cwd != repo and repo not in cwd.parents:
+                continue
+            cmd = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+            state = (proc / "stat").read_text().split()[2]
+        except Exception:
+            continue
+        if cmd:
+            rows.append(
+                {
+                    "pid": int(entry),
+                    "state": state,
+                    "cwd": str(cwd.relative_to(repo)) if cwd != repo else ".",
+                    "cmd": cmd[:240],
+                }
+            )
     return rows[:40]
 
-def open_ready(nodes):
-    openids={n['id'] for n in nodes if not n['closed']}
-    for n in nodes:
-        n['ready']=(not n['closed']) and all(x not in openids for x in n['needs'])
-    return {'open':sum(not n['closed'] for n in nodes), 'closed':sum(n['closed'] for n in nodes), 'ready':sum(n.get('ready',False) for n in nodes)}
 
-def theil_sen(points):
-    # points: (hours_from_start, remaining), robust median slope
-    if len(points)<3: return None
-    slopes=[]
-    for i in range(len(points)):
-        for j in range(i+1,len(points)):
-            dx=points[j][0]-points[i][0]
-            if dx>0: slopes.append((points[j][1]-points[i][1])/dx)
-    if not slopes: return None
-    slope=statistics.median(slopes)
-    intercept=statistics.median([y-slope*x for x,y in points])
-    mad=statistics.median([abs(s-slope) for s in slopes]) if len(slopes)>2 else 0
-    return slope,intercept,mad
+def lean_progress(repo: Path) -> dict[str, object]:
+    path = repo / "FOUNDATIONAL_DEFINITIONS.tsv"
+    with path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    unresolved = [row for row in rows if row.get("action") in {"search", "residue-search", "unmatched"}]
+    sourced = len(rows) - len(unresolved)
+    return {
+        "headline": f"{len(unresolved):,} definitions still need a located implementation or a completed negative search",
+        "detail": f"{sourced:,} of {len(rows):,} indexed definitions currently have a non-search disposition. This count measures reference discovery, not theorem proving.",
+        "remaining": len(unresolved),
+        "total": len(rows),
+    }
 
-def lean_progress(repo: Path):
-    p=repo/'FOUNDATIONAL_DEFINITIONS.tsv'; rows=[]
-    with p.open(newline='') as f:
-        rows=list(csv.DictReader(f,delimiter='\t'))
-    by={}
-    for r in rows:
-        src=r.get('source_id',''); by.setdefault(src,{}); a=r.get('action','')
-        by[src][a]=by[src].get(a,0)+1
-    return {'label':'Definition mapping worklist', 'definition':'Rows in the generated definitional index, grouped by current action. “search” is first-pass source adjudication; “residue-search” is later prior-art search.', 'sources':by}
 
-def nq_progress(repo: Path):
-    q=(repo/'queues/C-unsolved-cards.md').read_text(errors='replace')
-    ids=set(re.findall(r'\b(?:P|E)-[A-Za-z0-9_.-]+\b',q))
-    e=(repo/'queues/E-pdf-attachments.md').read_text(errors='replace').splitlines()
-    open_e=[x for x in e if x.startswith('- [ ]')]
-    blocked=sum('BLOCKED' in x for x in open_e)
-    return {'label':'Unsolved problem queue', 'definition':'Queue C card IDs are problems currently lacking a solution. Queue E is PDF intake; blocked rows are source-local and do not block solution writing.', 'unsolved':len(ids),'queue_e_open':len(open_e),'queue_e_blocked':blocked,'queue_e_executable':len(open_e)-blocked}
+def nq_progress(repo: Path) -> dict[str, object]:
+    queue = (repo / "queues/C-unsolved-cards.md").read_text(errors="replace")
+    ids = set(re.findall(r"\b(?:P|E)-[A-Za-z0-9_.-]+\b", queue))
+    source_rows = (repo / "queues/E-pdf-attachments.md").read_text(errors="replace").splitlines()
+    open_sources = [line for line in source_rows if line.startswith("- [ ]")]
+    blocked = sum("BLOCKED" in line for line in open_sources)
+    return {
+        "headline": f"{len(ids):,} problem cards still lack a solution",
+        "detail": f"Source intake has {len(open_sources) - blocked} currently executable PDF rows and {blocked} source-local blockers. New source intake can add unsolved cards, so net queue change is not gross solution throughput.",
+        "remaining": len(ids),
+        "source_open": len(open_sources),
+        "source_blocked": blocked,
+    }
 
-def historical_nq(repo: Path, commits_):
-    # sample at most one revision per hour for last 36h; derive queue C size when file exists
-    picks={}
-    now=dt.datetime.now(dt.timezone.utc)
-    for c in commits_:
-        t=parse_iso(c['time']).astimezone(dt.timezone.utc)
-        age=(now-t).total_seconds()/3600
-        if 0<=age<=36:
-            key=int(age); picks.setdefault(key,c['hash'])
-    pts=[]
-    for key,h in sorted(picks.items(),reverse=True):
-        raw=git(repo,'show',f'{h}:queues/C-unsolved-cards.md',check=False)
-        if not raw: continue
-        n=len(set(re.findall(r'\b(?:P|E)-[A-Za-z0-9_.-]+\b',raw)))
-        pts.append((36-key,n,h))
-    fit=theil_sen([(x,y) for x,y,_ in pts])
-    proj=None
-    if fit and fit[0] < -0.05:
-        current=pts[-1][1] if pts else None
-        eta=current/(-fit[0]) if current is not None else None
-        proj={'slope_per_hour':fit[0],'eta_hours':eta,'slope_mad':fit[2]}
-    return {'series':[{'x':x,'remaining':y,'rev':h} for x,y,h in pts],'projection':proj}
 
-def repo_payload(name, repo, classification):
-    cs=commits(repo)
-    dag=checkbox_dag(repo/'TODO.md') if name in ('research','new-qual-site') else table_dag(repo/'TODO.md')
-    summary=open_ready(dag)
-    progress={}
-    hist={}
-    if name=='lean-categories': progress=lean_progress(repo)
-    elif name=='new-qual-site': progress=nq_progress(repo); hist=historical_nq(repo,cs)
-    elif name=='research': progress={'label':'Complaint-remediation DAG','definition':'Open/ready task counts from TODO.md. A ready task has no remaining open prerequisite.', **summary}
-    else: progress={'label':'Remediation/audit DAG','definition':'Open/ready task counts from TODO.md. The terminal audit is permanent and is not an ETA-bearing backlog.', **summary}
-    return {'name':name,'path':str(repo),'head':git(repo,'rev-parse','--short','HEAD').strip(), 'classification':classification,
-            'dirty':dirty(repo),'processes':process_rows(repo),'commits':cs[:40],'hourly':hourly(cs),'files':recent_files(repo),
-            'dag':dag,'dag_summary':summary,'progress':progress,'history':hist}
+def research_progress(summary: dict[str, int]) -> dict[str, object]:
+    return {
+        "headline": f"{summary['ready']} architecture repairs can be worked now",
+        "detail": f"{summary['open']} repair or verification tasks remain in the repository dependency graph. Ready means all listed prerequisites are complete; it does not mean the task is small.",
+        "remaining": summary["open"],
+    }
 
-CSS='''
-:root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#18212b;background:#f5f6f7}*{box-sizing:border-box}body{margin:0}.wrap{max-width:1600px;margin:auto;padding:14px}.top{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:10px}.muted{color:#687380}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.repo{background:white;border:1px solid #dfe3e6;border-radius:10px;overflow:hidden}.rh{display:grid;grid-template-columns:1fr auto auto;gap:10px;padding:10px 12px;border-bottom:1px solid #e7eaed}.state{font-weight:700}.working{color:#146c43}.wedged,.blocked,.drifting{color:#9a4b00}.done{color:#52606d}.bands{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;padding:10px}.panel{min-width:0}.title{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#687380;margin:0 0 5px}.chart{height:94px}.chart svg{width:100%;height:100%;overflow:visible}.tiny{font-size:11px}.metric{font-size:24px;font-variant-numeric:tabular-nums}.tail{max-height:180px;overflow:auto;border-top:1px solid #edf0f2}.row{display:grid;grid-template-columns:88px 1fr auto;gap:8px;padding:4px 10px;border-bottom:1px solid #f0f2f3;font-size:11px}.row .time{font-variant-numeric:tabular-nums;color:#687380}.row .subj{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dagbox{height:230px;border-top:1px solid #edf0f2;position:relative}.dagbox svg{width:100%;height:100%;touch-action:none}.tip{position:fixed;z-index:10;max-width:440px;padding:8px 10px;border-radius:7px;background:#17202a;color:white;font-size:11px;pointer-events:none;opacity:0}.gloss{border-bottom:1px dotted #566;cursor:help}.pill{font-size:11px;padding:2px 6px;border:1px solid #ccd3d8;border-radius:999px}.legend{display:flex;gap:8px;flex-wrap:wrap;font-size:11px}.foot{font-size:11px;color:#687380;margin-top:10px}@media(max-width:900px){.grid{grid-template-columns:1fr}.bands{grid-template-columns:1fr}.rh{grid-template-columns:1fr auto}.rh>:nth-child(3){grid-column:1/-1}}
-'''
-JS=r'''
-const DATA=window.__DATA__; const GLOSS=window.__GLOSS__;
+
+def sage_progress(summary: dict[str, int]) -> dict[str, object]:
+    return {
+        "headline": "The permanent framework audit is the active quality programme",
+        "detail": f"{summary['open']} currently recorded audit or verification tasks are open. The final audit loop is intentionally permanent, so no completion ETA is inferred from this count.",
+        "remaining": summary["open"],
+    }
+
+
+def queue_history(repo: Path, limit: int = 240) -> list[dict[str, object]]:
+    raw = git(repo, "log", f"-n{limit}", "--format=%H%x1f%aI", "--", "queues/C-unsolved-cards.md")
+    points: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for line in raw.splitlines():
+        if "\x1f" not in line:
+            continue
+        revision, when = line.split("\x1f", 1)
+        # At most one expensive historical queue read per 15-minute bucket.
+        bucket = int(parse_iso(when).timestamp() // 900)
+        if bucket in seen:
+            continue
+        seen.add(bucket)
+        queue = git(repo, "show", f"{revision}:queues/C-unsolved-cards.md", check=False)
+        if not queue:
+            continue
+        count = len(set(re.findall(r"\b(?:P|E)-[A-Za-z0-9_.-]+\b", queue)))
+        points.append({"time": when, "remaining": count, "revision": revision[:9]})
+    points.sort(key=lambda point: str(point["time"]))
+    return points
+
+
+def repo_payload(name: str, repo: Path, classification: str) -> dict[str, object]:
+    copy = REPO_COPY[name]
+    fallback = copy["objective"]
+    dag = checkbox_dag(repo / "TODO.md", fallback) if name in {"research", "new-qual-site"} else table_dag(repo / "TODO.md", fallback)
+    summary = open_ready(dag)
+    if name == "lean-categories":
+        progress = lean_progress(repo)
+    elif name == "new-qual-site":
+        progress = nq_progress(repo)
+    elif name == "research":
+        progress = research_progress(summary)
+    else:
+        progress = sage_progress(summary)
+    return {
+        "name": name,
+        "objective": copy["objective"],
+        "progress_label": copy["progress"],
+        "path": str(repo),
+        "head": git(repo, "rev-parse", "--short", "HEAD").strip(),
+        "classification": classification,
+        "dirty": dirty(repo),
+        "processes": process_rows(repo),
+        "commits": commits(repo),
+        "files": recent_files(repo),
+        "dag": dag,
+        "dag_summary": summary,
+        "progress": progress,
+        "remaining_history": queue_history(repo) if name == "new-qual-site" else [],
+    }
+
+
+CSS = r"""
+:root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#1f2328;background:#f6f8fa;--border:#d0d7de;--muted:#656d76;--green:#1a7f37;--red:#cf222e;--orange:#9a6700}*{box-sizing:border-box}body{margin:0}.wrap{max-width:1700px;margin:auto;padding:12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:flex-end;margin-bottom:8px}.top h1{font-size:21px;margin:0}.muted{color:var(--muted)}.windows{display:flex;gap:3px;flex-wrap:wrap;margin:8px 0 12px}.windows button{font:inherit;font-size:11px;padding:4px 8px;border:1px solid var(--border);background:white;border-radius:6px;cursor:pointer}.windows button.on{background:#24292f;color:white;border-color:#24292f}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.repo{background:white;border:1px solid var(--border);border-radius:9px;overflow:hidden}.rh{display:grid;grid-template-columns:1fr auto;gap:8px;padding:9px 11px;border-bottom:1px solid #eaeef2}.rh .objective{font-size:11px;color:var(--muted);margin-top:3px;max-width:900px}.state{font-weight:700;font-size:12px;align-self:start}.working{color:var(--green)}.blocked,.wedged,.drifting{color:var(--orange)}.done{color:var(--muted)}.activity{padding:9px 10px 6px}.rate-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:4px}.rate{border:1px solid #eaeef2;border-radius:7px;padding:6px 8px}.rate b{display:block;font-size:18px;font-variant-numeric:tabular-nums}.rate span{font-size:10px;color:var(--muted)}.rate .plus{color:var(--green)}.rate .minus{color:var(--red)}.chart{height:128px}.chart svg{width:100%;height:100%;display:block}.section-title{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:0 0 5px}.tails{display:grid;grid-template-columns:1.2fr .8fr;border-top:1px solid #eaeef2}.tail-panel{min-width:0;padding:8px}.tail-panel+ .tail-panel{border-left:1px solid #eaeef2}.tail{max-height:180px;overflow:auto}.row{display:grid;grid-template-columns:84px 1fr;gap:7px;padding:5px 3px;border-bottom:1px solid #f0f2f4;font-size:11px}.row .when{font-variant-numeric:tabular-nums;color:var(--muted)}.row .subject{min-width:0}.diff{display:flex;gap:8px;margin-top:2px;color:var(--muted);font-size:10px}.diff .plus{color:var(--green);font-weight:600}.diff .minus{color:var(--red);font-weight:600}.progress{border-top:1px solid #eaeef2;padding:8px 10px}.progress-head{font-size:17px;font-weight:650}.progress-detail{font-size:11px;color:var(--muted);margin-top:2px}.remaining-chart{height:100px;margin-top:4px}.dagwrap{border-top:1px solid #eaeef2;padding-top:7px}.dagtitle{padding:0 10px 4px;display:flex;justify-content:space-between;gap:8px}.dagbox{height:205px;position:relative}.dagbox svg{width:100%;height:100%;touch-action:none}.tip{position:fixed;z-index:100;max-width:min(440px,calc(100vw - 20px));max-height:min(300px,calc(100vh - 20px));overflow:auto;padding:8px 10px;border-radius:7px;background:#24292f;color:white;font-size:11px;line-height:1.35;pointer-events:none;opacity:0;box-shadow:0 4px 16px #0004}.pill{font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:999px;color:var(--muted)}.meta{font-size:10px;color:var(--muted);padding:0 10px 8px}.foot{font-size:10px;color:var(--muted);margin-top:8px}@media(max-width:1000px){.grid{grid-template-columns:1fr}.tails{grid-template-columns:1fr}.tail-panel+.tail-panel{border-left:0;border-top:1px solid #eaeef2}}@media(max-width:580px){.rate-strip{grid-template-columns:1fr 1fr 1fr}.rate b{font-size:15px}.row{grid-template-columns:70px 1fr}.wrap{padding:7px}}
+"""
+
+
+JS = r"""
+const DATA=window.__DATA__;
+const WINDOWS=window.__WINDOWS__;
+let active='6h';
 const fmtTime=s=>new Date(s).toLocaleString([], {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'});
-const ago=s=>{const m=Math.round((Date.now()-new Date(s))/60000);return m<60?`${m}m`:m<1440?`${Math.round(m/60)}h`:`${Math.round(m/1440)}d`};
-function tooltipTerms(s){return s.replace(/frontier|ready node|residue|Milestone 1|terminal audit|Queue C|Queue E/g,m=>`<span class="gloss" data-g="${m}">${m}</span>`)}
-function spark(el, arr){const w=500,h=90,m=8; const svg=d3.select(el).append('svg').attr('viewBox',`0 0 ${w} ${h}`); const x=d3.scaleTime().domain(d3.extent(arr,d=>new Date(d.t))).range([m,w-m]); const y=d3.scaleLinear().domain([0,d3.max(arr,d=>Math.max(d.n,d.ewma))||1]).nice().range([h-m,m]); svg.selectAll('line.bar').data(arr).join('line').attr('x1',d=>x(new Date(d.t))).attr('x2',d=>x(new Date(d.t))).attr('y1',y(0)).attr('y2',d=>y(d.n)).attr('stroke','#b9c1c7').attr('stroke-width',4); svg.append('path').datum(arr).attr('fill','none').attr('stroke','currentColor').attr('stroke-width',1.7).attr('d',d3.line().x(d=>x(new Date(d.t))).y(d=>y(d.ewma)).curve(d3.curveMonotoneX));}
-function graph(el, nodes){const visible=nodes; const ids=new Set(visible.map(d=>d.id)); const links=[]; visible.forEach(n=>n.needs.forEach(a=>{if(ids.has(a))links.push({source:a,target:n.id})})); const w=800,h=230; const svg=d3.select(el).append('svg').attr('viewBox',`0 0 ${w} ${h}`); const g=svg.append('g'); svg.call(d3.zoom().scaleExtent([.3,5]).on('zoom',e=>g.attr('transform',e.transform))); const layer=new Map(); let changed=true; visible.forEach(n=>layer.set(n.id,0)); for(let z=0;z<visible.length&&changed;z++){changed=false;links.forEach(l=>{let v=Math.max(layer.get(l.target),layer.get(l.source)+1); if(v!==layer.get(l.target)){layer.set(l.target,v);changed=true}})} const groups=d3.group(visible,n=>layer.get(n.id)); for(const [k,ns] of groups){ns.forEach((n,i)=>{n.x=70+k*155;n.y=25+i*(Math.max(26,190/Math.max(1,ns.length)));})} g.selectAll('line').data(links).join('line').attr('x1',d=>visible.find(n=>n.id===d.source).x).attr('y1',d=>visible.find(n=>n.id===d.source).y).attr('x2',d=>visible.find(n=>n.id===d.target).x).attr('y2',d=>visible.find(n=>n.id===d.target).y).attr('stroke','#c7ced3'); const ng=g.selectAll('g.n').data(visible).join('g').attr('class','n').attr('transform',d=>`translate(${d.x},${d.y})`).on('pointermove',(e,d)=>showTip(e,`<b>${d.id}</b><br>${tooltipTerms(d.text)}${d.acceptance?`<br><br><b>Acceptance:</b> ${d.acceptance}`:''}`)).on('pointerleave',hideTip); ng.append('circle').attr('r',d=>d.ready?7:5).attr('fill',d=>d.closed?'#b8c0c5':d.ready?'#1d6f42':'#d28a22'); ng.append('text').attr('x',9).attr('y',3).attr('font-size',9).text(d=>d.id);}
-const tip=d3.select('#tip'); function showTip(e,s){tip.html(s).style('opacity',1).style('left',(e.clientX+12)+'px').style('top',(e.clientY+12)+'px')} function hideTip(){tip.style('opacity',0)}
-document.addEventListener('pointerover',e=>{let g=e.target.closest('[data-g]');if(g)showTip(e,GLOSS[g.dataset.g])});document.addEventListener('pointerout',e=>{if(e.target.closest('[data-g]'))hideTip()});
-for(const r of DATA.repos){const host=document.querySelector(`#repo-${CSS.escape(r.name)}`);spark(host.querySelector('.commit-chart'),r.hourly);graph(host.querySelector('.dagbox'),r.dag);}
-'''
+const ago=s=>{const m=Math.max(0,Math.round((Date.now()-new Date(s))/60000));return m<60?`${m}m ago`:m<1440?`${Math.round(m/60)}h ago`:`${Math.round(m/1440)}d ago`};
+const windowSeconds=()=>WINDOWS.find(d=>d[0]===active)[1];
+function selected(commits){const sec=windowSeconds();if(sec===null)return commits;const cut=Date.now()-sec*1000;return commits.filter(c=>new Date(c.time).getTime()>=cut)}
+function spanHours(commits){const sec=windowSeconds();if(sec!==null)return sec/3600;if(!commits.length)return 1;const first=new Date(commits[commits.length-1].time).getTime();return Math.max(1,(Date.now()-first)/3600000)}
+function bucket(commits){const xs=selected(commits);let sec=windowSeconds();if(sec===null){if(!xs.length)return[];sec=Math.max(3600,(Date.now()-new Date(xs[xs.length-1].time))/1000)}const target=42;const bw=Math.max(300,sec/target);const end=Date.now()/1000,start=end-sec;const n=Math.max(1,Math.ceil(sec/bw));const bins=Array.from({length:n},(_,i)=>({t:(start+(i+.5)*bw)*1000,commits:0,ins:0,del:0,hours:bw/3600}));xs.forEach(c=>{const k=Math.floor((new Date(c.time).getTime()/1000-start)/bw);if(k>=0&&k<n){bins[k].commits++;bins[k].ins+=c.insertions;bins[k].del+=c.deletions}});return bins.map(b=>({...b,cr:b.commits/b.hours,ir:b.ins/b.hours,dr:b.del/b.hours}))}
+function rateChart(el,commits){el.innerHTML='';const arr=bucket(commits);if(!arr.length){el.textContent='No commits in this window';return}const w=720,h=124,p={l:30,r:30,t:8,b:18};const svg=d3.select(el).append('svg').attr('viewBox',`0 0 ${w} ${h}`);const x=d3.scaleTime().domain(d3.extent(arr,d=>new Date(d.t))).range([p.l,w-p.r]);const yc=d3.scaleLinear().domain([0,d3.max(arr,d=>d.cr)||1]).nice().range([56,p.t]);const yl=d3.scaleLinear().domain([0,d3.max(arr,d=>Math.max(d.ir,d.dr))||1]).nice().range([h-p.b,67]);svg.selectAll('line.c').data(arr).join('line').attr('x1',d=>x(new Date(d.t))).attr('x2',d=>x(new Date(d.t))).attr('y1',yc(0)).attr('y2',d=>yc(d.cr)).attr('stroke','#8c959f').attr('stroke-width',Math.max(1,Math.min(6,(w-p.l-p.r)/arr.length*.58)));const line=d3.line().x(d=>x(new Date(d.t))).curve(d3.curveMonotoneX);svg.append('path').datum(arr).attr('d',line.y(d=>yl(d.ir))).attr('fill','none').attr('stroke','#1a7f37').attr('stroke-width',1.8);svg.append('path').datum(arr).attr('d',line.y(d=>yl(d.dr))).attr('fill','none').attr('stroke','#cf222e').attr('stroke-width',1.8);svg.append('text').attr('x',p.l).attr('y',10).attr('font-size',9).attr('fill','#656d76').text('commits/hour');svg.append('text').attr('x',p.l).attr('y',71).attr('font-size',9).attr('fill','#656d76').text('lines/hour');svg.append('text').attr('x',w-p.r).attr('y',71).attr('font-size',9).attr('text-anchor','end').attr('fill','#1a7f37').text('+ inserted');svg.append('text').attr('x',w-p.r).attr('y',82).attr('font-size',9).attr('text-anchor','end').attr('fill','#cf222e').text('− deleted')}
+function median(xs){const a=[...xs].sort((a,b)=>a-b),n=a.length;if(!n)return null;return n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2}
+function theilSen(points){if(points.length<3)return null;const slopes=[];for(let i=0;i<points.length;i++)for(let j=i+1;j<points.length;j++){const dx=points[j].x-points[i].x;if(dx>0)slopes.push((points[j].y-points[i].y)/dx)}const slope=median(slopes);if(slope===null)return null;const intercept=median(points.map(p=>p.y-slope*p.x));const mad=median(slopes.map(s=>Math.abs(s-slope)))||0;return{slope,intercept,mad}}
+function remainingChart(el,history){el.innerHTML='';if(!history||history.length<2)return;const sec=windowSeconds();const cut=sec===null?-Infinity:Date.now()-sec*1000;const pts=history.filter(p=>new Date(p.time).getTime()>=cut).map(p=>({x:new Date(p.time).getTime()/3600000,y:p.remaining,time:p.time}));if(pts.length<2)return;const w=720,h=96,p={l:42,r:10,t:8,b:18};const x=d3.scaleLinear().domain(d3.extent(pts,d=>d.x)).range([p.l,w-p.r]);const y=d3.scaleLinear().domain(d3.extent(pts,d=>d.y)).nice().range([h-p.b,p.t]);const svg=d3.select(el).append('svg').attr('viewBox',`0 0 ${w} ${h}`);svg.append('path').datum(pts).attr('d',d3.line().x(d=>x(d.x)).y(d=>y(d.y)).curve(d3.curveMonotoneX)).attr('fill','none').attr('stroke','#0969da').attr('stroke-width',1.8);svg.selectAll('circle').data(pts).join('circle').attr('cx',d=>x(d.x)).attr('cy',d=>y(d.y)).attr('r',2).attr('fill','#0969da');const fit=theilSen(pts);let label='';if(fit){const perHour=fit.slope;if(perHour<-.05){const eta=pts[pts.length-1].y/(-perHour);label=`Robust net burn ${(-perHour).toFixed(1)} cards/h · projected zero in ${eta.toFixed(0)}h if this net rate persists`; }else label=`Robust net trend ${perHour.toFixed(1)} cards/h; no completion projection at a non-decreasing rate`;svg.append('path').datum(pts).attr('d',d3.line().x(d=>x(d.x)).y(d=>y(fit.intercept+fit.slope*d.x))).attr('fill','none').attr('stroke','#57606a').attr('stroke-dasharray','4 3') } d3.select(el).append('div').attr('class','meta').text(label+' · Theil–Sen fit; source intake can add cards.')}
+function graph(el,allNodes){el.innerHTML='';const nodes=allNodes.filter(n=>!n.closed);if(!nodes.length){el.innerHTML='<div class="meta">No open dependency work.</div>';return}const ids=new Set(nodes.map(d=>d.id));const links=[];nodes.forEach(n=>n.needs.forEach(a=>{if(ids.has(a))links.push({source:a,target:n.id})}));const w=800,h=205;const svg=d3.select(el).append('svg').attr('viewBox',`0 0 ${w} ${h}`);const g=svg.append('g');svg.call(d3.zoom().scaleExtent([.35,6]).on('zoom',e=>g.attr('transform',e.transform)));const layer=new Map(nodes.map(n=>[n.id,0]));for(let z=0;z<nodes.length;z++){let changed=false;for(const l of links){const v=Math.max(layer.get(l.target),layer.get(l.source)+1);if(v!==layer.get(l.target)){layer.set(l.target,v);changed=true}}if(!changed)break}const groups=d3.group(nodes,n=>layer.get(n.id));for(const[k,ns]of groups){ns.forEach((n,i)=>{n.x=28+k*170;n.y=18+i*Math.max(24,180/Math.max(1,ns.length))})}const by=new Map(nodes.map(n=>[n.id,n]));g.selectAll('line').data(links).join('line').attr('x1',d=>by.get(d.source).x).attr('y1',d=>by.get(d.source).y).attr('x2',d=>by.get(d.target).x).attr('y2',d=>by.get(d.target).y).attr('stroke','#d0d7de');const ng=g.selectAll('g.n').data(nodes).join('g').attr('class','n').attr('transform',d=>`translate(${d.x},${d.y})`).on('pointermove',(e,d)=>showTip(e,`<b>${d.ready?'Available now':'Waiting on prerequisites'}</b><br>${esc(d.public)}`)).on('pointerleave',hideTip).on('click',(e,d)=>showTip(e,`<b>${d.ready?'Available now':'Waiting on prerequisites'}</b><br>${esc(d.public)}`));ng.append('circle').attr('r',d=>d.ready?7:5).attr('fill',d=>d.ready?'#1a7f37':'#bf8700');ng.append('text').attr('x',9).attr('y',3).attr('font-size',9).text(d=>d.public.length>44?d.public.slice(0,43)+'…':d.public)}
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tip=d3.select('#tip');function showTip(e,s){tip.html(s).style('opacity',1);const node=tip.node(),gap=10;let left=e.clientX+12,top=e.clientY+12;const r=node.getBoundingClientRect();left=Math.min(left,innerWidth-r.width-gap);top=Math.min(top,innerHeight-r.height-gap);left=Math.max(gap,left);top=Math.max(gap,top);tip.style('left',left+'px').style('top',top+'px')}function hideTip(){tip.style('opacity',0)}
+function updateRepo(r){const host=document.querySelector(`#repo-${CSS.escape(r.name)}`);const cs=selected(r.commits),hours=spanHours(r.commits);const ins=cs.reduce((a,c)=>a+c.insertions,0),del=cs.reduce((a,c)=>a+c.deletions,0);host.querySelector('.commit-rate').textContent=(cs.length/hours).toFixed(cs.length/hours<10?1:0);host.querySelector('.insert-rate').textContent='+'+(ins/hours).toFixed(ins/hours<100?1:0);host.querySelector('.delete-rate').textContent='−'+(del/hours).toFixed(del/hours<100?1:0);host.querySelector('.window-total').textContent=`${cs.length.toLocaleString()} commits · ${ins.toLocaleString()} inserted · ${del.toLocaleString()} deleted in ${active}`;rateChart(host.querySelector('.activity-chart'),r.commits);remainingChart(host.querySelector('.remaining-chart'),r.remaining_history)}
+function updateAll(){document.querySelectorAll('.windows button').forEach(b=>b.classList.toggle('on',b.dataset.w===active));DATA.repos.forEach(updateRepo)}
+document.querySelectorAll('.windows button').forEach(b=>b.addEventListener('click',()=>{active=b.dataset.w;updateAll()}));
+for(const r of DATA.repos){const host=document.querySelector(`#repo-${CSS.escape(r.name)}`);graph(host.querySelector('.dagbox'),r.dag)}updateAll();
+"""
 
-def render(data, out: Path):
-    cards=[]
-    for r in data['repos']:
-        p=r['progress']; metric=''
-        if r['name']=='new-qual-site':
-            proj=r.get('history',{}).get('projection')
-            eta=f" · robust net ETA {proj['eta_hours']:.0f}h" if proj and proj.get('eta_hours') and proj['eta_hours']<10000 else ''
-            metric=f"<div class=metric>{p['unsolved']:,}</div><div class=tiny>unsolved cards · Queue E {p['queue_e_executable']} executable / {p['queue_e_blocked']} blocked{eta}</div>"
-        elif r['name']=='lean-categories':
-            fc=p['sources'].get('FC06',{}); metric=f"<div class=metric>{fc.get('search',0)}</div><div class=tiny>FC06 first-pass search rows remaining · {fc.get('residue-search',0)} later <span class='gloss' data-g='residue'>residue</span> rows</div>"
-        else:
-            metric=f"<div class=metric>{r['dag_summary']['open']}</div><div class=tiny>open DAG nodes · {r['dag_summary']['ready']} <span class='gloss' data-g='ready node'>ready</span></div>"
-        commits_html=''.join(f"<div class=row><span class=time>{age_label(c['time'])}</span><span class=subj title='{html.escape(c['subject'])}'>{html.escape(c['subject'])}</span><span>±{c['insertions']}/{c['deletions']} · {c['files']}f</span></div>" for c in r['commits'][:12])
-        files_html=''.join(f"<div class=row><span class=time>{age_label(f['time'])}</span><span class=subj title='{html.escape(f['path'])}'>{html.escape(f['path'])}</span><span>{f['bytes']//1024}k</span></div>" for f in r['files'][:12])
-        cards.append(f'''<section class="repo" id="repo-{r['name']}"><header class=rh><div><b>{r['name']}</b> <span class=pill>{r['head']}</span></div><span class="state {r['classification']}">{r['classification']}</span><span class=tiny>{r['dirty']['count']} dirty · {len(r['processes'])} repo processes</span></header><div class=bands><div class=panel><div class=title>Repository progress</div>{metric}<div class=tiny muted>{mark_terms(p.get('definition',''))}</div></div><div class=panel><div class=title>Banked commits · 48 hours</div><div class="chart commit-chart"></div><div class=tiny muted>bars = commits/hour · line = EWMA; activity, not correctness</div></div></div><div class=title style="padding:0 10px">Dependency/work DAG · drag/pinch/scroll to navigate</div><div class=dagbox></div><div class=bands><div><div class=title>Recent commits</div><div class=tail>{commits_html}</div></div><div><div class=title>Recent file writes (mtime)</div><div class=tail>{files_html}</div></div></div></section>''')
-    payload=json.dumps(data,separators=(',',':')).replace('</','<\\/')
-    glossary=json.dumps(GLOSSARY,separators=(',',':')).replace('</','<\\/')
-    text=f'''<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=5"><title>Workstream observatory</title><style>{CSS}</style><script src="https://cdn.jsdelivr.net/npm/d3@7"></script></head><body><div class=wrap><div class=top><div><h1 style="font-size:22px;margin:0">Workstream observatory</h1><div class=muted>Recent banked work, live writes, execution and dependency state. None of these surfaces by itself certifies mathematical correctness.</div></div><div class=tiny>refreshed {html.escape(data['generated_at'])}</div></div><div class=grid>{''.join(cards)}</div><div class=foot>Definitions: hover/tap dotted terms. Commit and mtime distributions are observability signals; repository TODO/frontier/queue files and direct execution remain authoritative.</div></div><div id=tip class=tip></div><script>window.__DATA__={payload};window.__GLOSS__={glossary};</script><script>{JS}</script></body></html>'''
-    out.parent.mkdir(parents=True,exist_ok=True); out.write_text(text)
 
-def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--output',default=str(ROOT/'steward-dashboard/index.html')); ap.add_argument('--classification',action='append',default=[])
-    a=ap.parse_args(); cls={x.split('=',1)[0]:x.split('=',1)[1] for x in a.classification if '=' in x}
-    data={'generated_at':dt.datetime.now().astimezone().isoformat(),'repos':[]}
-    for n,r in REPOS.items(): data['repos'].append(repo_payload(n,r,cls.get(n,'unknown')))
-    render(data,Path(a.output)); print(a.output)
-if __name__=='__main__': main()
+def age_label(iso: str) -> str:
+    delta = dt.datetime.now(dt.timezone.utc) - parse_iso(iso).astimezone(dt.timezone.utc)
+    minutes = max(0, round(delta.total_seconds() / 60))
+    exact = parse_iso(iso).strftime("%b %d %H:%M %z")
+    if minutes < 60:
+        relative = f"{minutes}m ago"
+    elif minutes < 1440:
+        relative = f"{round(minutes / 60)}h ago"
+    else:
+        relative = f"{round(minutes / 1440)}d ago"
+    return f"{exact} · {relative}"
+
+
+def render(data: dict[str, object], out: Path) -> None:
+    cards: list[str] = []
+    for repo in data["repos"]:
+        assert isinstance(repo, dict)
+        commits_html = "".join(
+            f"<div class='row'><span class='when' title='{html.escape(str(commit['time']))}'>{age_label(str(commit['time']))}</span>"
+            f"<span class='subject'><b>{html.escape(str(commit['subject']))}</b><div class='diff'>"
+            f"<span>{int(commit['files']):,} files changed</span><span class='plus'>+{int(commit['insertions']):,}</span>"
+            f"<span class='minus'>−{int(commit['deletions']):,}</span><span>{html.escape(str(commit['hash']))}</span></div></span></div>"
+            for commit in repo["commits"][:14]
+        )
+        files_html = "".join(
+            f"<div class='row'><span class='when' title='{html.escape(str(file['time']))}'>{age_label(str(file['time']))}</span>"
+            f"<span class='subject'>{html.escape(str(file['path']))}</span></div>"
+            for file in repo["files"][:14]
+        )
+        progress = repo["progress"]
+        assert isinstance(progress, dict)
+        cards.append(
+            f"""
+<section class="repo" id="repo-{html.escape(str(repo['name']))}">
+  <header class="rh">
+    <div><b>{html.escape(str(repo['name']))}</b> <span class="pill">{html.escape(str(repo['head']))}</span>
+      <div class="objective">{html.escape(str(repo['objective']))}</div></div>
+    <span class="state {html.escape(str(repo['classification']))}">{html.escape(str(repo['classification']))}</span>
+  </header>
+  <div class="activity">
+    <div class="section-title">Banked change rate</div>
+    <div class="rate-strip">
+      <div class="rate"><b class="commit-rate">—</b><span>commits / hour</span></div>
+      <div class="rate"><b class="insert-rate plus">—</b><span>inserted lines / hour</span></div>
+      <div class="rate"><b class="delete-rate minus">—</b><span>deleted lines / hour</span></div>
+    </div>
+    <div class="meta window-total"></div>
+    <div class="chart activity-chart"></div>
+  </div>
+  <div class="tails">
+    <div class="tail-panel"><div class="section-title">Most recent commits</div><div class="tail">{commits_html}</div></div>
+    <div class="tail-panel"><div class="section-title">Most recently written files</div><div class="tail">{files_html}</div></div>
+  </div>
+  <div class="progress">
+    <div class="section-title">{html.escape(str(repo['progress_label']))}</div>
+    <div class="progress-head">{html.escape(str(progress['headline']))}</div>
+    <div class="progress-detail">{html.escape(str(progress['detail']))}</div>
+    <div class="remaining-chart"></div>
+  </div>
+  <div class="dagwrap">
+    <div class="dagtitle"><span class="section-title">Dependency map</span><span class="meta">drag / pinch / scroll · tap a node for its full plain-language description</span></div>
+    <div class="dagbox"></div>
+    <div class="meta">Gray = completed · green = available now · amber = waiting on prerequisites · {int(repo['dirty']['count']):,} current working-tree paths · {len(repo['processes']):,} repository-local processes</div>
+  </div>
+</section>
+"""
+        )
+    payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
+    windows = json.dumps(WINDOWS, separators=(",", ":"))
+    window_buttons = "".join(f"<button data-w='{label}'>{label}</button>" for label, _ in WINDOWS)
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5"><title>Workstream progress</title><style>{CSS}</style><script src="https://cdn.jsdelivr.net/npm/d3@7"></script></head><body><div class="wrap"><div class="top"><div><h1>Workstream progress</h1><div class="muted" style="font-size:11px">Recent banked work and live file activity first; dependency detail below. Rates are observability signals, not correctness certificates.</div></div><div class="muted" style="font-size:10px">refreshed {html.escape(str(data['generated_at']))}</div></div><div class="windows">{window_buttons}</div><div class="grid">{''.join(cards)}</div><div class="foot">Commit plots report commits/hour plus inserted/deleted lines/hour for the selected window. File-write timestamps are working-tree activity only. Remaining-work projections appear only where the repository exposes a meaningful numerical queue and use a robust Theil–Sen trend rather than a promise of delivery time.</div></div><div id="tip" class="tip"></div><script>window.__DATA__={payload};window.__WINDOWS__={windows};</script><script>{JS}</script></body></html>"""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", default=str(ROOT / "steward-dashboard/index.html"))
+    parser.add_argument("--classification", action="append", default=[])
+    args = parser.parse_args()
+    classifications = {
+        item.split("=", 1)[0]: item.split("=", 1)[1]
+        for item in args.classification
+        if "=" in item
+    }
+    data: dict[str, object] = {
+        "generated_at": dt.datetime.now().astimezone().isoformat(),
+        "repos": [],
+    }
+    repos = data["repos"]
+    assert isinstance(repos, list)
+    for name, repo in REPOS.items():
+        repos.append(repo_payload(name, repo, classifications.get(name, "unknown")))
+    render(data, Path(args.output))
+    print(args.output)
+
+
+if __name__ == "__main__":
+    main()
