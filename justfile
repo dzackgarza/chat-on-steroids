@@ -872,3 +872,7 @@ install:
         echo "installed, but the bridge did not come back within 30s; start the app yourself." >&2
         exit 1
     fi
+
+# Refresh the read-only steward workstream dashboard from live repository state.
+steward-dashboard *args:
+    python3 scripts/generate-steward-dashboard.py {{args}}
