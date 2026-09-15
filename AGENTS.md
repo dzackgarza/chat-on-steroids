@@ -1360,6 +1360,44 @@ not copy their current counts into this document; recompute from the named live 
   Mathlib/interface repair, reference-port/package reuse, unmatched, and missing coverage. Only a
   source whose remap is closed may treat its remaining `unmatched` units as eligible for authorship.
 
+### The steward dashboard is derived observability, not a scheduling authority
+
+The static workstream dashboard is a required steward output for human inspection. **Refresh its
+derived data at least once in every hourly stewardship run**, after reading the repositories from
+which that data is computed. A dashboard older than one hour is stale even when its page still
+loads. The generator may read repository files and Git history; it must never write a managed
+repository, send to a worker, or choose a next unit. Repository TODO/DAG/frontier/queue files and
+direct execution evidence remain authoritative when the dashboard disagrees.
+
+Make the page legible to someone who has not read this file. Project-local shorthand such as
+“frontier”, “ready node”, “residue”, “Milestone 1”, “terminal audit”, or “Queue C” needs a short
+plain-language tooltip or popover at the point where it is displayed. Do not use status copy as
+advertising: words such as “canonical”, “healthy”, “productive”, or “converged” carry no evidence
+by themselves and should be replaced by the measured fact or omitted.
+
+Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
+
+- the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
+  repository text that defines each node's acceptance;
+- the repository-owned progress measures named above, with denominator and measurement definition
+  visible beside every count or percentage;
+- commit activity over time, not only a total: bucketed counts over recent hours/days, plus a
+  visible tail of recent commits with timestamp, subject, author/ownership distinction where it is
+  meaningful, changed-file count and basic insertion/deletion statistics;
+- filesystem activity over time from actual file mtimes, plus a visible tail of the most recently
+  edited files with timestamps. Treat mtimes as working-tree activity, not accepted progress;
+- current dirty-tree summary, worker/process state, and the last known classification, clearly
+  separated so a busy process or large diff cannot masquerade as semantic progress; and
+- enough recent history to make a rate change inspectable instead of reducing it to a single
+  “velocity” number. Prefer distributions and tails over a score.
+
+The dashboard is allowed to visualize facts that are not certificates. Label those semantics in
+the UI: commits show banked history, mtimes show recent writes, processes show execution, and DAG
+counts show scheduling state. None establishes mathematical correctness. When a steward changes a
+measurement or discovers a wrong denominator/ranking, update the generator and every displayed
+derivative in the same control-plane repair so the page cannot keep steering attention with the old
+metric.
+
 ### The two surfaces you write
 
 Durable **control changes** land in one of two places, both inside the managed repository, both in
