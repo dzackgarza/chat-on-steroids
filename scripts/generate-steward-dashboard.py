@@ -107,7 +107,9 @@ def public_task(text: str, fallback: str) -> str:
 
 
 def commits(repo: Path) -> list[dict[str, object]]:
-    fmt = "%H%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e"
+    # Prefix each commit record separator so its following --numstat lines stay
+    # in the same block.  A trailing separator splits metadata from its own diff.
+    fmt = "%x1e%H%x1f%aI%x1f%an%x1f%ae%x1f%s"
     raw = git(repo, "log", f"--format={fmt}", "--numstat")
     out: list[dict[str, object]] = []
     for block in raw.split("\x1e"):
