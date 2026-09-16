@@ -1445,6 +1445,13 @@ an already-fixed cross-repository failure — send the concrete current fact ins
 a permanent policy for it. Never make chat prose the only home of a rule that should survive the
 chat.
 
+Fleet-wide owner stops and resumes are durable worker rules, not merely steward scheduling facts.
+Record the fleet decision in the scheduling source **and mirror the controlling stop/resume clause
+into each affected repository's `AGENTS.md` before treating it as enforced**. Repository-specific
+scheduled continuations can be older than the fleet decision and may read only their local
+repository contract; recurrence of an old continuation prompt never supersedes a newer local owner
+pause. Remove or replace the local clause only when a later explicit owner decision changes it.
+
 **Never run a steward commit detached on a repository with an expensive gate.** Your filings
 compete for the same single index the worker uses, and these gates run for minutes — long
 enough for memory pressure to kill the process mid-run, which orphans `.git/index.lock` and
