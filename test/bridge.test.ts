@@ -3381,6 +3381,29 @@ describe('targeted open', () => {
     }
   });
 
+  it('leaves the tab alone when a page redeemed the command before it expired', async () => {
+    vi.useFakeTimers();
+    const closed: string[] = [];
+    try {
+      setBrowserCloser(async (url) => {
+        closed.push(url);
+      });
+      await pair();
+      const { sessionId, token } = await compactedSession('44444444-5555-6666-7777-aaaaaaaaaaaa', 'carry on');
+      const command = queueResume(sessionId, token)!;
+      await waitForOpened(1);
+      await redeem(command.id);
+
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      expect(pendingCommands()).toEqual([]);
+      expect(closed).toEqual([]);
+    } finally {
+      setBrowserCloser(null);
+      vi.useRealTimers();
+    }
+  });
+
   it('withdraws a cancelled resume so no tab opens for it afterwards', async () => {
     setBrowserOpener(async (url) => {
       opened.push(url);

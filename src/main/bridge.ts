@@ -4209,6 +4209,31 @@ export function setBrowserOpener(open: ((url: string) => Promise<void>) | null):
   openInBrowser = open;
 }
 
+/**
+ * Closes the browser tab the app opened for one command. Wired beside the opener at startup.
+ *
+ * A command that expires never redeemed its marker, so no page and no extension path owns the
+ * tab it was opened in; nothing else will ever close it. Each expired send on the headless rack
+ * used to leave one blank `chatgpt.com/?clf=` tab behind, and at 54 of them (2026-09-17) every
+ * further delivery timed out. The closer is given the exact URL the opener was given, and must
+ * close only tabs still carrying that command's marker.
+ */
+let closeInBrowser: ((url: string) => Promise<void>) | null = null;
+
+export function setBrowserCloser(close: ((url: string) => Promise<void>) | null): void {
+  closeInBrowser = close;
+}
+
+/** The URL `deliver` opens for a command, so its tab can be found again by the marker. */
+function openedUrlFor(command: Command): string {
+  // A revival is the one command that must not open a fresh composer: it names the chat the
+  // worker already has, so the page lands on it and the marker it redeems names it back.
+  return commandUrl(
+    command.id,
+    command.spec.type === 'revive' || command.spec.type === 'send' ? command.spec.conversationId : null
+  );
+}
+
 /** Where the app sends the browser. The marker is an id, not a credential. */
 export function commandUrl(id: string, conversationId?: string | null): string {
   // Both a query and a fragment: ChatGPT is a single-page app that rewrites its own URL
@@ -4262,12 +4287,7 @@ async function deliverOne(): Promise<void> {
   if (!(await persistCommandLease(command, null, claimedAt))) return;
   armDeadline(command);
   changed();
-  // A revival is the one command that must not open a fresh composer: it names the chat the
-  // worker already has, so the page lands on it and the marker it redeems names it back.
-  const url = commandUrl(
-    command.id,
-    command.spec.type === 'revive' || command.spec.type === 'send' ? command.spec.conversationId : null
-  );
+  const url = openedUrlFor(command);
   // The recorder can see a brand-new ChatGPT conversation before that page's content script has
   // redeemed this command. Arm the session-transfer gate before the browser gets any chance to
   // create B, otherwise that early observation invents a shadow session for B and the real A→B
@@ -4522,6 +4542,15 @@ function drop(command: Command, why: string): boolean {
   if (command.timer) clearTimeout(command.timer);
   command.timer = null;
   commands = commands.filter((entry) => entry !== command);
+  // Only a tab no page ever redeemed from: a redeemed marker stays in the URL of the chat the
+  // page is now working in, and closing that would kill a live turn to tidy a receipt.
+  if (closeInBrowser && command.claimedAt !== null && command.owner === null) {
+    void closeInBrowser(openedUrlFor(command)).catch((err) => {
+      logWarn(
+        `bridge: could not close the tab opened for ${specKey(command.spec)} — ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
+  }
   // Giving up on a worker's chat has to end the worker, not just the command. Deleting
   // the command alone left the slot `invited` for good: it counted towards the worker
   // limit, it held the one in-flight agent-bearing bootstrap so the next worker never
@@ -5081,6 +5110,7 @@ export function resetBridgeForTests(): void {
   resetContinuationsForTests();
   sessionTokens.clear();
   openInBrowser = null;
+  closeInBrowser = null;
   lastSeenAt = null;
   extensionVersion = null;
   versionWarned = false;

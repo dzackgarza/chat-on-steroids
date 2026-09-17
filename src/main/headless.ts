@@ -21,7 +21,7 @@ import { initSessionStore } from './session/store.js';
 import { restoreRequestCorrelations } from './session/correlation.js';
 import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
-import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
+import { setBrowserCloser, setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
 import { restoreSleepWake, setSleepWakeDriver, sleepWakeSettings } from './session/sleep-wake.js';
 import { stopExecReaper } from './exec-reaper.js';
 import { unifiedExecManager } from './codex/manager.js';
@@ -146,6 +146,30 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       console.warn(`CDP opener failed on port ${devtoolsPort}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  // The tab an expired command was opened in. The marker is unique per command, so matching
+  // on it can only ever reach the tab the opener above created for that command.
+  setBrowserCloser(async (url: string) => {
+    const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
+    const marker = new URL(url).searchParams.get('clf');
+    if (!marker) throw new Error(`no command marker in ${url}`);
+    const listed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`);
+    if (!listed.ok) throw new Error(`CDP /json/list answered ${listed.status} ${listed.statusText}`);
+    const targets = (await listed.json()) as Array<{ id?: string; type?: string; url?: string }>;
+    for (const target of targets) {
+      if (target.type !== 'page' || !target.id || typeof target.url !== 'string') continue;
+      let carries = false;
+      try {
+        const opened = new URL(target.url);
+        carries = opened.searchParams.get('clf') === marker || opened.hash === `#clf=${encodeURIComponent(marker)}`;
+      } catch {
+        continue;
+      }
+      if (!carries) continue;
+      const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${target.id}`);
+      if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
     }
   });
 
