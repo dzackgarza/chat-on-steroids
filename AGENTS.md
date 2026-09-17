@@ -3025,16 +3025,16 @@ Consult when an instrument is about to change what you do. None of it is the job
 
 ### The managed workstreams
 
-- **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): Sweep II corpus mapping
-  across sources. Definitions close before theorems open.
-- **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): card-by-card solution
-  remediation on problem collections; queue E intake.
-- **`research`** (`/home/dzack/research`): preamble construction — category foundations and
-  categorical group actions.
-- **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): native engine remediation
-  and the foundational category framework. Its current required execution DAG is closed; do not
-  fabricate standing audit work to keep a worker occupied. Reopen it only for a concrete regression,
-  a newly requested capability, or another substantive repository-defined node.
+- **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): State-1 definition-mapping
+  convergence. The current final open-ended prior-art search must reach its repository-defined fixed
+  point before Sweep III authoring can begin.
+- **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): post-publication Author-solutions
+  work under the per-card DAG; the independent copy-policy convergence pass does not serialize it.
+- **`research`** (`/home/dzack/research`): the repository-selected remediation/construction DAG;
+  current `TODO.md` is authoritative for its first ready node and phase-T execution boundary.
+- **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): active framework completion.
+  Source/static feature work may be closed while the runtime, integrated static projection, terminal
+  behavioral acceptance, and final framework-delivery chain remain open; publication is independent.
 
 One stream per repository; width is across repositories, never within one.
 [`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) holds the partition analysis and the unlock
