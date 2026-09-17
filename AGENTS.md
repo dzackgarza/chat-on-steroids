@@ -1556,6 +1556,16 @@ verified work the chat has not banked, and the instruction is then *bank what is
 rather than *take the next node*. Over a clean tree there is nothing in flight and the
 interrupt costs nothing at all.
 
+### Before pushing a chat, confirm no newer chat owns its repository
+
+More than one steward drives this fleet. A chat that was the repository's worker when you last
+looked may since have been stopped and replaced, and a push to it restarts a second worker beside
+the replacement. On 2026-09-17 a `say` at 10:19 revived a sage-categories chat another steward had
+deliberately stopped and replaced one minute earlier, and both then edited the same tree. Before
+any `say`, `revive` or `interrupt` that asks a chat to continue work, list the chats opened since
+your last observation and read each one's first user message: if a newer chat names the same
+repository as its worker, that chat is the stream, and the older one gets no push.
+
 ### A worker can report a commit from the wrong repository
 
 On 2026-09-12 a `research` worker reported banking `d9ff84a` with a named construction and a
