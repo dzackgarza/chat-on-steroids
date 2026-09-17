@@ -1566,6 +1566,11 @@ any `say`, `revive` or `interrupt` that asks a chat to continue work, list the c
 your last observation and read each one's first user message: if a newer chat names the same
 repository as its worker, that chat is the stream, and the older one gets no push.
 
+Recency decides only when neither chat is demonstrably working. A chat that is generating and
+whose writes are landing in that repository right now is the stream, however new the other one
+is: stand the idle one down instead. Replacing a worker mid-unit costs the unit, and both
+stewards have now done it in both directions.
+
 ### A worker can report a commit from the wrong repository
 
 On 2026-09-12 a `research` worker reported banking `d9ff84a` with a named construction and a
