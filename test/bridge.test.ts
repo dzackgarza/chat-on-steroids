@@ -43,6 +43,7 @@ const {
   resetBridgeForTests,
   restoreCommands,
   resumeJobFor,
+  setBrowserCloser,
   setBrowserOpener,
   shutdownBridge,
   STALE_SWARM_MS,
@@ -3345,6 +3346,37 @@ describe('targeted open', () => {
       // And no second tab was opened for it on the way out.
       expect(opened).toEqual([commandUrl(command.id)]);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The tab the app opened for a command that expired is the app's to close.
+   *
+   * Nothing else ever closes it: the page never redeemed its marker, so no extension path owns
+   * it. On the headless rack every expired send left one blank `chatgpt.com/?clf=` tab behind;
+   * 54 of them accumulated in one morning (2026-09-17), and with them every further delivery
+   * timed out until they were closed by hand.
+   */
+  it('closes the tab it opened when that command expires', async () => {
+    vi.useFakeTimers();
+    const closed: string[] = [];
+    try {
+      setBrowserCloser(async (url) => {
+        closed.push(url);
+      });
+      await pair();
+      const { sessionId, token } = await compactedSession('44444444-5555-6666-7777-999999999999', 'carry on');
+      const command = queueResume(sessionId, token)!;
+      await waitForOpened(1);
+      expect(closed).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      expect(pendingCommands()).toEqual([]);
+      expect(closed).toEqual([commandUrl(command.id)]);
+    } finally {
+      setBrowserCloser(null);
       vi.useRealTimers();
     }
   });
