@@ -1200,6 +1200,17 @@ Do not substitute activity for any of those. A worker can be busy, committing, a
 worker can also be quiet because a correct gate is still running. Liveness is checked only after
 goal and invariant alignment.
 
+Before any cadence or elapsed-time judgment, establish that the thing being timed is actually the
+repository-selected unit.  Read the current DAG/frontier/selector and prove that its prerequisites
+are delivered, its priority/source-order rule selects it, and its milestone semantics include the
+work now being observed.  Then read the unit's complete acceptance contract and check that the
+current implementation/proof route can satisfy it.  If any of those facts is unknown, investigate
+them first; there is no meaningful throughput denominator yet.  A definition with an intrinsic
+proof, a source audit, a terminal runtime consumer and a routine authoring card are not comparable
+units merely because each occupies one row in a queue.  Likewise, a worker editing a dependent
+consumer does not prove that consumer is ready: confirm the dependency edge and the prerequisite's
+delivered output before crediting the work.
+
 Output rate is a diagnostic, never a pass mark. Compare rates to find something worth reading,
 but never certify a stream from a count. Ten reinvented definitions are worse than one correct
 reuse mapping; sixty cache refactors after the functional DAG is closed are not sixty units of
