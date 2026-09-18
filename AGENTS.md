@@ -2883,19 +2883,26 @@ reporting programme; it changes the control loop when evidence defeats it.
 9. **Steward-footprint audit:** confirm one tab per managed chat, no abandoned send/watcher, no
    steward-created index lock or long process, and no host trend being blamed on the fleet without
    attribution.
-   Treat disk hygiene as a provenance problem, not a blanket cache purge. After every stream is
-   accounted for, periodically inspect repository `.tmp`/build/test-cache surfaces and registered
-   Git worktrees. Reclaim only state that is both rebuildable/absorbed and unreferenced by a live
-   process or active worker; prune a worktree only after its work is banked or merged and the
-   worktree itself is clean. Expensive warm state such as Lean `.lake/packages`, Julia depots and
-   package environments, or Julia-backed package caches is retained by default because deleting it
-   converts disk recovery into later download/precompile stalls. Prefer the ecosystem's own GC or
-   prune operation when one exists, and measure the real `df` delta rather than the tool's claimed
-   reclaim. When an environment is unexpectedly large, compare it with its explicit environment
-   specification before deleting packages: pip-installed layers outside that specification are a
-   contamination candidate, but remove them only at an idle point with a smoke test of the owning
-   runtime. A clean Git repository can still contain ignored runtime state; inventory that state
-   before migrating an inactive project, verify the destination copy, then remove the source copy.
+   Treat disk pressure first as a **producer/workflow defect**, only secondarily as a cleanup task.
+   A workflow that repeatedly materializes full-repository validation/push worktrees, bootstraps a
+   heavyweight model/runtime into `/tmp` or a global cache, or writes hundreds of MB outside its
+   owning project for an ordinary unit is not healthy merely because the artifacts are temporary.
+   Attribute the bytes to the exact command and work contract, then stop or redesign that producer
+   before reclaiming its outputs. Prefer one reusable project-owned worktree/scratch surface over
+   per-batch clones; a clean validation/push step never justifies another full checkout when the
+   existing tree, isolated index/commit-tree route, or one reusable worktree can represent the same
+   candidate. Do not install/download local neural-model stacks on the connector for an experiment
+   when the workload can use the remote service/search host or be deferred.
+
+   Cleanup follows only after the producer is corrected. Inspect repository `.tmp`/build/test-cache
+   surfaces, host-global `/tmp`/cache consumers, and registered Git worktrees. Reclaim only state
+   that is rebuildable/absorbed and unreferenced by a live process or active worker; prune a
+   worktree only after its work is banked/merged and the worktree itself is clean. Expensive warm
+   state intrinsic to the accepted workflow, such as Lean `.lake/packages` or a deliberately
+   retained Julia depot, is retained by default because deleting it converts disk recovery into
+   later download/precompile stalls. Prefer the ecosystem's own GC/prune operation when one exists,
+   and measure the real `df` delta rather than the tool's claimed reclaim. An unexpectedly large
+   environment must be compared with its explicit environment specification before deletion.
 10. **Automation audit:** there must be no process that automatically sends `Continue`, interrupts,
     revives, re-scopes, or otherwise drives workers from idleness alone. A timer may wake the
     steward to perform a tick; it may not make the tick's decisions.
