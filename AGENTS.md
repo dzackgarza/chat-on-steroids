@@ -2894,6 +2894,13 @@ reporting programme; it changes the control loop when evidence defeats it.
 9. **Steward-footprint audit:** confirm one tab per managed chat, no abandoned send/watcher, no
    steward-created index lock or long process, and no host trend being blamed on the fleet without
    attribution.
+   Keep the routine resource preflight bounded. Read `df`/inodes, `free`, swap/I/O pressure,
+   live process counters, and the small set of already-known project/cache surfaces. Do **not**
+   recursively `du` or `find` every managed repository, all of `/tmp`, or the user's global
+   caches on every tick: on this host that diagnostic itself can run for minutes in uninterruptible
+   I/O, distort the workloads being measured, and block worker delivery. Escalate to a broad
+   filesystem walk only when a current unexplained storage delta remains after the bounded
+   producer checks, and stop the walk once the producer is identified.
    Treat disk pressure first as a **producer/workflow defect**, only secondarily as a cleanup task.
    A workflow that repeatedly materializes full-repository validation/push worktrees, bootstraps a
    heavyweight model/runtime into `/tmp` or a global cache, or writes hundreds of MB outside its
