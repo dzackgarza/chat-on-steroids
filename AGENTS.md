@@ -3030,16 +3030,18 @@ Consult when an instrument is about to change what you do. None of it is the job
 
 ### The managed workstreams
 
-- **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): State-1 definition-mapping
-  convergence. The current final open-ended prior-art search must reach its repository-defined fixed
-  point before Sweep III authoring can begin.
+- **`lean-categories`** (`/home/dzack/gitclones/lean-categories`): State-2 / Sweep-III
+  definition realization. State 1 reached its repository-defined zero-residue fixed point on
+  2026-09-18; do not relaunch mapping or open-ended prior-art search unless current repository
+  evidence explicitly reopens it. `TODO.md` selects the realization/audit frontier.
 - **`new-qual-site`** (`/home/dzack/gitclones/new-qual-site`): post-publication Author-solutions
   work under the per-card DAG; the independent copy-policy convergence pass does not serialize it.
 - **`research`** (`/home/dzack/research`): the repository-selected remediation/construction DAG;
   current `TODO.md` is authoritative for its first ready node and phase-T execution boundary.
 - **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): active framework completion.
-  Source/static feature work may be closed while the runtime, integrated static projection, terminal
-  behavioral acceptance, and final framework-delivery chain remain open; publication is independent.
+  The declared beta10 runtime is closed; the integrated semantic static projection is the current
+  completion frontier, followed by exact-current-head behavioral acceptance and final framework
+  delivery. Publication remains independent of these completion nodes.
 
 One stream per repository; width is across repositories, never within one.
 [`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) holds the partition analysis and the unlock
