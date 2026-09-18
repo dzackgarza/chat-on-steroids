@@ -2901,6 +2901,14 @@ reporting programme; it changes the control loop when evidence defeats it.
    I/O, distort the workloads being measured, and block worker delivery. Escalate to a broad
    filesystem walk only when a current unexplained storage delta remains after the bounded
    producer checks, and stop the walk once the producer is identified.
+   Treat heavy runtime concurrency as part of host attribution too. When the host is actively
+   swapping or showing sustained I/O pressure, do not run independent memory-heavy acceptance
+   jobs merely because they belong to different repositories. In particular, a Lean elaboration
+   and a cold Sage/Julia/OSCAR consumer may each be valid work while their concurrent execution
+   makes both timings meaningless. Preserve the already-running valid job, hold the other stream
+   at its durable source/checkpoint boundary, and resume it after the pressure clears. A timing
+   gathered during known cross-stream thrash is resource evidence, not an operation-performance
+   baseline and not a semantic failure.
    Treat disk pressure first as a **producer/workflow defect**, only secondarily as a cleanup task.
    A workflow that repeatedly materializes full-repository validation/push worktrees, bootstraps a
    heavyweight model/runtime into `/tmp` or a global cache, or writes hundreds of MB outside its
