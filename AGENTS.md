@@ -3046,9 +3046,9 @@ Consult when an instrument is about to change what you do. None of it is the job
 - **`research`** (`/home/dzack/research`): the repository-selected remediation/construction DAG;
   current `TODO.md` is authoritative for its first ready node and phase-T execution boundary.
 - **`sage-categories`** (`/home/dzack/gitclones/sage-categories`): active framework completion.
-  The declared beta10 runtime is closed; the integrated semantic static projection is the current
-  completion frontier, followed by exact-current-head behavioral acceptance and final framework
-  delivery. Publication remains independent of these completion nodes.
+  The declared beta10 runtime and integrated semantic static projection are closed.
+  Exact-current-head behavioral acceptance is the current completion frontier, followed by
+  final framework delivery. Publication remains independent of these completion nodes.
 
 One stream per repository; width is across repositories, never within one.
 [`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) holds the partition analysis and the unlock
