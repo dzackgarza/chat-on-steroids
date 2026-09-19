@@ -1244,24 +1244,35 @@ The steward report is for the repository owner deciding where attention or a dec
 It is not a transcript of the steward's work, an agent activity feed, a proof-of-work record, or a
 compliance checklist.
 
-The first question for every workstream is **how much closer the repository is to its actual
-long-term objective**. Roll local work up through the active milestone or phase into that project
-goal. A card, definition, DAG node, commit, acceptance consumer, or repaired file is not itself the
-progress report unless completing that item is literally the project objective. If a local unit
-closed but the meaningful project-level state did not change, say that the project-level frontier
-did not move and use the local closure only as supporting evidence.
+The first question for every workstream is **where the repository is on the full path from its
+accepted baseline to its actual long-term objective**. Report position, not the steward's sampling
+interval. A useful management summary is anchored by the analogue of both `|t_n - t_0|` and
+`|t_final - t_n|`: cumulative substantive progress from the project's own baseline, and substantive
+distance still remaining to the objective. The local increment `|t_n - t_{n-1}|` is not a progress
+summary. It is sampling-window telemetry and may appear only when it materially explains a change
+in convergence rate, a bottleneck, or lost time.
 
-Report the management facts for each workstream:
+Roll local work up through the active milestone or phase into that project goal. A card,
+definition, DAG node, commit, acceptance consumer, repaired file, or "what changed since the last
+tick" is not itself the progress report unless that item is literally the project objective. Do
+not make the owner reconstruct cumulative position from a sequence of deltas. If the repository
+does not expose an honest scalar baseline-to-final denominator, state the completed major bodies
+and remaining major bodies instead of substituting an interval delta or local activity count.
 
-- **Project-level progress since the previous report:** what changed in the repository's actual
-  objective or active milestone, not which worker task happened to finish.
-- **Distance to completion:** the best repository-owned measure of how much of that objective
-  remains. Prefer milestone completion, a stable semantic denominator, or a canonical remaining
-  body of work. If no honest aggregate denominator exists, describe the remaining major bodies of
-  work instead of substituting a local queue count.
+Report the management facts for each workstream, in this order:
+
+- **Cumulative project-level progress:** the best repository-owned statement of how much of the
+  actual objective has been delivered from the accepted project baseline to the current state.
+  Prefer a stable semantic denominator or completed major bodies of work. This is an absolute
+  project-position statement, not "since the previous report".
+- **Distance to completion:** the corresponding repository-owned statement of what remains to the
+  objective. Prefer the complement under the same denominator or the remaining major bodies of
+  work. If no honest aggregate denominator exists, describe completed and remaining major bodies
+  rather than manufacturing a percentage or substituting a local queue count.
 - **Rate and trend of convergence:** how quickly that project-level distance is shrinking. Use
   local-unit throughput only when the units are genuinely comparable **and** the rate helps explain
-  or project movement of the actual objective. Never make a local production rate the headline.
+  or project movement of the actual objective. This is secondary to absolute position and remaining
+  distance; never make a local production rate or single-tick delta the headline.
 - **Lost time when material:** time spent blocked, idle, redoing wrong work, waiting on a dominant
   gate, or recovering from steward/worker mistakes. This is part of the throughput picture, not an
   anecdote to hide in a transcript.
@@ -1271,17 +1282,27 @@ Report the management facts for each workstream:
   bottleneck. The intervention itself is not the result.
 - **Owner-only decisions:** only choices that actually require the repository owner.
 
-Do **not** report the minute-by-minute actions used to obtain those facts. "The worker read this
-file", "a correction was sent", "a process was killed", "a commit happened at 03:20", "the dirty
-tree was preserved", and similar operational events are normally internal evidence. Mention one
-only when it materially explains a rate change, lost time, a blocker, a risk, or an owner decision.
-Baseline steward obligations are not accomplishments and do not belong in the report.
+Do **not** report the actions used to obtain those facts. "The worker read this file", "a correction
+was sent", "a process was killed", "a commit happened at 03:20", "the dirty tree was preserved",
+"the selector was recomputed", "a semantic sample found X", "a retry then passed", and similar
+operational events are internal evidence, not report content. A mistake that was corrected before
+the report and has no continuing effect disappears completely from the report. Mention process only
+when the process itself is the still-live bottleneck, measurable lost time, continuing risk, or an
+owner-only decision. Baseline steward obligations are not accomplishments and do not belong in the
+report.
 
-Do **not** write a report that could be mistaken for a team activity log. A repository owner does
-not need to know who opened which file, when an agent started or stopped, which local command ran,
-or which tiny prerequisite moved. Those details are analogous to reporting who stapled, mailed, or
-filed a document instead of reporting whether the project advanced. Roll them up into their effect
-on project completion, rate, bottleneck, or risk, or omit them.
+Do **not** write a report that could be mistaken for a team activity log, incident transcript, or
+steward diary. A repository owner does not need to know who opened which file, when an agent started
+or stopped, which local command ran, which retry failed, which correction was sent, or which tiny
+prerequisite moved. Those details are analogous to reporting who stapled, mailed, or filed a
+document instead of reporting the project's current position. Roll them up into cumulative
+completion, remaining distance, rate, bottleneck, lost time, or risk, or omit them.
+
+The final owner report is therefore a **state summary**, not a chronology. For each workstream it
+should be possible to delete every timestamp, worker action, intervention description, and prior
+tick reference without losing the answer to: how much of the objective is done, how much remains,
+is the remaining distance shrinking at an acceptable rate, what currently limits it, and does the
+owner need to decide anything? If not, the report is still narrating process.
 
 Do **not** use commits, lines changed, tool calls, chat busyness, queue-marker movement, or file
 write counts as throughput units. They may help diagnose what happened, but they are not progress.
@@ -1470,11 +1491,13 @@ node. Internal identifiers may remain in the generated data for graph joins, but
 presentation copy. A detail view expands the same externally comprehensible description in place;
 it must not replace it with raw worker-contract prose or navigate the reader to an unrelated block.
 
-Order the page by management value. Put movement toward the repository's long-term objective,
-distance to completion, convergence rate/trend, lost time, and the dominant bottleneck first. Do
-not lead with local cards, nodes, definitions, commits, acceptance consumers, or worker state unless
-one of those is itself the long-term objective. A manager should not have to reconstruct project
-progress from implementation-unit statistics, commit history, file writes, or worker events.
+Order the page by management value. Put **cumulative progress from the project baseline** and
+**distance remaining to the long-term objective** first, then convergence rate/trend, lost time,
+and the dominant bottleneck. Never lead with "since last refresh", "this tick", or another
+sampling-window delta. Do not lead with local cards, nodes, definitions, commits, acceptance
+consumers, or worker state unless one of those is itself the long-term objective. A manager should
+not have to reconstruct project position from interval changes, implementation-unit statistics,
+commit history, file writes, or worker events.
 Where the repository owns a meaningful remaining-work denominator, use plots and trend/projection
 models over that denominator and state the model and uncertainty/fit limits.
 
@@ -1494,10 +1517,11 @@ jump to another section.
 
 Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
 
-- a management summary for each workstream: change in the actual project objective or active
-  milestone, distance to completion, convergence rate/trend, material lost time, the dominant
-  bottleneck, and any owner-only decision. Local task throughput belongs here only when it explains
-  that project-level movement;
+- a management summary for each workstream: cumulative substantive progress from the accepted
+  baseline, distance to completion under the same project-level measure, convergence rate/trend,
+  material lost time, the dominant bottleneck, and any owner-only decision. Single-refresh deltas
+  and local task throughput belong here only when they explain the rate or bottleneck; they never
+  substitute for cumulative position and remaining distance;
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
   repository text that defines each node's acceptance;
 - the repository-owned progress measures named above, with denominator and measurement definition
