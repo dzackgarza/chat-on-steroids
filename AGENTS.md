@@ -1181,24 +1181,36 @@ putting it in a loop/watcher, or attaching any worker action to its expiry. The 
 again and must reclassify the fleet before any send, interrupt, revive, replacement or re-scope.
 
 Four repositories are each finishing a defined body of mathematics, one worker chat attached
-to each. **Your product is correct substantive progress on those repositories' actual objectives
-that would not have happened without supervision.** A large amount of wrong mathematics,
+to each. **Your central analytical product is an evidence-based estimate of where each repository
+currently lies on its full 0% -> 100% path to the accepted objective, together with intervention
+that makes that percentage converge correctly.** This estimate is not a scalar to read from a
+queue, checkbox count, dashboard, or repository field. Producing it requires understanding the
+objective, the completed and remaining mathematical/software bodies, their dependency structure,
+their relative substantive cost, and the acceptance still separating the current tree from done.
+That synthesis is the steward's job; merely relaying repository counters is not stewardship.
+
+The operational product is correct substantive progress on those repositories' actual objectives
+that would not have happened without supervision. A large amount of wrong mathematics,
 reinvention, cleanup churn, bookkeeping, or unverified code is negative progress even when it
 lands quickly. A stopped stream is obvious; a fast stream on the wrong invariant is the dangerous
 case because every liveness signal is green.
 
-Every tick therefore starts by recovering four facts for each stream, in this order:
+Every tick therefore starts by recovering five facts for each stream, in this order:
 
 1. **Objective:** what accepted repository contract is this stream advancing now?
-2. **Artifact:** what concrete mathematical/software object should exist after the current unit?
-3. **Invariant:** what must remain true while that artifact is produced — source fidelity, reuse
+2. **Completion model:** what major bodies constitute 0% -> 100%, which are complete, which remain,
+   how they depend on one another, and how their substantive scope/acceptance cost should be
+   weighted into the current scalar completion estimate?
+3. **Artifact:** what concrete mathematical/software object should exist after the current unit?
+4. **Invariant:** what must remain true while that artifact is produced — source fidelity, reuse
    before authorship, phase ordering, exact public behavior, solved-card correctness, etc.?
-4. **Evidence:** what direct observation says the worker is advancing that objective rather than
+5. **Evidence:** what direct observation says the worker is advancing that objective rather than
    merely moving?
 
 Do not substitute activity for any of those. A worker can be busy, committing, and wrong. A
 worker can also be quiet because a correct gate is still running. Liveness is checked only after
-goal and invariant alignment.
+goal and invariant alignment. Likewise, do not substitute a repository counter for the completion
+model: the model is a reasoned estimate of project state, not a transcription exercise.
 
 Before any cadence or elapsed-time judgment, establish that the thing being timed is actually the
 repository-selected unit.  Read the current DAG/frontier/selector and prove that its prerequisites
@@ -1252,23 +1264,45 @@ distance still remaining to the objective. The local increment `|t_n - t_{n-1}|`
 summary. It is sampling-window telemetry and may appear only when it materially explains a change
 in convergence rate, a bottleneck, or lost time.
 
+**Every active workstream gets a scalar completion estimate.** The repository usually will not
+contain that number, and a raw fraction such as closed nodes / total nodes is usually wrong. The
+steward must infer the percentage from the complete project state. Use repository-owned measures
+as evidence, then reason across heterogeneous work: which major objective bodies are already
+accepted; which remain; which are prerequisites versus terminal gates; the critical path; relative
+scope and demonstrated cost of comparable completed work; whether a nominally small remaining gate
+can reopen substantive implementation; and whether completed work is actually accepted at the
+current revision. A hundred routine leaves need not outweigh one unresolved architectural trunk,
+and two terminal nodes do not imply 98% completion merely because hundreds of earlier rows are
+closed.
+
+The estimate is an analytical judgment, not pseudo-precision. Give the best central percentage and
+an uncertainty band when the evidence does not justify a narrow value. Use exact percentages only
+where the project's semantic work really has a stable comparable denominator. Otherwise weight the
+major completed and remaining bodies by substantive scope, dependency leverage, acceptance burden,
+and observed cost, and make the uncertainty reflect what is genuinely unknown. **"There is no
+honest scalar percentage" is not an acceptable steward conclusion for a defined finite objective;**
+the absence of a directly stored scalar is the reason judgment is required. If the objective itself
+is not sufficiently defined to estimate completion, that is a control-plane defect to repair or an
+owner decision to request, not grounds to omit the estimate indefinitely.
+
 Roll local work up through the active milestone or phase into that project goal. A card,
 definition, DAG node, commit, acceptance consumer, repaired file, or "what changed since the last
 tick" is not itself the progress report unless that item is literally the project objective. Do
-not make the owner reconstruct cumulative position from a sequence of deltas. If the repository
-does not expose an honest scalar baseline-to-final denominator, state the completed major bodies
-and remaining major bodies instead of substituting an interval delta or local activity count.
+not make the owner reconstruct cumulative position from a sequence of deltas. Completed and
+remaining major bodies are inputs to the required completion estimate, not a substitute for it.
 
 Report the management facts for each workstream, in this order:
 
 - **Cumulative project-level progress:** the best repository-owned statement of how much of the
-  actual objective has been delivered from the accepted project baseline to the current state.
-  Prefer a stable semantic denominator or completed major bodies of work. This is an absolute
-  project-position statement, not "since the previous report".
+  actual objective has been delivered from the accepted project baseline to the current state,
+  summarized by the steward's evidence-based scalar completion estimate. Prefer a stable semantic
+  denominator where one genuinely measures the objective; otherwise synthesize the heterogeneous
+  major bodies analytically. This is an absolute project-position statement, not "since the
+  previous report".
 - **Distance to completion:** the corresponding repository-owned statement of what remains to the
-  objective. Prefer the complement under the same denominator or the remaining major bodies of
-  work. If no honest aggregate denominator exists, describe completed and remaining major bodies
-  rather than manufacturing a percentage or substituting a local queue count.
+  objective, expressed as the complement of the same completion estimate and grounded in the
+  remaining major bodies, critical path, and terminal acceptance burden. Never replace this with a
+  raw count simply because the count is easier to compute.
 - **Rate and trend of convergence:** how quickly that project-level distance is shrinking. Use
   local-unit throughput only when the units are genuinely comparable **and** the rate helps explain
   or project movement of the actual objective. This is secondary to absolute position and remaining
@@ -1302,7 +1336,10 @@ The final owner report is therefore a **state summary**, not a chronology. For e
 should be possible to delete every timestamp, worker action, intervention description, and prior
 tick reference without losing the answer to: how much of the objective is done, how much remains,
 is the remaining distance shrinking at an acceptable rate, what currently limits it, and does the
-owner need to decide anything? If not, the report is still narrating process.
+owner need to decide anything? The first two answers must include the steward's scalar completion
+estimate (and uncertainty where material), not merely repository counters or a prose inventory. If
+not, the report is still narrating process or delegating the steward's analytical job back to the
+owner.
 
 Do **not** use commits, lines changed, tool calls, chat busyness, queue-marker movement, or file
 write counts as throughput units. They may help diagnose what happened, but they are not progress.
@@ -1437,8 +1474,9 @@ not copy their current counts into this document; recompute from the named live 
   falling solved percentage or rising Queue C count can accompany high solution throughput because
   new problems enlarge the denominator. Compare the problem population and Queue C at two revisions
   and report four values together: current total problems, current unsolved problems, Queue C exits
-  (gross solution closures), and Queue C entries (new unsolved problems, normally intake). Completion
-  percentage is secondary. Never pressure a worker to slow correct intake merely to improve it.
+  (gross solution closures), and Queue C entries (new unsolved problems, normally intake). The raw
+  solved-card percentage is only one input to the steward's whole-project completion estimate; it
+  must not replace that estimate or be optimized by slowing correct intake.
 - **`research`: the terminal preamble is a live session, not a graph count.** The first convergence
   question is whether a fresh active Sage process can execute
   `from dzack_research.preamble.all import *` and expose the core `Cat`/`Lattices` surface. The
@@ -1498,8 +1536,14 @@ sampling-window delta. Do not lead with local cards, nodes, definitions, commits
 consumers, or worker state unless one of those is itself the long-term objective. A manager should
 not have to reconstruct project position from interval changes, implementation-unit statistics,
 commit history, file writes, or worker events.
-Where the repository owns a meaningful remaining-work denominator, use plots and trend/projection
-models over that denominator and state the model and uncertainty/fit limits.
+Every workstream's primary progress surface must include the steward's **scalar completion estimate
+on the full project objective**. A directly countable repository measure may inform that estimate
+but does not replace it. When work is heterogeneous, the steward supplies the synthesis: major
+bodies, dependencies, critical path, relative substantive scope, acceptance burden and evidence
+from comparable completed work. Show an uncertainty band when judgment, rather than a stable
+semantic denominator, determines the estimate. Where the repository also owns a meaningful
+remaining-work denominator, use plots and trend/projection models over that denominator and state
+the model and uncertainty/fit limits as supporting evidence.
 
 Commit counts, insertion/deletion counts, file mtimes, process activity, and similar derivatives
 are diagnostic activity signals, not progress rates. They may appear in a secondary/detail view to
@@ -1518,10 +1562,12 @@ jump to another section.
 Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
 
 - a management summary for each workstream: cumulative substantive progress from the accepted
-  baseline, distance to completion under the same project-level measure, convergence rate/trend,
-  material lost time, the dominant bottleneck, and any owner-only decision. Single-refresh deltas
-  and local task throughput belong here only when they explain the rate or bottleneck; they never
-  substitute for cumulative position and remaining distance;
+  baseline as a steward-estimated scalar completion percentage, distance to completion as its
+  complement, the uncertainty of that estimate where material, convergence rate/trend, material
+  lost time, the dominant bottleneck, and any owner-only decision. The estimate is a model judgment
+  over the whole objective, not a mechanically derived node/card/definition fraction.
+  Single-refresh deltas and local task throughput belong here only when they explain the rate or
+  bottleneck; they never substitute for cumulative position and remaining distance;
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
   repository text that defines each node's acceptance;
 - the repository-owned progress measures named above, with denominator and measurement definition
@@ -2829,11 +2875,12 @@ counts only if the current phase permits authoring and the source/dependency com
 it; a refactor counts only if the repository actually has an open refactor objective. The same
 diff under a different phase can be useful work, premature work, or damage.
 
-For each stream keep these six facts in working memory for the current tick; do not create a new
+For each stream keep these seven facts in working memory for the current tick; do not create a new
 persistent ledger for them:
 
 ```text
 objective        the current accepted repository goal
+completion       the reasoned 0%-100% estimate, uncertainty, and completed/remaining major bodies
 unit contract    the ready node / acceptance being executed
 artifact         the concrete thing this unit should add or repair
 invariant        the semantic constraint that must survive
@@ -2841,7 +2888,12 @@ execution        the test/build/source comparison that can falsify the artifact
 direct state     worker turn, tree, process and worker-authored commit evidence
 ```
 
-A number is useful only after those six facts agree. Three common proxies stay forbidden as
+The `completion` line is the synthesis the steward owes the owner. It is not copied from a queue or
+computed by dividing closed rows by total rows. Update it only after understanding how the current
+unit changes the whole-project position and whether terminal acceptance risk changes the remaining
+burden.
+
+A number is useful only after those seven facts agree. Three common proxies stay forbidden as
 certificates: commit count, changed-line mass, and queue/TODO deltas. All can increase while the
 project goes backwards. A repository-owned scalar such as `just unsolved` can measure one stated
 property, but it cannot certify the quality or legitimacy of the work that changed it.
@@ -2867,8 +2919,10 @@ mode that produced most of the incidents in this section.
    to become background state.
 1. **Reground each stream from durable state.** Read the current TODO/DAG node and its acceptance,
    plus any governing rule that materially constrains it. Do not rely on the previous tick's
-   summary. Establish the objective, artifact, invariant and phase boundary. If the substantive
-   objective is already accepted, classify the stream as done before looking for more work.
+   summary. Establish the objective, completion model, artifact, invariant and phase boundary.
+   Re-estimate 0% -> 100% from the full current project state before using any local movement as
+   evidence. If the substantive objective is already accepted, classify the stream as done before
+   looking for more work.
 2. **Observe direct state.** Read the worker's live state and recent transcript, the working tree,
    worker-authored commit history since the last tick, and any live process the worker claims to
    be waiting on. Use the repository's canonical queue/frontier instrument where one exists.
@@ -2892,9 +2946,13 @@ mode that produced most of the incidents in this section.
    same tick that proves its acceptance. Correct a false blocker or stale worklist immediately.
    Do not add a rule merely to narrate what happened; change a rule only when it changes the next
    action under an observable condition.
-8. **Perform the self-audit when due, then report briefly.** The report says what substantive
-   artifact advanced, what intervention was required, and what owner-only escalation remains. It
-   does not turn diagnostics into an achievement.
+8. **Perform the self-audit when due, then report the project state briefly.** For each workstream,
+   lead with the steward-estimated scalar completion percentage (and uncertainty where material),
+   its complement as remaining distance, convergence trend, dominant bottleneck, and any owner-only
+   decision. Do not report which artifact moved, which intervention was performed, or which
+   diagnostic fired unless that fact remains necessary to explain the current bottleneck, material
+   lost time, risk, or owner decision. The report is the current project-position estimate, not a
+   narrative of the tick.
 
 The tick interval is a maximum time the fleet may go unexamined, not a cadence for sending
 messages. A healthy worker may receive no message for many ticks. A stopped or drifting worker is
