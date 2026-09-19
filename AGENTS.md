@@ -1244,14 +1244,24 @@ The steward report is for the repository owner deciding where attention or a dec
 It is not a transcript of the steward's work, an agent activity feed, a proof-of-work record, or a
 compliance checklist.
 
+The first question for every workstream is **how much closer the repository is to its actual
+long-term objective**. Roll local work up through the active milestone or phase into that project
+goal. A card, definition, DAG node, commit, acceptance consumer, or repaired file is not itself the
+progress report unless completing that item is literally the project objective. If a local unit
+closed but the meaningful project-level state did not change, say that the project-level frontier
+did not move and use the local closure only as supporting evidence.
+
 Report the management facts for each workstream:
 
-- **Substantive progress since the previous report:** what repository-defined work actually
-  finished. Use the repository's own meaningful unit when comparable units exist.
-- **Remaining work:** the current canonical denominator or frontier, with its measurement named.
-- **Throughput and trend:** elapsed wall time per genuinely comparable substantive unit, or the
-  corresponding units per time window, compared with the stream's recent demonstrated rate. Do
-  not manufacture a rate when the work is heterogeneous.
+- **Project-level progress since the previous report:** what changed in the repository's actual
+  objective or active milestone, not which worker task happened to finish.
+- **Distance to completion:** the best repository-owned measure of how much of that objective
+  remains. Prefer milestone completion, a stable semantic denominator, or a canonical remaining
+  body of work. If no honest aggregate denominator exists, describe the remaining major bodies of
+  work instead of substituting a local queue count.
+- **Rate and trend of convergence:** how quickly that project-level distance is shrinking. Use
+  local-unit throughput only when the units are genuinely comparable **and** the rate helps explain
+  or project movement of the actual objective. Never make a local production rate the headline.
 - **Lost time when material:** time spent blocked, idle, redoing wrong work, waiting on a dominant
   gate, or recovering from steward/worker mistakes. This is part of the throughput picture, not an
   anecdote to hide in a transcript.
@@ -1266,6 +1276,12 @@ file", "a correction was sent", "a process was killed", "a commit happened at 03
 tree was preserved", and similar operational events are normally internal evidence. Mention one
 only when it materially explains a rate change, lost time, a blocker, a risk, or an owner decision.
 Baseline steward obligations are not accomplishments and do not belong in the report.
+
+Do **not** write a report that could be mistaken for a team activity log. A repository owner does
+not need to know who opened which file, when an agent started or stopped, which local command ran,
+or which tiny prerequisite moved. Those details are analogous to reporting who stapled, mailed, or
+filed a document instead of reporting whether the project advanced. Roll them up into their effect
+on project completion, rate, bottleneck, or risk, or omit them.
 
 Do **not** use commits, lines changed, tool calls, chat busyness, queue-marker movement, or file
 write counts as throughput units. They may help diagnose what happened, but they are not progress.
@@ -1441,9 +1457,11 @@ node. Internal identifiers may remain in the generated data for graph joins, but
 presentation copy. A detail view expands the same externally comprehensible description in place;
 it must not replace it with raw worker-contract prose or navigate the reader to an unrelated block.
 
-Order the page by management value. Put repository-owned substantive progress, remaining work,
-throughput on comparable work, rate trend, lost time, and the dominant bottleneck first. A manager
-should not have to reconstruct convergence from commit history, file writes, or worker events.
+Order the page by management value. Put movement toward the repository's long-term objective,
+distance to completion, convergence rate/trend, lost time, and the dominant bottleneck first. Do
+not lead with local cards, nodes, definitions, commits, acceptance consumers, or worker state unless
+one of those is itself the long-term objective. A manager should not have to reconstruct project
+progress from implementation-unit statistics, commit history, file writes, or worker events.
 Where the repository owns a meaningful remaining-work denominator, use plots and trend/projection
 models over that denominator and state the model and uncertainty/fit limits.
 
@@ -1463,9 +1481,10 @@ jump to another section.
 
 Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
 
-- a management summary for each workstream: substantive work delivered since the prior interval,
-  canonical remaining work, throughput/trend when units are genuinely comparable, material lost
-  time, the dominant bottleneck, and any owner-only decision;
+- a management summary for each workstream: change in the actual project objective or active
+  milestone, distance to completion, convergence rate/trend, material lost time, the dominant
+  bottleneck, and any owner-only decision. Local task throughput belongs here only when it explains
+  that project-level movement;
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
   repository text that defines each node's acceptance;
 - the repository-owned progress measures named above, with denominator and measurement definition
