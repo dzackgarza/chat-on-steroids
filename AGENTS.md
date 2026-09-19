@@ -1238,6 +1238,49 @@ the source of stale metrics, impossible nodes, wrong rankings, duplicate work, a
 cleanup. A tick is incomplete until new evidence has been compared with the prediction that
 caused the action.
 
+### Report to the owner: progress, rates, blockers, decisions
+
+The steward report is for the repository owner deciding where attention or a decision is needed.
+It is not a transcript of the steward's work, an agent activity feed, a proof-of-work record, or a
+compliance checklist.
+
+Report the management facts for each workstream:
+
+- **Substantive progress since the previous report:** what repository-defined work actually
+  finished. Use the repository's own meaningful unit when comparable units exist.
+- **Remaining work:** the current canonical denominator or frontier, with its measurement named.
+- **Throughput and trend:** elapsed wall time per genuinely comparable substantive unit, or the
+  corresponding units per time window, compared with the stream's recent demonstrated rate. Do
+  not manufacture a rate when the work is heterogeneous.
+- **Lost time when material:** time spent blocked, idle, redoing wrong work, waiting on a dominant
+  gate, or recovering from steward/worker mistakes. This is part of the throughput picture, not an
+  anecdote to hide in a transcript.
+- **Dominant bottleneck:** the concrete mechanism currently limiting convergence and its measured
+  effect on progress.
+- **Effect of an intervention:** whether it changed delivery rate, remaining work, or the dominant
+  bottleneck. The intervention itself is not the result.
+- **Owner-only decisions:** only choices that actually require the repository owner.
+
+Do **not** report the minute-by-minute actions used to obtain those facts. "The worker read this
+file", "a correction was sent", "a process was killed", "a commit happened at 03:20", "the dirty
+tree was preserved", and similar operational events are normally internal evidence. Mention one
+only when it materially explains a rate change, lost time, a blocker, a risk, or an owner decision.
+Baseline steward obligations are not accomplishments and do not belong in the report.
+
+Do **not** use commits, lines changed, tool calls, chat busyness, queue-marker movement, or file
+write counts as throughput units. They may help diagnose what happened, but they are not progress.
+A commit is a bank event; a file write is activity. The rate that matters is the rate at which the
+repository's substantive objective converges.
+
+Do **not** answer a current failure with a promise about future model behavior. A sentence such as
+"I will report this differently next time" creates no mechanism that binds a later model turn. A
+later turn may have different context, summarization, tool state, or model configuration, and the
+sentence itself changes none of the durable controls. Presenting it as remediation is misleading:
+it sounds like a persistent commitment while enforcing nothing. Fix the failure **in the current
+turn**: redo the current output correctly, take the omitted action, and, when a durable rule is
+warranted and authorized, write that rule into the durable repository control. Never substitute a
+future-behavior promise for present remediation.
+
 ### What stops the mathematics
 
 These are the causes. They run in daylight, through streams that look healthy, and they are
@@ -1398,16 +1441,19 @@ node. Internal identifiers may remain in the generated data for graph joins, but
 presentation copy. A detail view expands the same externally comprehensible description in place;
 it must not replace it with raw worker-contract prose or navigate the reader to an unrelated block.
 
-Order the page by management value. Recent accepted commits and current file writes, with absolute
-and relative times, come before dependency detail. Progress-over-time and burn rate should be
-visible at a glance rather than reconstructed from a wall of counters. Every activity statistic
-that admits a time derivative should expose the derivative: commits/hour, inserted lines/hour and
-deleted lines/hour over selectable windows of **1h, 6h, 12h, 18h, 1d, 3d, 7d, 14d, 1mo, and all**.
-Use plots and robust trend/projection models where the repository owns a meaningful remaining-work
-denominator; state the model and uncertainty/fit limits instead of presenting an ETA as a promise.
-Do not report file sizes as progress. Commit diffs use the conventional GitHub-like presentation:
-human-readable “N files changed”, green `+insertions`, red `−deletions`, never compressed tokens such
-as `4f +22 -15` or an unsigned `±` aggregate.
+Order the page by management value. Put repository-owned substantive progress, remaining work,
+throughput on comparable work, rate trend, lost time, and the dominant bottleneck first. A manager
+should not have to reconstruct convergence from commit history, file writes, or worker events.
+Where the repository owns a meaningful remaining-work denominator, use plots and trend/projection
+models over that denominator and state the model and uncertainty/fit limits.
+
+Commit counts, insertion/deletion counts, file mtimes, process activity, and similar derivatives
+are diagnostic activity signals, not progress rates. They may appear in a secondary/detail view to
+explain a substantive rate change, but do not lead the dashboard with commits/hour, lines/hour, or
+other activity proxies and never project completion from them. Do not report file sizes as
+progress. Commit diffs, when shown as diagnostic detail, use the conventional GitHub-like
+presentation: human-readable “N files changed”, green `+insertions`, red `−deletions`, never
+compressed tokens such as `4f +22 -15` or an unsigned `±` aggregate.
 
 Use mature interaction/visualization libraries rather than hand-rolling widgets already solved by
 the browser ecosystem. Popovers/tooltips must clamp to the viewport, remain readable on touch, and
@@ -1417,15 +1463,18 @@ jump to another section.
 
 Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
 
+- a management summary for each workstream: substantive work delivered since the prior interval,
+  canonical remaining work, throughput/trend when units are genuinely comparable, material lost
+  time, the dominant bottleneck, and any owner-only decision;
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
   repository text that defines each node's acceptance;
 - the repository-owned progress measures named above, with denominator and measurement definition
   visible beside every count or percentage;
-- commit activity over time, not only a total: bucketed counts over recent hours/days, plus a
-  visible tail of recent commits with timestamp, subject, author/ownership distinction where it is
-  meaningful, changed-file count and basic insertion/deletion statistics;
-- filesystem activity over time from actual file mtimes, plus a visible tail of the most recently
-  edited files with timestamps. Treat mtimes as working-tree activity, not accepted progress;
+- diagnostic commit activity over time, plus recent commits with timestamp, subject,
+  author/ownership distinction where meaningful, changed-file count and basic insertion/deletion
+  statistics. Keep this subordinate to the substantive progress summary;
+- diagnostic filesystem activity from actual file mtimes, with recent edited files available in
+  detail. Treat mtimes as working-tree activity, not accepted progress;
 - current dirty-tree summary, worker/process state, and the last known classification, clearly
   separated so a busy process or large diff cannot masquerade as semantic progress; and
 - enough recent history to make a rate change inspectable instead of reducing it to a single
