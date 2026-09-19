@@ -1288,6 +1288,19 @@ write counts as throughput units. They may help diagnose what happened, but they
 A commit is a bank event; a file write is activity. The rate that matters is the rate at which the
 repository's substantive objective converges.
 
+More generally, **a local metric has no progress value merely because it is measurable**. Meetings,
+messages, reviews, tickets closed, worker turns, tests run, cards moved, definitions attempted,
+files touched, nodes closed, and hours spent can all increase while the project produces nothing
+deliverable. Treat every local metric as operational telemetry unless you can state the causal link
+from that metric to a repository-level deliverable and show that the deliverable or its genuine
+remaining-work measure moved. Six months of perfect local activity with no delivered project
+outcome is zero progress, not slow progress.
+
+Before putting any number in the management summary, ask: **what owner-visible deliverable became
+more complete because this number changed?** If the answer is only another internal activity or
+intermediate bookkeeping state, the number does not belong in the progress summary. It may appear
+only as diagnostic evidence explaining why real progress accelerated, stalled, or regressed.
+
 Do **not** answer a current failure with a promise about future model behavior. A sentence such as
 "I will report this differently next time" creates no mechanism that binds a later model turn. A
 later turn may have different context, summarization, tool state, or model configuration, and the
