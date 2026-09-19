@@ -1198,9 +1198,11 @@ case because every liveness signal is green.
 Every tick therefore starts by recovering five facts for each stream, in this order:
 
 1. **Objective:** what accepted repository contract is this stream advancing now?
-2. **Completion model:** what major bodies constitute 0% -> 100%, which are complete, which remain,
-   how they depend on one another, and how their substantive scope/acceptance cost should be
-   weighted into the current scalar completion estimate?
+2. **Completion model:** what finite set of substantive obligations `a_1, ..., a_N` constitutes the
+   entire 0% -> 100% project, which are complete, which remain, how they depend on one another, and
+   what normalized weights `w_1, ..., w_N` their scope/acceptance cost justifies? Recover `N`, the
+   weights, the current `c_i`, `P(t)`, and the evidence/uncertainty behind them before reporting a
+   percentage or rate.
 3. **Artifact:** what concrete mathematical/software object should exist after the current unit?
 4. **Invariant:** what must remain true while that artifact is produced — source fidelity, reuse
    before authorship, phase ordering, exact public behavior, solved-card correctness, etc.?
@@ -1264,26 +1266,69 @@ distance still remaining to the objective. The local increment `|t_n - t_{n-1}|`
 summary. It is sampling-window telemetry and may appear only when it materially explains a change
 in convergence rate, a bottleneck, or lost time.
 
-**Every active workstream gets a scalar completion estimate.** The repository usually will not
-contain that number, and a raw fraction such as closed nodes / total nodes is usually wrong. The
-steward must infer the percentage from the complete project state. Use repository-owned measures
-as evidence, then reason across heterogeneous work: which major objective bodies are already
-accepted; which remain; which are prerequisites versus terminal gates; the critical path; relative
-scope and demonstrated cost of comparable completed work; whether a nominally small remaining gate
-can reopen substantive implementation; and whether completed work is actually accepted at the
-current revision. A hundred routine leaves need not outweigh one unresolved architectural trunk,
-and two terminal nodes do not imply 98% completion merely because hundreds of earlier rows are
-closed.
+**Every active workstream gets an explicit whole-project completion model.** The steward must first
+reconstruct a finite denominator for the **entire accepted project objective**, not merely the
+current phase, ready frontier, queue, or visible DAG tail. Starting from the baseline state and the
+definition of done, enumerate the discrete substantive obligations that must be delivered for the
+project to reach 100%: implementation bodies, mathematical corpora, integrations, migrations,
+required audits or source-conformance passes, terminal runtime/acceptance gates, publication/final
+delivery obligations when they are part of completion, and any other required body named by the
+repository contract. Follow dependencies transitively so downstream work is represented even when
+it is not currently ready. Split obligations that are too coarse to compare; combine bookkeeping
+fragments that are not independently meaningful. The result is the steward's best current model of
+the total project work, not a mechanically copied task list.
 
-The estimate is an analytical judgment, not pseudo-precision. Give the best central percentage and
-an uncertainty band when the evidence does not justify a narrow value. Use exact percentages only
-where the project's semantic work really has a stable comparable denominator. Otherwise weight the
-major completed and remaining bodies by substantive scope, dependency leverage, acceptance burden,
-and observed cost, and make the uncertainty reflect what is genuinely unknown. **"There is no
-honest scalar percentage" is not an acceptable steward conclusion for a defined finite objective;**
-the absence of a directly stored scalar is the reason judgment is required. If the objective itself
-is not sufficiently defined to estimate completion, that is a control-plane defect to repair or an
-owner decision to request, not grounds to omit the estimate indefinitely.
+Then **weight every substantive obligation intelligently**. Let the reconstructed obligations be
+`a_1, ..., a_N` with normalized weights `w_i > 0`, `sum w_i = 1`. The weights must represent the
+share of the full project burden carried by each obligation, using mathematical/software scope,
+dependency leverage, demonstrated cost of comparable completed work, integration surface,
+verification/acceptance burden, and credible reopen risk. Equal weights are justified only when the
+obligations are genuinely comparable. A hundred routine leaves may carry less total weight than one
+architectural trunk; one terminal acceptance gate may deserve substantial weight when failure can
+reopen implementation. **Task count supplies the denominator's structure, not the weights.** Never
+use closed-node/total-node, solved-card/total-card, definitions-delivered/definitions-total, commit
+count, lines changed, or any other readily automated fraction as the whole-project percentage unless
+the steward has established that those units really are the entire objective and are substantively
+exchangeable.
+
+For each obligation assign a current completion value `c_i in [0,1]` from semantic evidence. Use
+`0` or `1` for genuinely discrete unaccepted/accepted obligations; use an intermediate value only
+when that obligation itself has a meaningful internally comparable decomposition. The project
+completion estimate is
+
+`P(t) = 100 * sum_i w_i c_i(t)`,
+
+with remaining distance `R(t) = 100 - P(t)`. Report `P(t)` and `R(t)` for every active workstream.
+The model may be revised when newly inspected durable state shows that the denominator or relative
+burdens were wrong, but **do not change the denominator or weights merely to make progress look
+better**. A genuine scope discovery should be incorporated explicitly and should be able to move the
+estimated percentage backward.
+
+The steward must also estimate the **derivative of substantive completion**, not the derivative of
+an activity proxy. Use successive reasoned `P(t)` estimates over enough elapsed time to suppress
+single-tick noise and report the current convergence rate/trend `dP/dt` (or a bounded/robust finite-
+difference estimate when only discrete samples exist). The same weighting model must be used across
+the compared samples unless a genuine scope/model revision is called out internally. Repository
+throughput numbers may help explain `dP/dt`, but they are not `dP/dt`. A card/hour rate, commits/hour,
+nodes/hour, lines/hour, test count, or worker-turn count is never the project derivative unless the
+steward has proved that the measured units and weights coincide with the whole-project completion
+model.
+
+This is deliberately **not automatable by a brain-dead proxy**. Scripts and dashboards may collect
+evidence, enumerate candidate obligations, preserve historical samples, and evaluate arithmetic
+once the model is chosen. They must not choose the denominator, decide which obligations are
+substantive, assign weights, infer partial completion, or substitute a convenient repository metric
+for `P(t)`. Those are semantic judgments requiring the steward to understand the project. **That
+analysis is why the steward role exists.** A steward that merely reads a scalar, divides two counts,
+or reports an automated dashboard percentage has not performed the stewardship task.
+
+The estimate is an analytical judgment, not pseudo-precision. Give the best central percentage,
+the derivative/trend, and an uncertainty band when the denominator, weights, acceptance state, or
+future reopen burden is uncertain. **"There is no honest scalar percentage" is not an acceptable
+conclusion for a defined finite objective:** construct the best evidence-based denominator and
+weights available, state the uncertainty, and improve the model as understanding improves. If the
+objective itself is too undefined to reconstruct the denominator at all, that is a control-plane
+defect to repair or an owner decision to request.
 
 Roll local work up through the active milestone or phase into that project goal. A card,
 definition, DAG node, commit, acceptance consumer, repaired file, or "what changed since the last
@@ -1537,13 +1582,17 @@ consumers, or worker state unless one of those is itself the long-term objective
 not have to reconstruct project position from interval changes, implementation-unit statistics,
 commit history, file writes, or worker events.
 Every workstream's primary progress surface must include the steward's **scalar completion estimate
-on the full project objective**. A directly countable repository measure may inform that estimate
-but does not replace it. When work is heterogeneous, the steward supplies the synthesis: major
-bodies, dependencies, critical path, relative substantive scope, acceptance burden and evidence
-from comparable completed work. Show an uncertainty band when judgment, rather than a stable
-semantic denominator, determines the estimate. Where the repository also owns a meaningful
-remaining-work denominator, use plots and trend/projection models over that denominator and state
-the model and uncertainty/fit limits as supporting evidence.
+on the full project objective**, its remaining complement, and the derivative/trend of that same
+modeled percentage. A directly countable repository measure may inform that estimate but does not
+replace it. When work is heterogeneous, the steward supplies the synthesis: the finite obligation
+set `a_1, ..., a_N`, normalized weights, dependencies, critical path, relative substantive scope,
+acceptance burden and evidence from comparable completed work. Show an uncertainty band when
+judgment, rather than a stable semantic denominator, determines the estimate. The dashboard may
+perform arithmetic and plot history **after** the steward has supplied the completion model; it must
+not infer `N`, choose weights, or silently replace `P(t)`/`dP/dt` with a repository proxy. If no
+fresh steward model is available, show the estimate as stale rather than manufacturing one from
+counts. Where the repository also owns a meaningful remaining-work denominator, use plots and
+trend/projection models over that denominator only as supporting evidence.
 
 Commit counts, insertion/deletion counts, file mtimes, process activity, and similar derivatives
 are diagnostic activity signals, not progress rates. They may appear in a secondary/detail view to
@@ -1563,9 +1612,10 @@ Each refresh computes rather than copies the useful observability surfaces. At m
 
 - a management summary for each workstream: cumulative substantive progress from the accepted
   baseline as a steward-estimated scalar completion percentage, distance to completion as its
-  complement, the uncertainty of that estimate where material, convergence rate/trend, material
-  lost time, the dominant bottleneck, and any owner-only decision. The estimate is a model judgment
-  over the whole objective, not a mechanically derived node/card/definition fraction.
+  complement, the uncertainty of that estimate where material, `dP/dt` or an explicitly described
+  robust finite-difference convergence estimate based on the same weighted model, material lost
+  time, the dominant bottleneck, and any owner-only decision. The estimate is a model judgment over
+  the whole objective, not a mechanically derived node/card/definition fraction.
   Single-refresh deltas and local task throughput belong here only when they explain the rate or
   bottleneck; they never substitute for cumulative position and remaining distance;
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
@@ -2880,7 +2930,7 @@ persistent ledger for them:
 
 ```text
 objective        the current accepted repository goal
-completion       the reasoned 0%-100% estimate, uncertainty, and completed/remaining major bodies
+completion       N whole-project obligations; weights w_i; c_i; P(t); R(t); uncertainty; dP/dt
 unit contract    the ready node / acceptance being executed
 artifact         the concrete thing this unit should add or repair
 invariant        the semantic constraint that must survive
@@ -2889,9 +2939,12 @@ direct state     worker turn, tree, process and worker-authored commit evidence
 ```
 
 The `completion` line is the synthesis the steward owes the owner. It is not copied from a queue or
-computed by dividing closed rows by total rows. Update it only after understanding how the current
-unit changes the whole-project position and whether terminal acceptance risk changes the remaining
-burden.
+computed by dividing closed rows by total rows. Reconstruct or revalidate the whole-project
+obligation set and weights from current durable state every tick; prior completion models are
+hypotheses, not authority. Preserve enough prior steward-estimated `P(t)` samples to estimate a
+meaningful derivative under a stable model. If the model itself changes because scope or weights
+were wrong, distinguish that model revision internally from substantive progress before estimating
+`dP/dt`; do not turn a denominator change into apparent delivery.
 
 A number is useful only after those seven facts agree. Three common proxies stay forbidden as
 certificates: commit count, changed-line mass, and queue/TODO deltas. All can increase while the
@@ -2920,9 +2973,12 @@ mode that produced most of the incidents in this section.
 1. **Reground each stream from durable state.** Read the current TODO/DAG node and its acceptance,
    plus any governing rule that materially constrains it. Do not rely on the previous tick's
    summary. Establish the objective, completion model, artifact, invariant and phase boundary.
-   Re-estimate 0% -> 100% from the full current project state before using any local movement as
-   evidence. If the substantive objective is already accepted, classify the stream as done before
-   looking for more work.
+   Reconstruct/revalidate the entire finite obligation set `a_1, ..., a_N`, its normalized weights,
+   current completion values and terminal acceptance burden from the full current project state;
+   then compute `P(t)` and `R(t)`. Re-estimate 0% -> 100% before using any local movement as
+   evidence. Compare with prior reasoned `P(t)` samples under the same model to estimate `dP/dt`.
+   If the substantive objective is already accepted, classify the stream as done before looking for
+   more work.
 2. **Observe direct state.** Read the worker's live state and recent transcript, the working tree,
    worker-authored commit history since the last tick, and any live process the worker claims to
    be waiting on. Use the repository's canonical queue/frontier instrument where one exists.
@@ -2948,8 +3004,9 @@ mode that produced most of the incidents in this section.
    action under an observable condition.
 8. **Perform the self-audit when due, then report the project state briefly.** For each workstream,
    lead with the steward-estimated scalar completion percentage (and uncertainty where material),
-   its complement as remaining distance, convergence trend, dominant bottleneck, and any owner-only
-   decision. Do not report which artifact moved, which intervention was performed, or which
+   its complement as remaining distance, `dP/dt`/convergence trend from the same weighted model,
+   dominant bottleneck, and any owner-only decision. Do not report which artifact moved, which
+   intervention was performed, or which
    diagnostic fired unless that fact remains necessary to explain the current bottleneck, material
    lost time, risk, or owner decision. The report is the current project-position estimate, not a
    narrative of the tick.
