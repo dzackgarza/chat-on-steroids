@@ -293,6 +293,7 @@ beforeEach(async () => {
  * these assertions are deterministic only while no earlier test has made a tools/call.
  */
 describe('transport attribution alarm', () => {
+
   /**
    * Live 2026-09 rack incident: the migrated connector transport delivered every
    * tools/call with no x-request-id header. Attribution is impossible without that join
@@ -309,6 +310,20 @@ describe('transport attribution alarm', () => {
     expect(alarms()).toBe(1);
     await modern('tools/call', { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } });
     expect(alarms()).toBe(1);
+  });
+  it('distinguishes absent, rejected and accepted headers at HTTP ingress without exposing values', async () => {
+    const start = getLog().length;
+    const params = { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } };
+    for (const headers of [{}, { 'x-request-id': 'private.invalid/id' }, { 'x-request-id': 'private_valid/id' }]) {
+      await modern('tools/call', params, headers);
+    }
+    const messages = getLog().slice(start).map((entry) => entry.message);
+    expect(messages.some((message) => message.includes('ingress x-request-id=missing'))).toBe(true);
+    expect(messages.some((message) => message.includes('ingress x-request-id=rejected'))).toBe(true);
+    expect(messages.some((message) => message.includes('ingress x-request-id=accepted'))).toBe(true);
+    expect(messages.join('\n')).not.toContain('private.invalid');
+    expect(messages.join('\n')).not.toContain('private_valid');
+    expect(messages.join('\n')).not.toContain('arrived with no x-request-id header');
   });
 });
 
