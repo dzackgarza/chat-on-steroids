@@ -293,7 +293,6 @@ beforeEach(async () => {
  * these assertions are deterministic only while no earlier test has made a tools/call.
  */
 describe('transport attribution alarm', () => {
-
   /**
    * Live 2026-09 rack incident: the migrated connector transport delivered every
    * tools/call with no x-request-id header. Attribution is impossible without that join
@@ -314,7 +313,8 @@ describe('transport attribution alarm', () => {
   it('distinguishes absent, rejected and accepted headers at HTTP ingress without exposing values', async () => {
     const start = getLog().length;
     const params = { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } };
-    for (const headers of [{}, { 'x-request-id': 'private.invalid/id' }, { 'x-request-id': 'private_valid/id' }]) {
+    const cases: Record<string, string>[] = [{}, { 'x-request-id': 'private.invalid/id' }, { 'x-request-id': 'private_valid/id' }];
+    for (const headers of cases) {
       await modern('tools/call', params, headers);
     }
     const messages = getLog().slice(start).map((entry) => entry.message);

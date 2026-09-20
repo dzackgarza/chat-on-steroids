@@ -1524,7 +1524,7 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
         const inferred = inferredTarget();
         if (inferred) {
           logInfo(
-            `request attribution: no x-request-id on the transport; filing ${input.tool} under ` +
+            `request attribution: no usable x-request-id; filing ${input.tool} under ` +
               `conversation ${inferred.conversationId} by ${inferred.attribution}`
           );
           return Promise.resolve<Target>(inferred);
@@ -1534,8 +1534,8 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
         // key arrived at all there is no id to name, but the silence was worse — the live
         // 2026-09 headerless-transport outage filed 20k+ calls here without a word.
         logWarn(
-          `request attribution: call arrived with no x-request-id; filing ${input.tool} under ` +
-            'Unattributed activity — the transport did not supply the correlation join key ' +
+          `request attribution: no usable x-request-id; filing ${input.tool} under ` +
+            'Unattributed activity — no usable correlation join key reached the recorder ' +
             'and the degraded temporal/session tiers could not place the call'
         );
         return Promise.resolve<Target>({ conversationId: null, sessionId: null, attribution: 'unattributed', turnId: null });

@@ -20,7 +20,7 @@
  */
 
 import { rawPromises as fs } from '../rawfs.js';
-import { inboundConnectorSession, inboundRequestId } from './inbound.js';
+import { hasInboundIdentity, inboundConnectorSession, inboundRequestId } from './inbound.js';
 import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { Capabilities, Root } from '../../shared/types.js';
@@ -316,16 +316,19 @@ function noteTransportIdentity(transportKey: string | null): void {
  * error level would only drown the bounded log.
  */
 let attributionNoted: { present: boolean; absent: boolean } = { present: false, absent: false };
+let missingInboundContextNoted = false;
 
 function noteTransportAttribution(requestId: string | null): void {
+  if (!hasInboundIdentity() && !missingInboundContextNoted) {
+    missingInboundContextNoted = true;
+    logError('MCP dispatch has no inbound identity context; inspect HTTP ingress and adapter context propagation.');
+  }
   if (requestId === null && !attributionNoted.absent) {
     attributionNoted.absent = true;
     logError(
-      'MCP tool call arrived with no x-request-id header — exact attribution is impossible for such calls: ' +
-        'they fall back to the degraded temporal/connector-session tiers when a single generating chat can be ' +
-        'proven, and otherwise are filed under Unattributed activity and charged against every chat, which ' +
-        'blocks composer pushes while any call is running. This is the measured 2026-09 connector-platform ' +
-        'behaviour; if x-request-id ever returns, exact attribution resumes automatically.'
+      'MCP tool dispatch has no usable x-request-id; see ingress diagnostics for missing versus rejected headers ' +
+        'and the context-propagation alarm for missing dispatch context. Exact request-id attribution is unavailable; ' +
+        'calls require degraded attribution evidence or remain Unattributed.'
     );
   } else if (requestId !== null && !attributionNoted.present) {
     attributionNoted.present = true;

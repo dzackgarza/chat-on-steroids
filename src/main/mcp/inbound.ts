@@ -48,6 +48,11 @@ export function inboundRequestId(): string | null {
   return store.getStore()?.requestId ?? null;
 }
 
+/** Distinguishes missing request context from a header that parsed to null. */
+export function hasInboundIdentity(): boolean {
+  return store.getStore() !== undefined;
+}
+
 /** The connector session key of the HTTP request this call is being served on, if any. */
 export function inboundConnectorSession(): string | null {
   return store.getStore()?.sessionKey ?? null;

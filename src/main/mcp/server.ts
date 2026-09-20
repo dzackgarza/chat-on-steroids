@@ -324,6 +324,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
   }));
   const checkHost = localhostHostValidation();
   const checkOrigin = localhostOriginValidation();
+  const identityDiagnostics = new Set<string>();
 
   const server = http.createServer((req, res) => {
     const url = req.url ?? '';
@@ -404,6 +405,20 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       requestId: requestIdFromHeader(req.headers['x-request-id']),
       sessionKey: connectorSessionFromHeader(req.headers['x-openai-session'])
     };
+    // Observe before adapter dispatch; never log header values or the secret URL.
+    // Bound chatter by the finite set of surface/header states per endpoint lifetime.
+    if (req.method === 'POST' && !selfTest && !tunnelProbe) {
+      const requestState = req.headers['x-request-id'] === undefined
+        ? 'missing' : identity.requestId === null ? 'rejected' : 'accepted';
+      const sessionState = req.headers['x-openai-session'] === undefined
+        ? 'missing' : identity.sessionKey === null ? 'rejected' : 'accepted';
+      const diagnostic = `MCP ${route.id} ingress x-request-id=${requestState}; x-openai-session=${sessionState}`;
+      if (!identityDiagnostics.has(diagnostic)) {
+        identityDiagnostics.add(diagnostic);
+        if (requestState === 'accepted') logInfo(diagnostic);
+        else logWarn(diagnostic);
+      }
+    }
     if (req.method === 'POST' && declaredHeader === undefined) {
       void readBoundedJsonBody(req).then((parsed) => {
         if (parsed.error === 'payload_too_large') {
