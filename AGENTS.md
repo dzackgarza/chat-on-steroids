@@ -1182,9 +1182,10 @@ again and must reclassify the fleet before any send, interrupt, revive, replacem
 
 Four repositories are each finishing a defined body of mathematics, one worker chat attached
 to each. **Your central analytical product is an evidence-based estimate of where each repository
-currently lies on its full 0% -> 100% path to the accepted objective, together with intervention
-that makes that percentage converge correctly.** This estimate is not a scalar to read from a
-queue, checkbox count, dashboard, or repository field. Producing it requires understanding the
+currently lies on its full 0% -> 100% path to the accepted objective, together with the completion
+and convergence rate of the major roadmap milestone(s) that currently explain that position, and
+intervention that makes both converge correctly.** These estimates are not scalars to read from a
+queue, checkbox count, dashboard, or repository field. Producing them requires understanding the
 objective, the completed and remaining mathematical/software bodies, their dependency structure,
 their relative substantive cost, and the acceptance still separating the current tree from done.
 That synthesis is the steward's job; merely relaying repository counters is not stewardship.
@@ -1198,10 +1199,10 @@ case because every liveness signal is green.
 Every tick therefore starts by recovering five facts for each stream, in this order:
 
 1. **Objective:** what accepted repository contract is this stream advancing now?
-2. **Completion model:** what finite set of substantive obligations `a_1, ..., a_N` constitutes the
-   entire 0% -> 100% project, which are complete, which remain, how they depend on one another, and
-   what normalized weights `w_1, ..., w_N` their scope/acceptance cost justifies? Recover `N`, the
-   weights, the current `c_i`, `P(t)`, and the evidence/uncertainty behind them before reporting a
+2. **Completion model:** what major roadmap milestones `M_j` constitute the project, what project
+   weights `W_j` they carry, which milestone(s) are materially active, and what substantive
+   obligations/weights define those active milestones internally? Recover `P_j(t)`, `dP_j/dt`,
+   `P_project(t)`, `dP_project/dt`, and the evidence/uncertainty behind them before reporting a
    percentage or rate.
 3. **Artifact:** what concrete mathematical/software object should exist after the current unit?
 4. **Invariant:** what must remain true while that artifact is produced — source fidelity, reuse
@@ -1354,6 +1355,55 @@ weights available, state the uncertainty, and improve the model as understanding
 objective itself is too undefined to reconstruct the denominator at all, that is a control-plane
 defect to repair or an owner decision to request.
 
+#### Report the roadmap hierarchy, not only the whole-project scalar
+
+The whole-project scalar is necessary but **not sufficient**. Large projects have major roadmap
+milestones whose scales differ radically. A very large downstream long tail can make
+`dP_project/dt` look tiny while the currently active milestone is converging quickly. Conversely, a
+small milestone can move rapidly without materially changing the total project. Reporting only the
+whole-project percentage destroys that distinction.
+
+Partition the accepted project objective into owner-visible major milestones `M_1, ..., M_m` with
+project weights `W_j > 0`, `sum W_j = 1`. A **major milestone** is a substantial roadmap body with a
+distinct semantic completion condition — for example a complete definition layer, a complete
+solution corpus, a kernel/framework milestone, a terminal integrated runtime proof, or a finite
+post-remediation convergence stage. It is not every DAG row, card, commit, test, or worker unit.
+Milestones should survive many ordinary ticks and should correspond to a change in what the project
+has substantively achieved when they close.
+
+Within milestone `M_j`, reconstruct its own substantive obligations and normalized internal weights
+`w_jk`, then estimate
+
+`P_j(t) = 100 * sum_k w_jk c_jk(t)`.
+
+The whole-project model must agree with the milestone model:
+
+`P_project(t) = sum_j W_j * P_j(t)`.
+
+Likewise, while the model is stable,
+
+`dP_project/dt = sum_j W_j * dP_j/dt`.
+
+The milestone weights are analytical judgments subject to the same rules as project-level weights:
+scope, dependency leverage, demonstrated cost, integration/acceptance burden and reopen risk matter;
+raw node counts do not. If a milestone itself is too broad to explain current execution, expose one
+additional **active submilestone** beneath it, but stop there unless the owner asks for more detail.
+The purpose is roadmap resolution, not recreating the task graph in the report.
+
+For every materially active milestone report its own percentage, remaining distance and derivative.
+Also report its approximate weight in the total project so the owner can reconcile fast local
+convergence with slow total convergence. A downstream long-tail milestone remains fully represented
+in `P_project`; it simply must not flatten the visibility of the active milestone's progress. For
+example, if the definition layer is rapidly approaching completion while a much larger theorem
+layer remains downstream, report both the definition-layer percentage/rate and the whole-project
+percentage/rate. The small total derivative is then correctly understood as denominator structure,
+not as slow definition work.
+
+Roadmaps need not be linear. When two major milestones are genuinely parallel, give each its own
+`P_j(t)` and weight instead of inventing a serial phase boundary. A non-gating presentation pass,
+for example, must not be allowed to serialize a long-running mathematical-production milestone just
+because both are unfinished.
+
 Roll local work up through the active milestone or phase into that project goal. A card,
 definition, DAG node, commit, acceptance consumer, repaired file, or "what changed since the last
 tick" is not itself the progress report unless that item is literally the project objective. Do
@@ -1372,10 +1422,16 @@ Report the management facts for each workstream, in this order:
   objective, expressed as the complement of the same completion estimate and grounded in the
   remaining major bodies, critical path, and terminal acceptance burden. Never replace this with a
   raw count simply because the count is easier to compute.
-- **Rate and trend of convergence:** how quickly that project-level distance is shrinking. Use
-  local-unit throughput only when the units are genuinely comparable **and** the rate helps explain
-  or project movement of the actual objective. This is secondary to absolute position and remaining
-  distance; never make a local production rate or single-tick delta the headline.
+- **Roadmap position:** the completed major milestones, the materially active milestone(s), and the
+  important downstream milestone(s). Do not enumerate ordinary DAG nodes.
+- **Active-milestone progress:** for each materially active major milestone, its own completion
+  percentage, remaining distance, derivative/trend and approximate share `W_j` of the total project.
+  If one additional submilestone is necessary to make the active work intelligible, include it.
+- **Project-level rate and trend:** how quickly the whole-project distance is shrinking after the
+  milestone contributions are weighted together. A small project derivative beside a fast active-
+  milestone derivative is meaningful and should be shown, not averaged away. Use local-unit
+  throughput only when the units are genuinely comparable and causally identify one milestone's
+  movement; never substitute it for `dP_j/dt` or `dP_project/dt`.
 - **Lost time when material:** time spent blocked, idle, redoing wrong work, waiting on a dominant
   gate, or recovering from steward/worker mistakes. This is part of the throughput picture, not an
   anecdote to hide in a transcript.
@@ -1414,11 +1470,13 @@ completion, remaining distance, rate, bottleneck, lost time, or risk, or omit th
 The final owner report is therefore a **state summary**, not a chronology. For each workstream it
 should be possible to delete every timestamp, worker action, intervention description, and prior
 tick reference without losing the answer to: how much of the objective is done, how much remains,
-is the remaining distance shrinking at an acceptable rate, what currently limits it, and does the
-owner need to decide anything? The first two answers must include the steward's scalar completion
-estimate (and uncertainty where material), not merely repository counters or a prose inventory. If
-not, the report is still narrating process or delegating the steward's analytical job back to the
-owner.
+which major roadmap milestone is currently carrying the work, how complete that milestone is and
+how quickly it is converging, what important milestone follows it, is the whole-project remaining
+distance shrinking at an acceptable rate, what currently limits it, and does the owner need to
+decide anything? The answers must include both the steward's whole-project scalar completion
+estimate and the materially active milestone estimate/rate (with uncertainty where material), not
+merely repository counters or a prose inventory. If not, the report is still narrating process or
+delegating the steward's analytical job back to the owner.
 
 Do **not** use commits, lines changed, tool calls, chat busyness, queue-marker movement, or file
 write counts as throughput units. They may help diagnose what happened, but they are not progress.
@@ -1546,40 +1604,88 @@ that distinguishes the bad reading from its lookalike.
 
 ### Fleet-specific convergence signals
 
-Use these repository-owned distinctions when summarizing or steering the current four streams. Do
-not copy their current counts into this document; recompute from the named live surfaces each tick.
+Use the repository-owned roadmap below when building the hierarchical completion model. **Do not
+copy current percentages or counts into this document**; recompute them from the named live surfaces
+every report. These are milestone identities and dependency relationships, not frozen status. If a
+repository materially rewrites its roadmap, update this map in the same steward-control repair so
+reports cannot continue projecting completion against an obsolete denominator.
 
-- **`new-qual-site`: separate solution closure from intake.** While PDF/source intake is open, a
-  falling solved percentage or rising Queue C count can accompany high solution throughput because
-  new problems enlarge the denominator. Compare the problem population and Queue C at two revisions
-  and report four values together: current total problems, current unsolved problems, Queue C exits
-  (gross solution closures), and Queue C entries (new unsolved problems, normally intake). The raw
-  solved-card percentage is only one input to the steward's whole-project completion estimate; it
-  must not replace that estimate or be optimized by slowing correct intake.
-- **`research`: the terminal preamble is a live session, not a graph count.** The first convergence
-  question is whether a fresh active Sage process can execute
-  `from dzack_research.preamble.all import *` and expose the core `Cat`/`Lattices` surface. The
-  megadoc and category/functor graph must be regenerated from that same tree and agree with the live
-  session. A generated graph, large category count, or prior green import cannot certify a later
-  revision. A current import/session failure belongs to `terminal-repairs`/`terminal-session`.
-- **`sage-categories`: acceptance is revision-scoped.** Historical closed acceptance remains useful
-  evidence, but any later Cat/kernel/bootstrap regression makes current HEAD substantive repair work,
-  not terminal-audit work. Use the repository's declared Sage/Python runtime, not an older host Sage,
-  for this decision. `bloat-audit-loop` is eligible only after `current-head-acceptance` is closed.
-  When sampling reinvention, inspect whether GAP/CAP, Catlab/GATlab, Sage, OSCAR, DisCoPy, SymPy, or
-  another mature owner can delete the mechanism; counting imports is not delegation evidence.
-- **`lean-categories`: distinguish catalogue coverage, mapping coverage, and invention.** Compare the
-  frozen catalogue unit IDs with the canonical parsed mapping records before trusting a checked
-  Mapping box. Missing mapping rows are incomplete mapping, not `unmatched`. While
-  `remap-strict-bundle` remains open, the current `unmatched` fraction is a negative-search worklist
-  under audit, not a forecast of repo-local invention. The reuse search is not exhausted unless it
-  includes the live [`formalization-corpus`](https://dzackgarza.github.io/formalization-corpus/)
-  index, preferably through `POST https://formalization-corpus.dzackgarza.com/api/search`, with
-  multiple source/synonym/type-shape queries; its GitHub `SOURCES.md` is the external registry, while
-  final mapping evidence still pins the actual upstream repository/commit/path. Report definitional
-  progress as delivered/directly reusable versus pending, and split pending routes into
-  Mathlib/interface repair, reference-port/package reuse, unmatched, and missing coverage. Only a
-  source whose remap is closed may treat its remaining `unmatched` units as eligible for authorship.
+- **`new-qual-site` roadmap.**
+  1. **Corpus/source correctness and publication** — source intake, mathematical/copy defects needed
+     for publication, migration, tooling and deployed-site acceptance. This is a historical major
+     milestone once closed; later regressions reopen their actual owner rather than replaying it.
+  2. **Authored solution corpus** — the dominant mathematical long tail. Its natural internal
+     denominator is the current problem-card population, with solved/unsolved status derived from
+     the cards and repository queue. Source intake is currently closed, so that denominator is
+     stable absent an explicit corpus amendment. Report this milestone's solved percentage and
+     derivative even when its contribution to whole-project percentage is modest.
+  3. **Reader-facing presentation convergence** — `copy-policy-repair`, a real but **non-gating,
+     parallel** milestone. Its progress is semantic surface review and repair, not a lint count or
+     inventory receipt. It must never serialize solution writing merely because both are open; final
+     closure may reasonably wait for the solution-written prose population to stabilize.
+  4. **Terminal tooling/site convergence** — the finite `refactor-audit -> type-paydown ->
+     bloat-audit-loop` chain after substantive queues close. This is downstream cleanup/convergence,
+     not part of the solution-corpus denominator.
+
+- **`lean-categories` roadmap.**
+  1. **Corpus inventory and reuse/mapping convergence** — admitted sources, complete catalogue and
+     the definition-layer prior-art search/mapping state that minimizes what must be authored. The
+     repository's Milestone 1 is the decisive transition out of discovery for definitions.
+  2. **Complete definitional layer (Sweep III / Milestone 2)** — **the current major milestone**:
+     every admitted definition/construction/notation/convention realized, ownership-converged and
+     source-conformant, with proposition/result clauses excluded literally. Use the generated
+     definition frontier for its stable comparable denominator. Report this milestone's percentage
+     and derivative prominently; it is the meaningful current production signal.
+  3. **Theorem/result layer (Sweep IV)** — the very large downstream long tail, including any
+     remaining theorem-layer mapping plus realization of the admitted result clauses. It carries a
+     large share of the whole-project denominator, but **must not flatten or obscure the Sweep-III
+     rate** while definitions are the active milestone.
+  4. **Arithmetic/lattice foundations** — the named projective-formed-module, local/global lattice,
+     adelic and comparison programme opened by Milestone 2. It may overlap the theorem long tail
+     where its exact prerequisites permit; do not invent an all-theorems prerequisite.
+  5. **Corpus convergence hardening** — finite refactor, lint and bloat/reuse convergence after the
+     substantive mathematical layers they consume.
+  6. **Abelian projectivity** — the final named projectivity programme: Appell--Humbert,
+     Picard/theta/very-ampleness and Chow/GAGA bridge to the intended projective realization.
+  The whole-project percentage must include the theorem long tail, but the report must separately
+  expose Sweep III's own completion/rate so a small `dP_project/dt` is not misreported as slow
+  definition transcription.
+
+- **`research` roadmap.**
+  1. **Pre-T source architecture convergence** — the current dominant milestone. Its internal
+     roadmap is the repository's six substantive source bodies: constructor/admission foundations;
+     diagrams/rings/geometry; forms/actions/arithmetic; common categorical authority/public
+     boundaries; maintained computation; and public mathematical interaction, joined by
+     `architecture-remediation`. Treat those bodies as weighted submilestones rather than equal TODO
+     rows. The current ready frontier identifies which submilestone is active. Phase T forbids Sage,
+     tests, QC and notebooks here; absence of runtime evidence is therefore not lack of progress.
+  2. **Research-Sage runtime restoration** — establish the intended executable/environment and fresh
+     import path after source convergence.
+  3. **Terminal integrated mathematical session** — execute the banked specimens, regenerated
+     megadoc/graphs and notebook/public-session obligations on the final owned API. This is the
+     runtime proof milestone, distinct from source authoring.
+  4. **Post-remediation convergence** — finite repository-wide refactor, justified type paydown and
+     final bloat/offload convergence. Optional research consumers are outside the required project
+     denominator unless the repository explicitly promotes one into the required DAG.
+
+- **`sage-categories` roadmap.** The current TODO explicitly owns two major milestones; historical
+  native-engine remediation is evidence, not the current denominator.
+  1. **Milestone A — complete kernel and `Cat` subtree.** Model its completion from the substantive
+     core bodies, not row count: owned interfaces; functor/cell calculus; selected transport;
+     universal calculus; properties/refinement; inheritance/coherence; indexed/weighted/algebraic
+     structured calculus; integrated static/boundary enforcement; then `kernel-cat-complete`.
+     Report Milestone A's percentage and derivative, and name one active submilestone when useful
+     (for example universal calculus) so movement inside A remains visible.
+  2. **Milestone B — correct, minimal mathematical leaves.** Sets/order, algebra, geometry and
+     infinitary families converge on the accepted A interfaces, followed by integrated behavioral/
+     architectural acceptance and `leaves-complete`. Weight leaf families by substantive scope and
+     acceptance burden rather than counting four rows equally.
+  3. **Framework delivery** — final reconciliation/delivery of accepted A+B on the required branch/
+     publication surface. It is a small terminal delivery milestone, not a substitute for either A
+     or B.
+  Revision-scoped acceptance remains mandatory throughout: a regression reopens its actual A/B
+  owner and changes the corresponding milestone estimate rather than creating a parallel historical
+  completion story.
 
 ### The steward dashboard is derived observability, not a scheduling authority
 
@@ -1609,8 +1715,10 @@ presentation copy. A detail view expands the same externally comprehensible desc
 it must not replace it with raw worker-contract prose or navigate the reader to an unrelated block.
 
 Order the page by management value. Put **cumulative progress from the project baseline** and
-**distance remaining to the long-term objective** first, then convergence rate/trend, lost time,
-and the dominant bottleneck. Never lead with "since last refresh", "this tick", or another
+**distance remaining to the long-term objective** first, immediately followed by the **major
+roadmap milestone position**: active milestone completion, its remaining distance, its derivative,
+its approximate project weight, and the important downstream milestone(s). Then show project-level
+convergence rate/trend, lost time, and the dominant bottleneck. Never lead with "since last refresh", "this tick", or another
 sampling-window delta. Do not lead with local cards, nodes, definitions, commits, acceptance
 consumers, or worker state unless one of those is itself the long-term objective. A manager should
 not have to reconstruct project position from interval changes, implementation-unit statistics,
@@ -1628,6 +1736,15 @@ fresh steward model is available, show the estimate as stale rather than manufac
 counts. Where the repository also owns a meaningful remaining-work denominator, use plots and
 trend/projection models over that denominator only as supporting evidence.
 
+The same rule applies one level down. The dashboard must not show only `P_project(t)`. It must also
+show `P_j(t)` and `dP_j/dt` for every materially active major milestone, together with `W_j`, the
+milestone's approximate share of the whole-project model. When a large downstream long tail
+dominates total weight, the active milestone's faster convergence must remain visually obvious.
+Never let a tiny whole-project derivative erase the fact that the current major milestone is moving
+quickly. Conversely, do not let a fast small milestone imply that the whole project is nearly done.
+If the active major milestone is itself broad, show one active submilestone beneath it; do not dump
+the entire DAG into the primary progress surface.
+
 Commit counts, insertion/deletion counts, file mtimes, process activity, and similar derivatives
 are diagnostic activity signals, not progress rates. They may appear in a secondary/detail view to
 explain a substantive rate change, but do not lead the dashboard with commits/hour, lines/hour, or
@@ -1644,14 +1761,14 @@ jump to another section.
 
 Each refresh computes rather than copies the useful observability surfaces. At minimum expose:
 
-- a management summary for each workstream: cumulative substantive progress from the accepted
-  baseline as a steward-estimated scalar completion percentage, distance to completion as its
-  complement, the uncertainty of that estimate where material, `dP/dt` or an explicitly described
-  robust finite-difference convergence estimate based on the same weighted model, material lost
-  time, the dominant bottleneck, and any owner-only decision. The estimate is a model judgment over
-  the whole objective, not a mechanically derived node/card/definition fraction.
-  Single-refresh deltas and local task throughput belong here only when they explain the rate or
-  bottleneck; they never substitute for cumulative position and remaining distance;
+- a management summary for each workstream: whole-project completion `P_project(t)`, remaining
+  distance, uncertainty, and `dP_project/dt`; the current roadmap milestone(s) with `P_j(t)`,
+  remaining distance, `dP_j/dt`, approximate project weight `W_j`, and the next important milestone;
+  material lost time, the dominant bottleneck, and any owner-only decision. The project and
+  milestone estimates are model judgments over semantic work, not mechanically derived
+  node/card/definition fractions. Single-refresh deltas and local task throughput belong here only
+  when they explain a milestone or project derivative; they never substitute for either completion
+  model;
 - the current DAG/worklist with touch-friendly pan/zoom/navigation, node prerequisites and the
   repository text that defines each node's acceptance;
 - the repository-owned progress measures named above, with denominator and measurement definition
@@ -2964,7 +3081,7 @@ persistent ledger for them:
 
 ```text
 objective        the current accepted repository goal
-completion       N whole-project obligations; weights w_i; c_i; P(t); R(t); uncertainty; dP/dt
+completion       project milestones M_j/W_j/P_j/dP_j; whole-project P/R/dP; uncertainty
 unit contract    the ready node / acceptance being executed
 artifact         the concrete thing this unit should add or repair
 invariant        the semantic constraint that must survive
@@ -2973,12 +3090,13 @@ direct state     worker turn, tree, process and worker-authored commit evidence
 ```
 
 The `completion` line is the synthesis the steward owes the owner. It is not copied from a queue or
-computed by dividing closed rows by total rows. Reconstruct or revalidate the whole-project
-obligation set and weights from current durable state every tick; prior completion models are
-hypotheses, not authority. Preserve enough prior steward-estimated `P(t)` samples to estimate a
-meaningful derivative under a stable model. If the model itself changes because scope or weights
-were wrong, distinguish that model revision internally from substantive progress before estimating
-`dP/dt`; do not turn a denominator change into apparent delivery.
+computed by dividing closed rows by total rows. Reconstruct or revalidate the roadmap milestones,
+their project weights, each active milestone's internal completion model, and the resulting
+whole-project model from current durable state every tick; prior completion models are hypotheses,
+not authority. Preserve enough prior `P_j(t)` and `P_project(t)` samples to estimate meaningful
+derivatives under a stable model. If the model itself changes because scope, milestone boundaries or
+weights were wrong, distinguish that model revision internally from substantive progress before
+estimating derivatives; do not turn a denominator change into apparent delivery.
 
 A number is useful only after those seven facts agree. Three common proxies stay forbidden as
 certificates: commit count, changed-line mass, and queue/TODO deltas. All can increase while the
@@ -3007,10 +3125,12 @@ mode that produced most of the incidents in this section.
 1. **Reground each stream from durable state.** Read the current TODO/DAG node and its acceptance,
    plus any governing rule that materially constrains it. Do not rely on the previous tick's
    summary. Establish the objective, completion model, artifact, invariant and phase boundary.
-   Reconstruct/revalidate the entire finite obligation set `a_1, ..., a_N`, its normalized weights,
-   current completion values and terminal acceptance burden from the full current project state;
-   then compute `P(t)` and `R(t)`. Re-estimate 0% -> 100% before using any local movement as
-   evidence. Compare with prior reasoned `P(t)` samples under the same model to estimate `dP/dt`.
+   Reconstruct/revalidate the major roadmap milestones `M_j`, their project weights `W_j`, and the
+   active milestone's own substantive denominator/weights before descending to the current unit.
+   Compute each materially active `P_j(t)`/`dP_j/dt`, then `P_project(t)`, `R_project(t)` and
+   `dP_project/dt`. Re-estimate 0% -> 100% before using any local movement as evidence. Preserve the
+   distinction between rapid active-milestone convergence and a small whole-project derivative
+   caused by a large downstream long tail.
    If the substantive objective is already accepted, classify the stream as done before looking for
    more work.
 2. **Observe direct state.** Read the worker's live state and recent transcript, the working tree,
@@ -3037,9 +3157,11 @@ mode that produced most of the incidents in this section.
    Do not add a rule merely to narrate what happened; change a rule only when it changes the next
    action under an observable condition.
 8. **Perform the self-audit when due, then report the project state briefly.** For each workstream,
-   lead with the steward-estimated scalar completion percentage (and uncertainty where material),
-   its complement as remaining distance, `dP/dt`/convergence trend from the same weighted model,
-   dominant bottleneck, and any owner-only decision. Do not report which artifact moved, which
+   lead with the steward-estimated whole-project completion percentage (and uncertainty where
+   material), then the active major milestone's completion, remaining distance, derivative and
+   approximate project weight, followed by the whole-project derivative, dominant bottleneck and
+   any owner-only decision. Name the important downstream milestone when it materially explains the
+   project denominator. Do not report which artifact moved, which
    intervention was performed, or which
    diagnostic fired unless that fact remains necessary to explain the current bottleneck, material
    lost time, risk, or owner decision. The report is the current project-position estimate, not a
