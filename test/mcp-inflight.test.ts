@@ -1,3 +1,4 @@
+import { fixtureLock } from './workstream-fixture.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,7 +78,7 @@ async function serve(): Promise<McpEndpoint> {
   }));
 }
 
-const readNote = (url: string): Promise<Response> =>
+const readNote = async (url: string): Promise<Response> =>
   fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
@@ -85,7 +86,7 @@ const readNote = (url: string): Promise<Response> =>
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'read', arguments: { paths: ['/probe/note.txt'], conversation_key: conversationKeyForCommand('fixture-a', 'conversation-a') } }
+      params: { name: 'read', arguments: { paths: ['/probe/note.txt'], conversation_key: conversationKeyForCommand('fixture-a', 'conversation-a'), workstream_lock: await fixtureLock(conversationKeyForCommand('fixture-a', 'conversation-a')) } }
     })
   });
 

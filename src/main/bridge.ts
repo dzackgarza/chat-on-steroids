@@ -28,7 +28,10 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { bindCommandConversationKey, conversationKeyForCommand, conversationKeyInstruction, persistConversationKeys, restoreConversationKeys } from './session/conversation-key.js';
+import { bindCommandConversationKey, bindObservedConversationKey, conversationKeyForCommand, conversationKeyInstruction, persistConversationKeys, restoreConversationKeys } from './session/conversation-key.js';
+import { bindWorkstreamReplacement, blockWorkstreamAction, claimWorkstream, configureWorkstream, currentWorkstreamAction, finishWorkstreamArchive, nextWorkstreamActions, observeWorkstreamMessages, pauseWorkstream, recordWorkstreamCommand, recordWorkstreamStart, restoreWorkstreams, resumeWorkstream, workstreamIdSchema, workstreamPrompt, workstreamStatus } from './workstreams.js';
+import { unifiedExecManager } from './codex/manager.js';
+import { execOwner } from './codex/ownership.js';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -466,6 +469,7 @@ interface DurableCommandSnapshot {
 /** The wire form the extension receives. */
 export interface BridgeCommand {
   id: string;
+  workstreamActionId?: string;
   kind: 'open-chat';
   /**
    * Why this chat is being opened.
@@ -1140,6 +1144,46 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * chat, presses Stop, or reloads a page, all of which the person at this keyboard can
    * already do by hand; the other three only say what happened.
    */
+  if (route === '/workstreams' || route === '/workstreams/start' || route === '/workstreams/pause' || route === '/workstreams/resume') {
+    if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
+    if (route === '/workstreams' && req.method === 'GET') {
+      return json(res, 200, { workstreams: workstreamStatus().map(({ ownerKey, lock, retiredKeys, ...row }) => ({
+        ...row, expiresAt: row.lastActivity + 600_000
+      })) }, origin);
+    }
+    if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' }, origin);
+    const body = await readBody(req) as Record<string, unknown>;
+    const id = workstreamIdSchema.safeParse(body['id']);
+    if (!id.success) return json(res, 400, { error: 'invalid_workstream_id' }, origin);
+    if (route === '/workstreams/resume') {
+      const resumed = await resumeWorkstream(id.data);
+      return json(res, resumed ? 200 : 409, { resumed }, origin);
+    }
+    if (route === '/workstreams/pause') {
+      const paused = await pauseWorkstream(id.data);
+      await sweepWorkstreams();
+      return json(res, paused ? 200 : 404, { paused }, origin);
+    }
+    if (typeof body['context'] !== 'string' || body['context'].length > 40_000) {
+      return json(res, 400, { error: 'context_required_max_40000' }, origin);
+    }
+    if (!openInBrowser) return json(res, 503, { error: 'browser_driver_unavailable' }, origin);
+    if (await browserDisconnected()) return json(res, 409, { error: 'browser_disconnected' }, origin);
+    const command = queue({ type: 'send', conversationId: null, text: `Continue workstream ${id.data}. Claim it with workstream_lock="claim:${id.data}".\n${body['context']}\nRead AGENTS.md, TODOs and vault plans as needed; start the next unblocked DAG work immediately.`, nonce: randomBytes(8).toString('hex'), stopFirst: false, reloadFirst: false });
+    const key = conversationKeyForCommand(command.id, null);
+    const claimed = await claimWorkstream(key, null, id.data);
+    if (!claimed.ok) {
+      drop(command, claimed.code);
+      return json(res, 409, { error: claimed.code }, origin);
+    }
+    await configureWorkstream(id.data, body['context']);
+    await recordWorkstreamStart(id.data, key, command.id);
+    await persistConversationKeys();
+    await writeDurableNow(COMMANDS_STATE, commandSnapshot());
+    void deliver();
+    return json(res, 202, { id: id.data, commandId: command.id }, origin);
+  }
+
   if (route === '/send' && req.method === 'POST') {
     if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
     let body: Record<string, unknown>;
@@ -1495,6 +1539,21 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (rateLimited()) return json(res, 429, { error: 'rate_limited' }, origin);
   if (noteBrowserSeen()) changed();
 
+  if (route === '/workstreams/archive' && req.method === 'GET') {
+    await sweepWorkstreams();
+    return json(res, 200, { actions: workstreamStatus().filter((row) => row.phase === 'archiving' && row.conversationId && runningToolCalls(row.conversationId) === 0).map((row) => ({
+      id: row.id, actionId: row.actionId, conversationId: row.conversationId
+    })) }, origin);
+  }
+  if (route === '/workstreams/archive' && req.method === 'POST') {
+    const body = await readBody(req) as Record<string, unknown>;
+    if (typeof body['id'] !== 'string' || typeof body['actionId'] !== 'string' ||
+        (body['error'] !== null && typeof body['error'] !== 'string')) return json(res, 400, { error: 'bad_request' }, origin);
+    const accepted = await finishWorkstreamArchive(body['id'], body['actionId'], typeof body['error'] === 'string' ? body['error'].slice(0, 500) : null);
+    await sweepWorkstreams();
+    return json(res, accepted ? 200 : 409, { accepted }, origin);
+  }
+
   if (route === '/status') {
     const live = liveConversations();
     return json(res, 200, { ok: true, conversations: live, commands: commands.length }, origin);
@@ -1593,6 +1652,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const revived = noteAgentAlive(id, 'page');
     if (revived?.report) await recordAgentMessage(revived.report, 'sent');
     const observations = parseObservations(body['events']);
+    for (const item of observations) {
+      if (item.kind !== 'assistant_message' || !item.text) continue;
+      const key = item.text.match(/^Chat On Steroids identity: (ck_[A-Za-z0-9_-]{43})$/m)?.[1];
+      if (key && await bindObservedConversationKey(key, id)) {
+        await bindWorkstreamReplacement('', key, id);
+      }
+    }
+    observeWorkstreamMessages(id, observations);
     observationWritesInFlight += 1;
     try {
       const agent = agentForOwnedConversation(id);
@@ -2480,6 +2547,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       // does nothing, which is the point: a stale marker must never type anything.
       return json(res, 404, { error: 'no_such_command' }, origin);
     }
+    if (!workstreamCommandCurrent(command)) {
+      drop(command, 'workstream action superseded');
+      return json(res, 409, { error: 'workstream_action_superseded' }, origin);
+    }
     if (command.spec.type === 'revive' && !revivalFor(command.spec.agent)) {
       // tidyCommands() above normally retires these. This is the fail-closed twin of that:
       // an empty revival has no message of the prime's to type, and a page must never be
@@ -2556,6 +2627,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     const described = describe(command, client, claimedSummary);
     await persistConversationKeys();
+    if (!workstreamCommandCurrent(command)) return json(res, 409, { error: 'workstream_action_superseded' }, origin);
     return json(res, 200, { command: described }, origin);
   }
 
@@ -2915,6 +2987,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
     if (receipt.committed && receipt.conversationId) {
       await bindCommandConversationKey(command.id, receipt.conversationId);
+      await bindWorkstreamReplacement(command.id, conversationKeyForCommand(command.id, receipt.conversationId), receipt.conversationId);
       // Send-origin evidence (session/send-origin.ts): every committed ACK that names a
       // conversation is an app-originated composer push — a local send, a worker bootstrap,
       // a revival offer, a resume handoff. The recorder cross-checks each observed
@@ -3216,6 +3289,7 @@ async function closeCancelledBridgeStart(instance: http.Server, actual: number |
 
 async function startBridgeOnce(epoch: number): Promise<number | null> {
   await restoreConversationKeys();
+  await restoreWorkstreams();
   bridgeRecovering = true;
   const instance = http.createServer((req, res) => {
     if (bridgeRecovering) {
@@ -3317,6 +3391,7 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       });
       if (staleSwarmTimer) clearInterval(staleSwarmTimer);
       staleSwarmTimer = setInterval(() => {
+        void sweepWorkstreams().catch((err: Error) => logWarn(`workstream recovery failed: ${err.message}`));
         void runStaleSwarmSweep().catch((err: Error) => logWarn(`stale swarm sweep failed: ${err.message}`));
         // Same maintenance cadence, independent job: close open turns whose page observer
         // has gone silent, with the honest observer_lost outcome. This is the app-side
@@ -3375,6 +3450,7 @@ export async function stopBridge(): Promise<void> {
     dropReviveRequestListener = null;
     if (staleSwarmTimer) clearInterval(staleSwarmTimer);
     staleSwarmTimer = null;
+    await workstreamSweep;
     await new Promise<void>((resolve) => {
       // Stop admission and drain accepted extension writes. Abruptly destroying sockets here
       // could lose an /events or /closed item after Chrome had already handed it to the app.
@@ -3478,6 +3554,7 @@ function appDraftsFor(conversation: string): string[] {
 function unredeemedSendFor(conversation: string): (Command & { spec: Extract<CommandSpec, { type: 'send' }> }) | null {
   for (const command of commands) {
     if (command.spec.type !== 'send' || command.spec.conversationId !== conversation) continue;
+    if (!workstreamCommandCurrent(command)) continue;
     if (command.owner !== null) continue;
     return command as Command & { spec: Extract<CommandSpec, { type: 'send' }> };
   }
@@ -4159,6 +4236,75 @@ export function queueWorkerRevival(agent: string, conversationId: string): Bridg
  * is typed as a genuine user message and the chat is recorded like any other, which is what
  * makes this usable for driving ordinary chats rather than workers.
  */
+let workstreamSweep: Promise<void> | null = null;
+function workstreamCommandCurrent(command: Command): boolean {
+  if (command.spec.type !== 'send' || !/^(revive|replace)-wl_/.test(command.spec.nonce)) return true;
+  const nonce = command.spec.nonce;
+  return workstreamStatus().some((row) => row.actionId === nonce);
+}
+/** One recovery driver, owned by the bridge maintenance timer and its shutdown. */
+export async function sweepWorkstreams(): Promise<void> {
+  if (workstreamSweep) return workstreamSweep;
+  workstreamSweep = (async () => {
+    if (await browserDisconnected()) return;
+    for (const row of workstreamStatus()) {
+      if (row.phase !== 'active' || row.conversationId || !row.commandId || !row.actionId) continue;
+      const receipt = receiptFor(row.commandId);
+      if (receipt && !receipt.committed) await blockWorkstreamAction(row.id, row.actionId, receipt.error ?? 'initial_delivery_failed');
+    }
+    const actions = await nextWorkstreamActions();
+    const liveActions = new Set(actions.map((row) => row.actionId));
+    for (const command of [...commands]) {
+      if (command.spec.type === 'send' && /^(revive|replace)-wl_/.test(command.spec.nonce) && !liveActions.has(command.spec.nonce)) {
+        drop(command, 'workstream activity or takeover superseded recovery');
+      }
+    }
+    if (await browserDisconnected()) return;
+    for (const row of actions) {
+      const actionId = row.actionId!;
+      if (!currentWorkstreamAction(row.id, actionId)) continue;
+      if (row.phase === 'archiving') {
+        if (!row.conversationId) {
+          await blockWorkstreamAction(row.id, actionId, 'browser_conversation_not_bound');
+          continue;
+        }
+        if (row.conversationId) {
+          for (const process of unifiedExecManager.listProcesses()) {
+            if (execOwner(process.processId) === row.conversationId) await unifiedExecManager.terminateProcess(process.processId);
+          }
+        }
+        continue; // The paired extension performs the browser stop/archive, then ACKs.
+      }
+      if (row.commandId) {
+        const receipt = receiptFor(row.commandId);
+        if (row.phase === 'opening' && receipt && !receipt.committed) {
+          await blockWorkstreamAction(row.id, actionId, receipt.error ?? 'replacement_failed');
+        }
+        continue;
+      }
+      if (row.phase === 'recovering' && !row.conversationId) {
+        continue;
+      }
+      const existing = commands.find((command) => command.spec.type === 'send' && command.spec.nonce === actionId);
+      const command = existing ?? queue({
+        type: 'send', conversationId: row.phase === 'opening' ? null : row.conversationId,
+        text: workstreamPrompt(row), nonce: actionId, stopFirst: row.phase === 'recovering', reloadFirst: false
+      });
+      // Make both command identity and policy intent durable before opening a tab.
+      conversationKeyForCommand(command.id, command.spec.type === 'send' ? command.spec.conversationId : null);
+      await persistConversationKeys();
+      await writeDurableNow(COMMANDS_STATE, commandSnapshot());
+      if (!await recordWorkstreamCommand(row.id, actionId, command.id)) {
+        drop(command, 'workstream action superseded before delivery');
+        continue;
+      }
+      logInfo(`workstream ${row.id}: ${row.phase} attempt=${row.attempts} conversation=${row.conversationId ?? 'new'}`);
+      if (server) void deliver();
+    }
+  })();
+  try { await workstreamSweep; } finally { workstreamSweep = null; }
+}
+
 export function queueSend(
   conversationId: string | null,
   text: string,
@@ -4517,6 +4663,7 @@ function describe(command: Command, client: string | null, claimedSummary?: stri
   if (conversation && text) rememberAppDraft(conversation, text);
   return {
     id: command.id,
+    ...(spec.type === 'send' && /^(revive|replace)-wl_/.test(spec.nonce) ? { workstreamActionId: spec.nonce } : {}),
     kind: 'open-chat',
     type: spec.type,
     text,
@@ -4676,6 +4823,9 @@ const isLeased = (command: Command): boolean => {
  * about the wrong tab.
  */
 function nextDeliverable(): Command | null {
+  for (const command of [...commands]) {
+    if (!workstreamCommandCurrent(command)) drop(command, 'workstream action superseded');
+  }
   if (commandLeaseWrites.size > 0) return null;
   // A revival whose exact target page is still finishing its prior turn already had its browser
   // open attempt. It must stay durable without monopolising the global browser-delivery slot:

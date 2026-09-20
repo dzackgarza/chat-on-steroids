@@ -35,6 +35,8 @@ const MAX_JOURNAL = 4000;
 const MAX_JOURNAL_BYTES = 4 * 1024 * 1024;
 const BATCH = 100;
 const RETRY_ALARM = 'clf-bridge-drain';
+const WORKSTREAM_ALARM = 'clf-workstream-recovery';
+let archivingWorkstreams = false;
 let retryAlarmScheduled = false;
 
 let port = null;
@@ -3066,6 +3068,10 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
 
 if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addListener === 'function') {
   chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm?.name === WORKSTREAM_ALARM) {
+      void drainWorkstreamArchives();
+      return;
+    }
     if (!alarm || alarm.name !== RETRY_ALARM) return;
     void drainCommandAcks()
       .then(() => drain())
@@ -3083,3 +3089,115 @@ void restoreOpenChatgptTabs().then(() => recoverDeferredRevivals()).catch(() => 
 void load().then(() => {
   if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0 || commandTabs.size > 0) scheduleRetry();
 });
+
+/** The app fences the old lease before asking the browser to stop and archive it. */
+async function archiveWorkstreamChat(action) {
+  const conversationId = action.conversationId;
+  if (typeof conversationId !== 'string' || !/^[a-zA-Z0-9-]{1,200}$/.test(conversationId)) {
+    throw new Error('workstream_has_no_browser_conversation');
+  }
+  const matches = (tab) => {
+    if (!tab.url) return false;
+    const url = new URL(tab.url);
+    return url.origin === 'https://chatgpt.com' && url.pathname === `/c/${conversationId}`;
+  };
+  const receipt = (await chrome.storage.local.get('workstreamArchiveReceipt')).workstreamArchiveReceipt;
+  if (receipt?.actionId === action.actionId && receipt?.conversationId === conversationId) {
+    await acknowledgeWorkstreamArchive(action, matches);
+    return;
+  }
+  const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  const target = tabs.find(matches) ?? await chrome.tabs.create({ url: `https://chatgpt.com/c/${conversationId}`, active: false });
+  if (typeof target.id !== 'number') throw new Error('archive_tab_missing');
+  const until = Date.now() + 30_000;
+  let tab = await chrome.tabs.get(target.id);
+  while (tab.status !== 'complete' && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    tab = await chrome.tabs.get(target.id);
+  }
+  if (!matches(tab) || tab.status !== 'complete') throw new Error('archive_target_not_ready');
+  await chrome.scripting.executeScript({ target: { tabId: target.id }, files: ['chatgpt-dom.js'] });
+  const stopped = await chrome.scripting.executeScript({
+    target: { tabId: target.id },
+    args: [conversationId],
+    func: async (id) => {
+      if (CLF_DOM.conversationId() !== id) return false;
+      const stop = CLF_DOM.stopButton();
+      if (stop) stop.click();
+      const deadline = Date.now() + 20_000;
+      while (CLF_DOM.conversationId() === id && CLF_DOM.generating() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      return CLF_DOM.conversationId() === id && !CLF_DOM.generating();
+    }
+  });
+  if (stopped[0]?.result !== true) throw new Error('archive_generation_did_not_stop');
+  // Recheck policy after the async stop. A takeover cancels this action, never archives
+  // its new owner, and never opens a second replacement.
+  const current = await call('/workstreams/archive');
+  if (!current.ok || !current.data?.actions?.some((item) => item.id === action.id && item.actionId === action.actionId)) return;
+  const archived = await chrome.scripting.executeScript({
+    target: { tabId: target.id }, world: 'MAIN', args: [conversationId],
+    func: async (id) => {
+      if (location.pathname !== `/c/${id}`) return { error: 'archive_navigation_changed' };
+      const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
+      if (!session.ok) return { error: `archive_session_http_${session.status}` };
+      const auth = await session.json();
+      if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
+      const response = await fetch(`/backend-api/conversation/${id}`, {
+        method: 'PATCH', headers, credentials: 'include', signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
+      });
+      if (!response.ok) return { error: `archive_http_${response.status}` };
+      const check = await fetch(`/backend-api/conversation/${id}`, { headers, credentials: 'include', signal: AbortSignal.timeout(15_000) });
+      if (!check.ok) return { error: `archive_check_http_${check.status}` };
+      const saved = await check.json();
+      return saved.is_archived === true ? { archived: true } : { error: 'archive_not_confirmed' };
+    }
+  });
+  if (archived[0]?.result?.archived !== true) throw new Error(archived[0]?.result?.error ?? 'archive_no_result');
+  await chrome.storage.local.set({ workstreamArchiveReceipt: { id: action.id, actionId: action.actionId, conversationId } });
+  await acknowledgeWorkstreamArchive(action, matches);
+}
+
+async function acknowledgeWorkstreamArchive(action, matches) {
+  const acknowledged = await call('/workstreams/archive', {
+    method: 'POST', body: JSON.stringify({ id: action.id, actionId: action.actionId, error: null })
+  });
+  // A lost response is retried from the durable confirmed receipt, never by opening
+  // an already archived conversation and trying to click Stop on its error page.
+  if (!acknowledged.ok && acknowledged.status !== 409) return;
+  for (const open of await chrome.tabs.query({ url: 'https://chatgpt.com/*' })) {
+    if (matches(open) && typeof open.id === 'number') await chrome.tabs.remove(open.id);
+  }
+  await chrome.storage.local.remove('workstreamArchiveReceipt');
+}
+
+async function drainWorkstreamArchives() {
+  if (archivingWorkstreams) return;
+  archivingWorkstreams = true;
+  try {
+    const receipt = (await chrome.storage.local.get('workstreamArchiveReceipt')).workstreamArchiveReceipt;
+    if (receipt) {
+      await acknowledgeWorkstreamArchive(receipt, (tab) => {
+        if (!tab.url) return false;
+        const url = new URL(tab.url);
+        return url.origin === 'https://chatgpt.com' && url.pathname === `/c/${receipt.conversationId}`;
+      });
+      if ((await chrome.storage.local.get('workstreamArchiveReceipt')).workstreamArchiveReceipt) return;
+    }
+    const response = await call('/workstreams/archive');
+    if (!response.ok || !Array.isArray(response.data?.actions)) return;
+    for (const action of response.data.actions) {
+      await archiveWorkstreamChat(action).catch(async (error) => {
+        await call('/workstreams/archive', { method: 'POST', body: JSON.stringify({
+          id: action.id, actionId: action.actionId, error: String(error.message).slice(0, 500)
+        }) });
+      });
+    }
+  } finally {
+    archivingWorkstreams = false;
+  }
+}
+
+chrome.alarms.create(WORKSTREAM_ALARM, { periodInMinutes: 1 });

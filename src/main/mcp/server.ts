@@ -27,6 +27,7 @@ import { logError, logInfo, logWarn } from '../logger.js';
 import { buildServer, resetToolClock, type ToolContext } from './tools.js';
 import { SURFACE_IDS, surfaceDefinition, type SurfaceId } from './surfaces.js';
 import { restoreConversationKeys } from '../session/conversation-key.js';
+import { restoreWorkstreams } from '../workstreams.js';
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -258,6 +259,7 @@ export function forgetExposedSurface(): void {
 
 export async function startMcpServer(getContext: () => ToolContext): Promise<McpEndpoint> {
   await restoreConversationKeys();
+  await restoreWorkstreams();
   // A per-session token in the path is what authorises callers. It is regenerated on
   // every app start, so a URL that leaks stops working when the app restarts.
   requestSeenAt = null;

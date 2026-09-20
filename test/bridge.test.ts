@@ -1,3 +1,4 @@
+import { fixtureLock } from './workstream-fixture.js';
 /**
  * The local bridge, over real HTTP.
  *
@@ -1675,7 +1676,7 @@ describe('delivering a bootstrap', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
-          name: 'agents', arguments: { action: 'status', conversation_key: key }
+          name: 'agents', arguments: { action: 'status', conversation_key: key, workstream_lock: await fixtureLock(key) }
         } })
       });
       const raw = await response.text();

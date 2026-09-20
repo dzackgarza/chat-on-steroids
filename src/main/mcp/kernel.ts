@@ -21,7 +21,8 @@
 
 import { rawPromises as fs } from '../rawfs.js';
 import { inboundConnectorSession, inboundRequestId } from './inbound.js';
-import { conversationForKey, startConversationKey } from '../session/conversation-key.js';
+import { browserConversationForKey, conversationForKey, startConversationKey } from '../session/conversation-key.js';
+import { admitWorkstreamCall, claimWorkstream, noteWorkstreamWorkspace, workstreamForKey, workstreamIdSchema } from '../workstreams.js';
 import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { Capabilities, Root } from '../../shared/types.js';
@@ -434,7 +435,11 @@ async function dispatchTracked(
           )
         : endedWorker
         ? Promise.resolve(fail(endedWorker))
-        : run()
+        : run().then((result) => {
+            const workspace = currentWorkspace();
+            if (workspace && context.caller.conversationId) noteWorkstreamWorkspace(context.caller.conversationId, workspace.virtual);
+            return result;
+          })
   );
   // Never erase an identity a handler proved more strongly (agents::callerNow). The old
   // post-handler pass could fail to rediscover evidence that callerNow had already reserved
@@ -694,14 +699,15 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
       const inputSchema = config.inputSchema.safeExtend({
         conversation_key: z.string().min(1).max(100).describe(
           'This chat’s key; "new" to obtain one.'
-        )
+        ),
+        workstream_lock: z.string().min(1).max(150).describe('Lease token; claim or claim:ID to acquire.')
       });
       server.registerTool(name, { ...config, inputSchema }, (async (input: Record<string, unknown>, mcpCtx?: McpCallContext) => {
-        const { conversation_key: key, ...args } = input;
+        const { conversation_key: key, workstream_lock: lock, ...args } = input;
         if (key === 'new') {
           const issued = await startConversationKey();
           logInfo(`MCP ${surface} ${name}: conversation key issued; operation not executed`);
-          return fail(`CONVERSATION_KEY_ISSUED: ${issued}\nNo operation ran. Retain this key for this conversation and retry with conversation_key set to it.`);
+          return fail(`CONVERSATION_KEY_ISSUED: ${issued}\nNo operation ran. First print this exact line as an assistant message so the browser can bind this key to your ChatGPT thread:\nChat On Steroids identity: ${issued}\nThen retry with conversation_key set to it and workstream_lock="claim" (or "claim:ID" for an assigned workstream) to obtain your lease.`);
         }
         let conversationId: string;
         try { conversationId = conversationForKey(key as string); }
@@ -710,6 +716,18 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
           logInfo(`MCP ${surface} ${name}: ${message}`);
           return fail(message);
         }
+        const browserConversation = browserConversationForKey(key as string);
+        if (!browserConversation) return fail(`BROWSER_IDENTITY_REQUIRED: print the following as an assistant message, let the paired browser observe it, then retry.\nChat On Steroids identity: ${key}`);
+        if (lock === 'claim' || (typeof lock === 'string' && lock.startsWith('claim:'))) {
+          const id = lock === 'claim' ? (workstreamForKey(key as string)?.id ?? `chat-${(key as string).slice(3)}`) : lock.slice(6);
+          if (!workstreamIdSchema.safeParse(id).success) return fail('INVALID_WORKSTREAM_ID');
+          const lease = await claimWorkstream(key as string, browserConversation, id);
+          return lease.ok
+            ? fail(`WORKSTREAM_LOCK_ISSUED: ${lease.lock}\nWorkstream: ${lease.workstreamId}. No operation ran. Supply this workstream_lock and your conversation_key on every call. The lease expires after ten minutes without activity; a replaced owner cannot resume.`)
+            : fail(lease.code);
+        }
+        const admitted = await admitWorkstreamCall(key as string, lock as string);
+        if (!admitted.ok) return fail(admitted.code);
         return dispatch(name, args, mcpCtx?.sessionId ?? null, requestIdOf(mcpCtx), surface, conversationId, () =>
           handler(args as never)
         );

@@ -1,3 +1,4 @@
+import { fixtureLock } from './workstream-fixture.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +46,7 @@ it('drains an accepted MCP mutation before closing its response socket', async (
     sessionTools: false,
     agentTools: false
   }));
+  const key = await startConversationKey();
   const body = {
     jsonrpc: '2.0',
     id: 1,
@@ -52,7 +54,8 @@ it('drains an accepted MCP mutation before closing its response socket', async (
     params: {
       name: 'exec_command',
       arguments: {
-        conversation_key: await startConversationKey(),
+        conversation_key: key,
+          workstream_lock: await fixtureLock(key),
         cmd:
           process.platform === 'win32'
             ? "Set-Content -LiteralPath 'started.txt' -Value 'started' -NoNewline; Start-Sleep -Milliseconds 500; Set-Content -LiteralPath 'after-stop.txt' -Value 'after' -NoNewline"

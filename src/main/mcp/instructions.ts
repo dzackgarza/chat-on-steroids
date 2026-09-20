@@ -20,7 +20,7 @@ export function serverInstructions(
   surface: SurfaceId = 'core',
   platform: NodeJS.Platform = process.platform
 ): string {
-  return 'Every call requires conversation_key. Use this chat’s supplied key, or send "new" once to obtain one without executing. Retain it across Core/Desktop calls; never copy another chat’s key.\n\n' +
+  return 'Calls need conversation_key and workstream_lock. Obtain them with conversation_key="new", then workstream_lock="claim" or "claim:ID"; neither executes tools. Reuse both across Core/Desktop. Never share keys. After 10 idle minutes, leases permit immediate takeover.\n\n' +
     (surface === 'desktop' ? desktopInstructions(ctx) : coreInstructions(ctx, platform));
 }
 

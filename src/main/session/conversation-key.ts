@@ -86,6 +86,22 @@ export function conversationForKey(key: string): string {
   return entry.conversationId;
 }
 
+export function browserConversationForKey(key: string): string | null {
+  const entry = entries.get(key);
+  return entry?.commandId ? entry.conversationId : null;
+}
+
+/** A standalone model publishes its issued key in an assistant message. The paired
+ * observer supplies that message's actual conversation, never an active-tab guess. */
+export async function bindObservedConversationKey(key: string, conversationId: string): Promise<boolean> {
+  const entry = entries.get(key);
+  if (!entry || entry.commandId !== null) return false;
+  entry.conversationId = conversationId;
+  entry.commandId = `observed:${conversationId}`;
+  await persistConversationKeys();
+  return true;
+}
+
 export function conversationKeyInstruction(key: string): string {
   return `Chat On Steroids conversation_key: ${key}\nInclude this exact conversation_key in every connector tool call. Keep it for this conversation; never copy another chat's key. A continuation must use its newly supplied key, not a key quoted in its brief.`;
 }

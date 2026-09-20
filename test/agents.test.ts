@@ -1,3 +1,4 @@
+import { fixtureLock } from './workstream-fixture.js';
 /**
  * The broker: what a run is, who may act in it, and what happens to messages.
  *
@@ -1748,8 +1749,14 @@ describe('through the MCP endpoint', () => {
   let endpoint: Awaited<ReturnType<typeof startMcpServer>>;
   let nextId = 1;
 
-  const post = (body: unknown, extraHeaders: Record<string, string> = {}): Promise<any> =>
-    new Promise((resolve, reject) => {
+  const post = async (body: unknown, extraHeaders: Record<string, string> = {}): Promise<any> => {
+    const message = body as { method?: string; params?: { arguments?: Record<string, unknown> } };
+    if (message.method === 'tools/call' && message.params) {
+      const conversation = requestCorrelation(extraHeaders['x-request-id']?.split('/')[0] ?? '')?.conversationId;
+      const key = message.params.arguments?.conversation_key ?? (conversation ? conversationKeyForCommand(`fixture-${conversation}`, conversation) : 'ck_unknown');
+      message.params.arguments = { ...message.params.arguments, workstream_lock: key === 'ck_unknown' ? 'invalid' : await fixtureLock(String(key)) };
+    }
+    return new Promise((resolve, reject) => {
       const url = new URL(endpoint.url);
       // Legacy fixtures name their chat with request evidence; provision that chat's key
       // explicitly for the new wire contract. Raw issuance/refusal is tested separately.
@@ -1792,6 +1799,7 @@ describe('through the MCP endpoint', () => {
       req.on('error', reject);
       req.end(payload);
     });
+  };
 
   let evidenceSeq = 0;
 
@@ -1971,7 +1979,7 @@ describe('through the MCP endpoint', () => {
     const agentsSchema = tools.find((tool) => tool.name === 'agents')!.inputSchema;
     // Only the common conversation key exists; the retired agent join action stays absent.
     for (const field of Object.keys(agentsSchema.properties)) {
-      if (field !== 'conversation_key') expect(field).not.toMatch(/key|secret|token/i);
+      if (field !== 'conversation_key' && field !== 'workstream_lock') expect(field).not.toMatch(/key|secret|token/i);
     }
     expect(agentsSchema.required).toContain('conversation_key');
     expect(JSON.stringify(agentsSchema)).not.toMatch(/join/i);

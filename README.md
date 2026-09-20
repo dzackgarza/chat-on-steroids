@@ -244,15 +244,44 @@ that discards that retained ownership. Turning Multi-agent **off is only an exec
 queued browser work is withdrawn and active workers are parked, but every prime-owned worker
 history stays durable across disabled app restarts and is available again after re-enable.
 
-Every tool call requires an app-issued `conversation_key`, retained by the model for that
-conversation. App-opened chats receive it in their initial message. Otherwise, the model
-sends `conversation_key: "new"` once: that call only issues a key, then the model retries
-its operation with the key. Missing or unknown keys cannot execute tools.
+Every tool call requires an app-issued `conversation_key` and `workstream_lock`, including
+ad hoc chats and Desktop calls. App-opened chats receive their key in the opening message.
+Otherwise, send `conversation_key: "new", workstream_lock: "claim"`; the response issues a
+key and asks the model to announce it in an assistant message. The paired extension binds
+that exact announcement to the browser conversation. Retry with the key and
+`workstream_lock: "claim"` (or `"claim:workstream-id"`) to acquire a lease. Neither handshake
+executes the requested operation. Subsequent calls carry both returned tokens.
 
 Keys route recordings, workspaces, terminals and agent messages without request headers.
 They are cooperative routing identifiers, so a model must never copy another chat's key.
-A standalone key creates its own local history; it does not automatically identify the
-browser transcript. App-opened chats and continuations receive browser-bound keys.
+The browser binding is required before execution, so automatic recovery can address the
+actual ChatGPT thread. A lease expires after ten minutes without new tool or recorded chat
+activity. Another conversation can claim the workstream immediately after expiry. A
+superseded lock cannot execute tools; already admitted calls must settle and retained
+terminal processes are stopped before the successor executes.
+
+The app attempts up to three continuation messages, checking after 1, 2, and 4 minutes.
+New activity cancels recovery; polling and the app's own continuation text do not renew a
+lease. If recovery fails, the extension stops and archives the actual ChatGPT conversation,
+confirms its archived state, and the app opens a fresh thread for the same workstream.
+The opening message includes the saved project context and generic instructions to read
+AGENTS.md, TODOs and vault plans as needed, then begin the next unblocked DAG work.
+Delivery or archival errors are exposed in workstream status; an unconfirmed archive never
+authorizes a replacement.
+
+Scripts use the loopback bridge and its existing `state/local-token` bearer credential:
+
+| Request | Body / result |
+| --- | --- |
+| `POST /workstreams/start` | `{ "id": "research", "context": "Work in /project; objective ..." }`; opens a chat, returning `commandId` |
+| `GET /workstreams` | Owner conversation, phase, activity/expiry times, recovery attempts, pending command and error |
+| `POST /workstreams/pause` | `{ "id": "research" }`; stops recovery and refuses its tool calls |
+| `POST /workstreams/resume` | `{ "id": "research" }`; resumes a paused owner |
+
+Use `/send/outcome?id=COMMAND_ID` for initial delivery. Workstream status separately tracks
+lease activity and recovery. The extension credential cannot manage workstreams through
+these local-script routes. Reload the extension and refresh connector discovery after an
+upgrade that adds the required lock field.
 
 This is experimental browser automation, and parallel chats can edit the same files or spend account limits quickly. Use it only on work you can recover, keep worker ownership explicit, and turn the feature off when you do not want ChatGPT tabs opened or coordinated automatically. The terms note in [Experimental browser augmentation and OpenAI terms](#experimental-browser-augmentation-and-openai-terms) applies here.
 

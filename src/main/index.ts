@@ -339,12 +339,9 @@ void app.whenReady().then(async () => {
   // traffic, so never make startup/reload wait behind years of old session history.
   queueDeterministicAttributionRepair();
 
-  // The bridge serves recording and multi-agent mode both: recording needs the
-  // extension to observe the chat, and multi-agent mode needs it to open worker tabs.
-  // Either switch being on starts it. ipc.ts applies the same rule on a settings save.
-  if (getConfig().sessions.record || getConfig().multiAgent.enabled) {
-    void startBridge();
-  }
+  // Every connector conversation needs browser binding and workstream recovery,
+  // independently of optional recording and multi-agent features.
+  void startBridge();
   // Retention governs recordings already stored on disk, independent of whether recording is
   // currently enabled. The tray app can stay alive for days, so run once now and keep a coarse
   // maintenance timer rather than making expiry depend on the next process restart.

@@ -15,6 +15,7 @@
  */
 
 import http from 'node:http';
+import { fixtureLock } from './workstream-fixture.js';
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -149,13 +150,15 @@ let nextId = 1;
  * of this file is about. There is no default-surface helper on purpose.
  */
 /** Provision fixture identities explicitly; raw missing/new/unknown cases live in conversation-key.test.ts. */
-function keyedParams(method: string, params: unknown, headers: Record<string, string> = {}): unknown {
+async function keyedParams(method: string, params: unknown, headers: Record<string, string> = {}): Promise<unknown> {
   if (method !== 'tools/call' || !params || typeof params !== 'object') return params;
   const input = params as { name?: string; arguments?: Record<string, unknown> };
   const requestId = headers['x-request-id']?.split('/')[0];
   const conversation = requestCorrelation(requestId)?.conversationId ?? 'test-default-conversation';
+  const key = typeof input.arguments?.conversation_key === 'string' ? input.arguments.conversation_key : conversationKeyForCommand(`fixture-${conversation}`, conversation);
   return { ...input, arguments: {
-    conversation_key: conversationKeyForCommand(`fixture-${conversation}`, conversation),
+    conversation_key: key,
+    workstream_lock: await fixtureLock(key),
     ...input.arguments
   } };
 }
@@ -163,7 +166,7 @@ function keyedParams(method: string, params: unknown, headers: Record<string, st
 async function call(surface: SurfaceId, method: string, params: unknown = {}): Promise<any> {
   const res = await rawPost(
     endpoint.urls[surface],
-    JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params: keyedParams(method, params) })
+    JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params: await keyedParams(method, params) })
   );
   return { status: res.status, body: decode(res) };
 }
@@ -189,7 +192,7 @@ async function modern(
     id: nextId++,
     method,
     params: {
-      ...(keyedParams(method, params, extraHeaders) as Record<string, unknown>),
+      ...(await keyedParams(method, params, extraHeaders) as Record<string, unknown>),
       _meta: {
         [META_VERSION]: PROTOCOL_2026,
         [META_CAPABILITIES]: {}
@@ -845,7 +848,8 @@ describe('surface boundaries', () => {
       const bytes = Buffer.byteLength(JSON.stringify(tool), 'utf8');
       const budget =
         tool.name === 'computer'
-          ? 6_000
+          // The mandatory per-call lease adds 156 bytes to this formerly 5993-byte surface.
+          ? 6_200
           : tool.name === 'apply_patch'
             ? 5_000
             : tool.name === 'agents'
@@ -971,8 +975,8 @@ describe('2025-era clients', () => {
   it('exposes Codex view_image separately and returns native MCP image content', async () => {
     const tool = toolList(await core('tools/list')).find((entry) => entry.name === 'view_image');
     const schema = tool?.inputSchema;
-    expect(Object.keys(schema?.properties ?? {})).toEqual(['path', 'conversation_key']);
-    expect(schema?.required).toEqual(['path', 'conversation_key']);
+    expect(Object.keys(schema?.properties ?? {})).toEqual(['path', 'conversation_key', 'workstream_lock']);
+    expect(schema?.required).toEqual(['path', 'conversation_key', 'workstream_lock']);
     expect(schema?.additionalProperties).toBe(false);
     expect(tool?.outputSchema).toBeUndefined();
 
@@ -1357,7 +1361,7 @@ describe('capability gating', () => {
     const advertised = toolList(await core('tools/list')).find((tool) => tool.name === 'session');
     expect(advertised?.inputSchema).toMatchObject({
       properties: { action: { enum: ['search', 'read'] } },
-      required: ['action', 'conversation_key']
+      required: ['action', 'conversation_key', 'workstream_lock']
     });
     expect(advertised?.inputSchema?.properties).not.toHaveProperty('limit');
     expect(advertised?.inputSchema?.properties).not.toHaveProperty('call_id');
@@ -1755,8 +1759,8 @@ describe('sandbox enforcement through the tool layer', () => {
     ctx.readOnly = false;
     ctx.caps = withCaps({ create: true });
     const tool = toolList(await core('tools/list')).find((entry) => entry.name === 'apply_patch')!;
-    expect(Object.keys(tool.inputSchema.properties)).toEqual(['patch', 'conversation_key']);
-    expect(tool.inputSchema.required).toEqual(['patch', 'conversation_key']);
+    expect(Object.keys(tool.inputSchema.properties)).toEqual(['patch', 'conversation_key', 'workstream_lock']);
+    expect(tool.inputSchema.required).toEqual(['patch', 'conversation_key', 'workstream_lock']);
     expect(tool.inputSchema.additionalProperties).toBe(false);
   });
 
@@ -2836,9 +2840,10 @@ describe('exec_command and write_stdin', () => {
       'max_output_tokens',
       'shell',
       'login',
-      'conversation_key'
+      'conversation_key',
+      'workstream_lock'
     ]);
-    expect(exec.inputSchema.required).toEqual(['conversation_key']);
+    expect(exec.inputSchema.required).toEqual(['conversation_key', 'workstream_lock']);
     expect(exec.inputSchema.additionalProperties).toBe(false);
     expect(exec.inputSchema.properties.workdir.type).toBe('string');
     expect(exec.inputSchema.properties.cmds.type).toBe('array');
@@ -2865,9 +2870,10 @@ describe('exec_command and write_stdin', () => {
       'yield_time_ms',
       'max_output_tokens',
       'declare_persistent',
-      'conversation_key'
+      'conversation_key',
+      'workstream_lock'
     ]);
-    expect(stdin.inputSchema.required).toEqual(['session_id', 'conversation_key']);
+    expect(stdin.inputSchema.required).toEqual(['session_id', 'conversation_key', 'workstream_lock']);
     expect(stdin.inputSchema.additionalProperties).toBe(false);
     expect(stdin.inputSchema.properties.session_id.type).toBe('number');
     expect(stdin.inputSchema.properties.chars.type).toBe('string');

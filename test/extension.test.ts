@@ -1720,7 +1720,7 @@ describe('extension observation journal', () => {
 
     await worker.send({ type: 'events', conversationId, entries: [event('first')] });
     await worker.send({ type: 'events', conversationId, entries: [event('second')] });
-    expect(worker.alarmCreate).toHaveBeenCalledTimes(1);
+    expect(worker.alarmCreate.mock.calls.filter(([name]) => name === 'clf-bridge-drain')).toHaveLength(1);
     expect(worker.alarmCreate).toHaveBeenCalledWith('clf-bridge-drain', { delayInMinutes: 0.25, periodInMinutes: 1 });
     expect(journalOf(session)).toHaveLength(2);
 

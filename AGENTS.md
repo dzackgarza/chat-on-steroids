@@ -446,24 +446,51 @@ over optimistic decoding.**
 
 ## 11. Identity — the spine of the whole project
 
-Every model-facing tool requires `conversation_key`. `kernel.ts` validates it before
+Every model-facing tool requires `conversation_key` and `workstream_lock`. `kernel.ts` validates them before
 execution; `session/conversation-key.ts` owns issuance, durable storage and resolution.
 The model retains one key for its conversation and supplies it on every Core/Desktop call.
 Unknown or missing keys refuse execution. The literal `"new"` issues a key without running
-the requested operation; the model retries with the returned key. Keys are stripped from
+the requested operation; the model announces the issued key in an assistant message so
+the paired observer binds the actual browser conversation, then claims a lease with
+`workstream_lock="claim"` or `"claim:ID"`. The claim returns a lease without executing the
+requested operation. Both tokens are stripped from
 recorded tool arguments.
 
 Browser commands supply a key in their opening message. The command ACK binds it to the
 actual ChatGPT conversation before tools can execute. Revival reuses that conversation's
 key; Compact & Resume supplies a key for the replacement conversation. A standalone `"new"`
-creates a separate local conversation identity, without automatically joining a browser
-transcript. App-issued keys provide cooperative routing, not independent authentication
+requires the explicit assistant announcement before tool execution; an unobserved key
+cannot acquire execution authority. App-issued keys provide cooperative routing, not independent authentication
 of a ChatGPT account: a model copying another chat's key would select its identity.
 
 The key determines recording, workspace, terminal ownership and agent routing. Headers and
 browser timing cannot override it. Recordings label this method `conversation_key`.
 For a current identity failure, inspect key issuance, durable restoration, browser-command
 ACK binding, and then kernel dispatch. A stale connector schema must be refreshed.
+
+### Workstream leases and automatic recovery
+
+`workstreams.ts` owns durable exclusive leases for every connector conversation. Ten
+minutes without new tool/chat activity permits immediate takeover. A new owner invalidates
+the old lock and cancels pending recovery; retained old terminals are stopped and admitted
+old calls must settle before successor execution. Browser polls and replayed observations
+are not activity. The app's own continuation prompts cannot renew their own lease.
+
+The bridge maintenance sweep owns bounded recovery: at most three continuation pushes,
+with 1/2/4-minute checks. Renewed activity ends the episode. Otherwise the old lock is
+fenced, the extension stops and archives the actual ChatGPT thread and verifies the stored
+archive flag, and the bridge opens a replacement with the saved project context and generic
+steward instructions. Action identities and attempt counts survive restart. A takeover
+cancels the old action; stale acknowledgements cannot install a replacement owner.
+
+Local scripts use `/workstreams/start`, `/workstreams`, `/workstreams/pause` and
+`/workstreams/resume` with the local sender credential. The paired extension alone services
+`/workstreams/archive`. Failed browser delivery or archival is visible as blocked work;
+do not claim a replacement was made from a queue receipt alone. See README for bodies.
+
+This explicitly authorized lease-recovery mechanism is the exception to the historical
+timer-driven continuation prohibitions below. Those prohibitions still govern independent
+shell drivers and unbounded pushes outside the app's lease state machine.
 
 ### Historical header correlation and browser evidence
 

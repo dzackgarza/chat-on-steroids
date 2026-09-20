@@ -1,3 +1,4 @@
+import { fixtureLock } from './workstream-fixture.js';
 /**
  * The exec output budget as it survives the real handler wiring, over `tools/call`.
  *
@@ -87,6 +88,7 @@ function sseJson(body: string): unknown {
 
 /** The model-visible text of one `exec_command` call. */
 async function execOutput(url: string, maxOutputTokens: number | undefined): Promise<string> {
+  const key = await startConversationKey();
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
@@ -97,7 +99,8 @@ async function execOutput(url: string, maxOutputTokens: number | undefined): Pro
       params: {
         name: 'exec_command',
         arguments: {
-          conversation_key: await startConversationKey(),
+          conversation_key: key,
+          workstream_lock: await fixtureLock(key),
           cmd: PROBE_CMD,
           workdir: '/probe',
           ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens })

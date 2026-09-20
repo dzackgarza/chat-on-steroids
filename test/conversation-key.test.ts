@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startMcpServer, type McpEndpoint } from '../src/main/mcp/server.js';
 import { defaultConfig, effectiveCapabilities } from '../src/main/config.js';
@@ -7,12 +8,13 @@ import { initDurableStore, flushDurable } from '../src/main/durable.js';
 import { initSessionStore, listAllSessions, readEvents } from '../src/main/session/store.js';
 import { resetRecorderForTests } from '../src/main/session/recorder.js';
 import { unifiedExecManager } from '../src/main/codex/manager.js';
-import { restoreConversationKeys } from '../src/main/session/conversation-key.js';
+import { bindObservedConversationKey, restoreConversationKeys } from '../src/main/session/conversation-key.js';
 import { makeTempDir, removeTempDir } from './helpers.js';
 
 let dir: string;
 let endpoint: McpEndpoint;
 let serial = 0;
+const locks = new Map<string, string>();
 async function rpc(method: string, params: unknown, headers: Record<string, string> = {}) {
   const response = await fetch(endpoint.url, {
     method: 'POST',
@@ -23,7 +25,7 @@ async function rpc(method: string, params: unknown, headers: Record<string, stri
   return JSON.parse(body.trimStart().startsWith('{') ? body : body.split('\n').filter((line) => line.startsWith('data:')).at(-1)!.slice(5));
 }
 async function call(name: string, args: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return rpc('tools/call', { name, arguments: args }, headers);
+  return rpc('tools/call', { name, arguments: { workstream_lock: locks.get(String(args.conversation_key)) ?? 'claim', ...args } }, headers);
 }
 function text(reply: { result?: { content?: { text?: string }[] } }): string {
   return reply.result?.content?.map((part) => part.text ?? '').join('\n') ?? '';
@@ -33,6 +35,10 @@ async function issue(): Promise<string> {
   expect(reply.result.isError).toBe(true);
   const key = text(reply).match(/CONVERSATION_KEY_ISSUED: (ck_[A-Za-z0-9_-]{43})/)?.[1];
   expect(key).toBeDefined();
+  await bindObservedConversationKey(key!, randomUUID());
+  const claimed = await call('read', { paths: ['/a/notes.txt'], conversation_key: key, workstream_lock: 'claim' });
+  const lock = text(claimed).match(/WORKSTREAM_LOCK_ISSUED: (wl_[A-Za-z0-9_-]{43})/)![1]!;
+  locks.set(key!, lock);
   return key!;
 }
 

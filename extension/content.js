@@ -8664,6 +8664,16 @@
       return void (await fail('the composer changed before bootstrap send; the draft was preserved'));
     }
     if (await failIfRetargeted()) return;
+    if (boot.workstreamActionId) {
+      const current = await ask({ type: 'redeem', id: boot.id, client: RUN_ID,
+        ...(target ? { conversationId: target } : {}) });
+      if (!current?.ok || current.command?.workstreamActionId !== boot.workstreamActionId) {
+        const draft = CLF_DOM.composer();
+        if (draft && squeeze(draft.textContent) === expectedText) CLF_DOM.clearComposer();
+        return;
+      }
+      if (await failIfRetargeted()) return;
+    }
     if (!(await CLF_DOM.send())) {
       // The click ran and nothing on the page accepted it — the background-tab silent no-op
       // shape. The composer's text was proven to be exactly this command's own just above, so
