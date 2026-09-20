@@ -1400,6 +1400,18 @@ The relationship between roadmap bodies and their relative weights is part of th
 **internal analysis** for the overall estimate; it is not another report view and does not need to
 be exposed as milestone weights, roadmap tables, or a hierarchy of percentages.
 
+**The current-milestone baseline is the accepted state when that milestone opens.** Do not dilute
+milestone progress by putting work that was already complete, reusable, imported, mapped, solved,
+or otherwise delivered before milestone entry into its denominator. Let the milestone denominator
+represent the substantive work still required at entry. Measure completion as the fraction of that
+entry workload that has since been discharged, and measure `dP_milestone/dt` against that same
+baseline. If later semantic review proves that an entry obligation never belonged to the milestone,
+remove it from the baseline denominator consistently rather than counting its deletion as production.
+Thus definition-realization velocity is measured against the definitions that still required
+realization when Sweep III opened, not against every definition in the textbooks; solution-writing
+velocity is measured against the unsolved-card backlog when the solution milestone opened, not
+against every problem card including those already solved.
+
 For example, while `lean-categories` is realizing definitions, the report must show the definition
 milestone's completion and derivative directly even though the much larger downstream theorem tail
 dominates the overall denominator. A small overall derivative must not be misread as slow definition
