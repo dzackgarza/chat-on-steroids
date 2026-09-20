@@ -1258,6 +1258,30 @@ The steward report is for the repository owner deciding where attention or a dec
 It is not a transcript of the steward's work, an agent activity feed, a proof-of-work record, or a
 compliance checklist.
 
+**Process narration is self-soothing and compliance theater.** Listing that the steward reread the
+DAG, preserved the dirty tree, sampled an artifact, recomputed a selector, sent a correction,
+revived a worker, ran a guard, waited for a process, verified a commit, or otherwise followed the
+required procedure can make a weak tick *feel* rigorous without answering the management question.
+Those actions prove only that the steward was busy and procedurally compliant. They do not prove
+that the project became more complete, that its remaining distance is shrinking, that the
+completion model is correct, or that the dominant bottleneck was identified and changed.
+
+There is **no reporting layer for "what the steward did."** Procedure belongs entirely to the
+steward's private evidence-gathering and control loop. The report begins only after that procedure
+has been compressed into judgments about project state: `P(t)`, `R(t)`, `dP/dt`, uncertainty,
+material lost time/risk, the dominant bottleneck and any owner decision. If a procedural fact does
+not change one of those judgments, omit it. If it does, report the changed project fact rather than
+the action that revealed or caused it. For example, report "completion derivative returned from
+zero to +0.6 pp/day after the serialization defect was removed", not "I revived the worker and it
+made a commit".
+
+The steward must resist the temptation to include an audit trail merely because the underlying
+analysis was difficult. Difficulty of investigation does not make investigation itself an owner
+deliverable. A long internal chain of reads, probes, retries and interventions should normally
+collapse to one or two management facts. If the report becomes longer when the steward had a
+messier tick, that is a warning sign that internal uncertainty or a desire to demonstrate diligence
+is leaking into the owner-facing output.
+
 The first question for every workstream is **where the repository is on the full path from its
 accepted baseline to its actual long-term objective**. Report position, not the steward's sampling
 interval. A useful management summary is anchored by the analogue of both `|t_n - t_0|` and
@@ -1357,9 +1381,12 @@ Report the management facts for each workstream, in this order:
   anecdote to hide in a transcript.
 - **Dominant bottleneck:** the concrete mechanism currently limiting convergence and its measured
   effect on progress.
-- **Effect of an intervention:** whether it changed delivery rate, remaining work, or the dominant
-  bottleneck. The intervention itself is not the result.
 - **Owner-only decisions:** only choices that actually require the repository owner.
+
+Interventions get **no separate report field**. If corrective action materially changes the
+project, that change already belongs under completion, remaining distance, `dP/dt`, bottleneck,
+lost time or risk. If it changes none of them, it is not reportable merely because the steward did
+something.
 
 Do **not** report the actions used to obtain those facts. "The worker read this file", "a correction
 was sent", "a process was killed", "a commit happened at 03:20", "the dirty tree was preserved",
@@ -1369,6 +1396,13 @@ the report and has no continuing effect disappears completely from the report. M
 when the process itself is the still-live bottleneck, measurable lost time, continuing risk, or an
 owner-only decision. Baseline steward obligations are not accomplishments and do not belong in the
 report.
+
+Do not smuggle process narration back in under headings such as `tick outcome`, `evidence`,
+`verification`, `recovery`, `intervention`, `what changed`, `recent work`, or `status detail`. A
+table cell that says a worker was recovered, a source was reread, a selector advanced, a test was
+launched, or a commit landed is still process narration even if the column is called "outcome".
+Translate it into completion, remaining distance, derivative, bottleneck, lost time/risk, or an
+owner decision, or delete it.
 
 Do **not** write a report that could be mistaken for a team activity log, incident transcript, or
 steward diary. A repository owner does not need to know who opened which file, when an agent started
