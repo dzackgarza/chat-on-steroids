@@ -26,6 +26,7 @@ import { getConfig } from '../config.js';
 import { logError, logInfo, logWarn } from '../logger.js';
 import { buildServer, resetToolClock, type ToolContext } from './tools.js';
 import { SURFACE_IDS, surfaceDefinition, type SurfaceId } from './surfaces.js';
+import { restoreConversationKeys } from '../session/conversation-key.js';
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -256,6 +257,7 @@ export function forgetExposedSurface(): void {
 }
 
 export async function startMcpServer(getContext: () => ToolContext): Promise<McpEndpoint> {
+  await restoreConversationKeys();
   // A per-session token in the path is what authorises callers. It is regenerated on
   // every app start, so a URL that leaks stops working when the app restarts.
   requestSeenAt = null;
@@ -397,10 +399,8 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       return;
     }
 
-    // The tool dispatch reads this back to place the call; see inbound.ts for why it cannot
-    // be taken from the MCP call context. The exact request id is the strong join when the
-    // transport still sends one; the connector session key is what the 2026-09 platform
-    // sends instead, and feeds the degraded attribution tiers.
+    // Retain transport metadata for diagnostics and historical correlation. Current
+    // caller identity comes from the required app-issued conversation_key.
     const identity = {
       requestId: requestIdFromHeader(req.headers['x-request-id']),
       sessionKey: connectorSessionFromHeader(req.headers['x-openai-session'])
@@ -415,8 +415,8 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       const diagnostic = `MCP ${route.id} ingress x-request-id=${requestState}; x-openai-session=${sessionState}`;
       if (!identityDiagnostics.has(diagnostic)) {
         identityDiagnostics.add(diagnostic);
-        if (requestState === 'accepted') logInfo(diagnostic);
-        else logWarn(diagnostic);
+        if (requestState === 'rejected' || sessionState === 'rejected') logWarn(diagnostic);
+        else logInfo(diagnostic);
       }
     }
     if (req.method === 'POST' && declaredHeader === undefined) {

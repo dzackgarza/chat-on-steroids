@@ -6,6 +6,7 @@ import { defaultConfig, initConfigPath, saveConfig } from '../src/main/config.js
 import { validateNewRoot } from '../src/main/sandbox.js';
 import { initDurableStore, resetDurableForTests } from '../src/main/durable.js';
 import { startMcpServer, type McpEndpoint } from '../src/main/mcp/server.js';
+import { startConversationKey } from '../src/main/session/conversation-key.js';
 import { initSessionStore, resetSessionStoreForTests, unsetSessionRootForTests } from '../src/main/session/store.js';
 
 let dir = '';
@@ -51,11 +52,13 @@ it('drains an accepted MCP mutation before closing its response socket', async (
     params: {
       name: 'exec_command',
       arguments: {
+        conversation_key: await startConversationKey(),
         cmd:
           process.platform === 'win32'
             ? "Set-Content -LiteralPath 'started.txt' -Value 'started' -NoNewline; Start-Sleep -Milliseconds 500; Set-Content -LiteralPath 'after-stop.txt' -Value 'after' -NoNewline"
             : "printf '%s' started > started.txt; sleep 1; printf '%s' after > after-stop.txt",
         workdir: '/probe',
+        login: false,
         shell:
           process.platform === 'win32'
             ? path.join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')

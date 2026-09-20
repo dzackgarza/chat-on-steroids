@@ -10,12 +10,13 @@ import {
   runningToolCalls,
   settlingToolCalls
 } from '../src/main/mcp/call-context.js';
+import { conversationKeyForCommand } from '../src/main/session/conversation-key.js';
 import { startMcpServer, type McpEndpoint } from '../src/main/mcp/server.js';
 import { initSessionStore, resetSessionStoreForTests, unsetSessionRootForTests } from '../src/main/session/store.js';
 
 /** What the counter said while the call was being recorded, i.e. after its handler returned. */
 let duringRecord: number | null = null;
-/** Held open to stand in for the grace window an unattributed record can spend waiting. */
+/** Holds the real append boundary open to inspect the in-flight owner. */
 let releaseRecord: (() => void) | null = null;
 
 // The recorder runs in the gap this test is about: the handler has returned, the result has
@@ -84,7 +85,7 @@ const readNote = (url: string): Promise<Response> =>
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'read', arguments: { paths: ['/probe/note.txt'] } }
+      params: { name: 'read', arguments: { paths: ['/probe/note.txt'], conversation_key: conversationKeyForCommand('fixture-a', 'conversation-a') } }
     })
   });
 
@@ -99,8 +100,7 @@ it('counts a call as running until its whole request is done, not just its handl
   expect(await response.text()).toContain('hello');
 
   expect(duringRecord).toBe(1);
-  // And released once it has: this call was never attributed, so it is held through its own
-  // record landing — see the test below, which is about exactly that window.
+  // Released once its durable recording has landed.
   const settled = Date.now();
   while (inFlightToolCalls(null) !== 0 && Date.now() - settled < 5_000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -108,35 +108,22 @@ it('counts a call as running until its whole request is done, not just its handl
   expect(inFlightToolCalls(null)).toBe(0);
 });
 
-it('keeps an unattributed call counted while its record is still landing', async () => {
-  // The half the request counter alone does not cover. A call whose conversation the page
-  // has not named does not hold up its own result — the recorder may still be waiting for
-  // that evidence — so dispatch returns and the request ends while the append is unfinished.
-  // Until it lands, the call could still turn out to belong to the chat that is asking, so
-  // it stays charged to every chat rather than reading as zero for all of them.
+it('holds only the keyed conversation while its record is still landing', async () => {
   releaseRecord = () => {};
   endpoint = await serve();
-  const response = await readNote(endpoint.url);
-  expect(response.status).toBe(200);
+  const pending = readNote(endpoint.url);
+  await vi.waitFor(() => expect(duringRecord).toBe(1));
 
-  // The request is over and its result delivered, but the record has not settled.
   expect(inFlightToolCalls('conversation-a')).toBe(1);
-  expect(inFlightToolCalls('conversation-b')).toBe(1);
-  expect(inFlightToolCalls(null)).toBe(1);
-  // This distinction is the compaction contract. The machine-changing request is done, so
-  // `pendingTools` may be zero even while the unattributed history append stays observable.
-  expect(runningToolCalls('conversation-a')).toBe(0);
+  expect(inFlightToolCalls('conversation-b')).toBe(0);
+  expect(runningToolCalls('conversation-a')).toBe(1);
   expect(runningToolCalls('conversation-b')).toBe(0);
-  expect(settlingToolCalls('conversation-a')).toBe(1);
-  expect(settlingToolCalls('conversation-b')).toBe(1);
+  expect(settlingToolCalls('conversation-b')).toBe(0);
 
   releaseRecord();
   releaseRecord = null;
-  // Settling is what releases it, and nothing else.
-  const settled = Date.now();
-  while (inFlightToolCalls(null) !== 0 && Date.now() - settled < 5_000) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  const response = await pending;
+  expect(await response.text()).toContain('hello');
   expect(inFlightToolCalls('conversation-a')).toBe(0);
   expect(runningToolCalls('conversation-a')).toBe(0);
   expect(settlingToolCalls('conversation-a')).toBe(0);

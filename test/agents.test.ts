@@ -83,6 +83,8 @@ const {
   workerConversationGone,
   workerRevivalClaimed
 } = await import('../src/main/agents.js');
+const { conversationKeyForCommand } = await import('../src/main/session/conversation-key.js');
+const { requestCorrelation } = await import('../src/main/session/correlation.js');
 const { startMcpServer } = await import('../src/main/mcp/server.js');
 const { runningToolCalls } = await import('../src/main/mcp/call-context.js');
 const { flushDurable, initDurableStore, readDurable, writeDurableNow, writeDurableSoon } = await import('../src/main/durable.js');
@@ -1749,6 +1751,16 @@ describe('through the MCP endpoint', () => {
   const post = (body: unknown, extraHeaders: Record<string, string> = {}): Promise<any> =>
     new Promise((resolve, reject) => {
       const url = new URL(endpoint.url);
+      // Legacy fixtures name their chat with request evidence; provision that chat's key
+      // explicitly for the new wire contract. Raw issuance/refusal is tested separately.
+      const message = body as { method?: string; params?: { arguments?: Record<string, unknown> } };
+      if (message.method === 'tools/call' && message.params) {
+        const conversation = requestCorrelation(extraHeaders['x-request-id']?.split('/')[0] ?? '')?.conversationId;
+        message.params.arguments = {
+          conversation_key: conversation ? conversationKeyForCommand(`fixture-${conversation}`, conversation) : 'ck_unknown',
+          ...message.params.arguments
+        };
+      }
       const payload = JSON.stringify(body);
       const req = http.request(
         {
@@ -1823,7 +1835,7 @@ describe('through the MCP endpoint', () => {
   const textOfReply = (reply: any): string =>
     ((reply.result?.content ?? []) as Array<{ text?: string }>).map((part) => part.text ?? '').join('\n');
 
-  /** The evidence dance of asChat, kept, but reading the machine half of the result. */
+  /** Same keyed caller as asChat, returning the structured result. */
   const structuredAsChat = async (
     conversationId: string,
     action: string,
@@ -1831,7 +1843,7 @@ describe('through the MCP endpoint', () => {
   ): Promise<Record<string, unknown>> => {
     const seq = ++evidenceSeq;
     const requestId = `wfr_agents_${seq}`;
-    const pending = replyWithRequestId(requestId, action, args);
+    const pending = replyWithRequestId(requestId, action, { conversation_key: conversationKeyForCommand(`fixture-${conversationId}`, conversationId), ...args });
     await recordChatObservations(conversationId, [
       { kind: 'turn_start', time: Date.now(), turnId: `t-${seq}` },
       {
@@ -1844,20 +1856,11 @@ describe('through the MCP endpoint', () => {
     return (await pending).result?.structuredContent ?? {};
   };
 
-  /**
-   * Makes a call that ChatGPT's own message model names, from one conversation.
-   *
-   * This is the only identity anything has now, so it is the only way to make a control
-   * call as somebody. The evidence is fed *while the request is in flight*, which is one of
-   * the two ways it really arrives. The other is ahead of the call — ChatGPT paints the
-   * connector row while it is still composing the request — and that one is covered
-   * separately below, because assuming it could not happen is exactly what made every live
-   * spawn impossible.
-   */
+  /** Call as this chat using its issued key; late browser observations cannot change it. */
   const asChat = async (conversationId: string, action: string, args: Record<string, unknown> = {}): Promise<string> => {
     const seq = ++evidenceSeq;
     const requestId = `wfr_agents_${seq}`;
-    const pending = agentsWithRequestId(requestId, action, args);
+    const pending = agentsWithRequestId(requestId, action, { conversation_key: conversationKeyForCommand(`fixture-${conversationId}`, conversationId), ...args });
     await recordChatObservations(conversationId, [
       { kind: 'turn_start', time: Date.now(), turnId: `t-${seq}` },
       {
@@ -1911,9 +1914,8 @@ describe('through the MCP endpoint', () => {
     expect(Object.keys(schema.properties)).not.toContain('agent');
   });
 
-  it('is identified by exact request-id evidence that arrived before the call it names', async () => {
-    // Evidence may arrive before HTTP. The timestamp is irrelevant; the normalized request
-    // id is the join, so a pre-existing exact mate remains authoritative.
+  it('uses the supplied key when browser evidence also exists', async () => {
+    // Browser history and a valid key agree on this chat; the fixture provisions its key.
     await recordChatObservations('c-ahead', [
       { kind: 'turn_start', time: Date.now() - 5_500, turnId: 't-ahead' },
       {
@@ -1933,7 +1935,7 @@ describe('through the MCP endpoint', () => {
 
   it('refuses a spawn whose conversation this app cannot prove, and creates nothing', async () => {
     const text = await agents('spawn', { workers: [{ task: 'anything' }] });
-    expect(text).toMatch(/UNIDENTIFIED_CALLER|could not/i);
+    expect(text).toContain('UNKNOWN_CONVERSATION_KEY');
     expect(swarmRunning()).toBe(false);
     expect(pendingWorkerSpawns()).toEqual([]);
   });
@@ -1959,7 +1961,7 @@ describe('through the MCP endpoint', () => {
     expect(await readDurable(stateName)).toBeNull();
   });
 
-  it('exposes no key field anywhere in the agents schema', async () => {
+  it('requires the conversation key without reviving the retired agent join protocol', async () => {
     const reply = await post({ jsonrpc: '2.0', id: nextId++, method: 'tools/list', params: {} });
     const tools = reply.result.tools as Array<{ name: string; inputSchema: any }>;
     // Not on agents, and — the part that used to be false — not on any other tool either.
@@ -1967,10 +1969,11 @@ describe('through the MCP endpoint', () => {
       expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain('agent_key');
     }
     const agentsSchema = tools.find((tool) => tool.name === 'agents')!.inputSchema;
-    // Not a key by any spelling: the recovery action that needed one is gone entirely.
+    // Only the common conversation key exists; the retired agent join action stays absent.
     for (const field of Object.keys(agentsSchema.properties)) {
-      expect(field).not.toMatch(/key|secret|token/i);
+      if (field !== 'conversation_key') expect(field).not.toMatch(/key|secret|token/i);
     }
+    expect(agentsSchema.required).toContain('conversation_key');
     expect(JSON.stringify(agentsSchema)).not.toMatch(/join/i);
   });
 
@@ -2035,16 +2038,15 @@ describe('through the MCP endpoint', () => {
     expect(identify({ conversationId: 'c-prime-b' }).id).toBe(PRIME_ID);
   });
 
-  it('waits for late exact identity while dormant worker histories exist, then fences that worker', async () => {
+  it('fences a keyed dormant worker before late browser evidence arrives', async () => {
     startSwarm(1);
     const worker = startWorker('worker-1');
     finishAgent(worker.caller, 'sleep before late evidence');
     expect(releaseQuiescentRun()).toBe(true);
 
     const requestId = 'wfr_dormant_worker_late';
-    const pending = ordinaryWithRequestId(requestId, 'read', { paths: ['/anything'] });
-    // Initial cheap correlation has already had a chance to miss. Deliver the exact page mate
-    // while the kernel is in its dormant-worker evidence window.
+    const pending = ordinaryWithRequestId(requestId, 'read', { paths: ['/anything'], conversation_key: conversationKeyForCommand('fixture-c-worker-1', 'c-worker-1') });
+    // Browser evidence arrives later; the key already identifies the sleeping worker.
     await new Promise((resolve) => setTimeout(resolve, 20));
     await recordChatObservations('c-worker-1', [
       { kind: 'turn_start', time: Date.now(), turnId: 't-dormant-late' },
@@ -2129,15 +2131,13 @@ describe('through the MCP endpoint', () => {
 
   it('refuses a control call it cannot place at all, and says where to look', async () => {
     startSwarm(1);
-    // No page evidence: this call could have come from anywhere, so it is not treated as a
-    // stranger and it is certainly not given a credential to carry instead.
+    // An invalid key must not reveal another conversation's worker state.
     const text = await agents('status');
-    expect(text).toContain('WORKER_IDENTITY_LOST');
-    expect(text).toMatch(/extension/i);
+    expect(text).toContain('UNKNOWN_CONVERSATION_KEY');
     expect(text).not.toContain('worker-1');
   });
 
-  it('uses the inbound HTTP request id instead of stealing a worker’s earlier agents evidence', async () => {
+  it('uses the supplied prime key instead of stealing a worker’s earlier evidence', async () => {
     startSwarm(1);
     expect(bindConversation('worker-1', 'c-worker-1')).toBe(true);
     const now = Date.now();
@@ -2165,6 +2165,7 @@ describe('through the MCP endpoint', () => {
     ]);
 
     const pending = agentsWithRequestId('wfr_prime_current', 'message', {
+      conversation_key: conversationKeyForCommand('fixture-prime', PRIME_CHAT),
       to: 'worker-1',
       text: 'prime correction'
     });
@@ -2417,6 +2418,7 @@ describe('through the MCP endpoint', () => {
           name: 'exec_command',
           arguments: {
             cmd: heldCommand,
+            login: false,
             workdir: dir,
             shell,
             yield_time_ms: 30_000

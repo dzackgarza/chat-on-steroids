@@ -97,8 +97,8 @@ found the real boundary yet.
 | Plane | The identity that must survive |
 | --- | --- |
 | filesystem | approved root + canonical real path |
-| MCP call | normalized request id |
-| tool ownership | request id -> conversation id |
+| MCP call | required app-issued conversation key; optional request id for diagnostics |
+| tool ownership | conversation key -> conversation id |
 | browser observation | conversation id + navigation epoch + message/turn identity |
 | agent | conversation id -> prime or worker slot |
 | workspace | conversation/agent key -> cwd |
@@ -340,9 +340,8 @@ tunnel request
                 x-openai-session read as an opaque connector session key
  → tools.ts     build only the requested surface
  → kernel.ts    AsyncLocalStorage call context
-                resolve exact caller from correlation evidence
-                resolve agent identity if a swarm is active
-                wait for identity when the operation genuinely needs it
+                validate required conversation_key before execution
+                resolve agent identity from its bound conversation
                 enforce the live capability / read-only guard
  → tool handler sandbox any model path, execute, attach structured evidence
                 (changes, counts, exit code, session id, assets)
@@ -447,8 +446,31 @@ over optimistic decoding.**
 
 ## 11. Identity — the spine of the whole project
 
-An MCP payload contains **no trustworthy ChatGPT conversation id**. There is exactly one
-accepted proof chain:
+Every model-facing tool requires `conversation_key`. `kernel.ts` validates it before
+execution; `session/conversation-key.ts` owns issuance, durable storage and resolution.
+The model retains one key for its conversation and supplies it on every Core/Desktop call.
+Unknown or missing keys refuse execution. The literal `"new"` issues a key without running
+the requested operation; the model retries with the returned key. Keys are stripped from
+recorded tool arguments.
+
+Browser commands supply a key in their opening message. The command ACK binds it to the
+actual ChatGPT conversation before tools can execute. Revival reuses that conversation's
+key; Compact & Resume supplies a key for the replacement conversation. A standalone `"new"`
+creates a separate local conversation identity, without automatically joining a browser
+transcript. App-issued keys provide cooperative routing, not independent authentication
+of a ChatGPT account: a model copying another chat's key would select its identity.
+
+The key determines recording, workspace, terminal ownership and agent routing. Headers and
+browser timing cannot override it. Recordings label this method `conversation_key`.
+For a current identity failure, inspect key issuance, durable restoration, browser-command
+ACK binding, and then kernel dispatch. A stale connector schema must be refreshed.
+
+### Historical header correlation and browser evidence
+
+The following describes the former transport join and the browser evidence still used for
+historical recording repair. It is not a fallback for a current tool call without a key.
+An MCP payload supplies no independently authenticated ChatGPT conversation id. The former
+proof chain was:
 
 ```text
 HTTP x-request-id                       (inbound.ts, normalized before '/')
@@ -484,8 +506,8 @@ and charge-scoping evidence only:
 
 Both are honestly labeled in `attribution`/`attributionMethod` and never masquerade as
 `request_id`. They never grant agent identity, inbox delivery, or workspace authority —
-those still require the exact chain, which resumes automatically if `x-request-id` ever
-returns. Truly ambiguous calls stay Unattributed, and are charged against every conversation
+current tool calls instead require the app-issued key above. Historical ambiguous calls stay
+Unattributed and are charged against every conversation
 the app cannot *observe* to have been quiescent when the call arrived
 (`recorder.ts::mayOwnUnattributedCall`). ChatGPT issues connector calls only from inside a
 turn, so a chat whose turn was watched to end before the call arrived cannot be its origin;

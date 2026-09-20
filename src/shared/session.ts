@@ -143,6 +143,7 @@ export type ToolOutcome = 'ok' | 'error' | 'rejected';
  * never presented as exact request-id attribution.
  */
 export type CallAttribution =
+  | 'conversation_key'
   | 'request_id'
   | 'unattributed'
   | 'turn'
@@ -173,6 +174,7 @@ export type CallAttribution =
  * goes rather than being guessed into somebody's history.
  */
 export const ATTRIBUTION_LABELS: Record<CallAttribution, string> = {
+  conversation_key: 'app-issued conversation key carried by the model',
   request_id: 'exact request id',
   unattributed: 'request id not resolved',
   agent: 'agent key',
@@ -197,7 +199,7 @@ export interface ToolCallRecord {
    * the 2026-09 headerless connector platform added the two degraded evidence tiers,
    * each honestly labeled and never masquerading as exact request_id attribution.
    */
-  attributionMethod: 'request_id' | 'push_correlated' | 'temporal_unique' | 'connector_session' | 'unattributed';
+  attributionMethod: 'conversation_key' | 'request_id' | 'push_correlated' | 'temporal_unique' | 'connector_session' | 'unattributed';
   /** Exact arguments as JSON. Cut inline past the cap, with the whole text in an asset. */
   args: StoredText;
   result: StoredText;

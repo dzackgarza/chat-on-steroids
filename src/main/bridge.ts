@@ -28,6 +28,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { bindCommandConversationKey, conversationKeyForCommand, conversationKeyInstruction, persistConversationKeys, restoreConversationKeys } from './session/conversation-key.js';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -2553,7 +2554,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         return json(res, 503, { error: 'continuation_claim_not_durable', retryable: true }, origin);
       }
     }
-    return json(res, 200, { command: describe(command, client, claimedSummary) }, origin);
+    const described = describe(command, client, claimedSummary);
+    await persistConversationKeys();
+    return json(res, 200, { command: described }, origin);
   }
 
   if (route === '/commands/ack' && req.method === 'POST') {
@@ -2911,6 +2914,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
 
     if (receipt.committed && receipt.conversationId) {
+      await bindCommandConversationKey(command.id, receipt.conversationId);
       // Send-origin evidence (session/send-origin.ts): every committed ACK that names a
       // conversation is an app-originated composer push — a local send, a worker bootstrap,
       // a revival offer, a resume handoff. The recorder cross-checks each observed
@@ -3211,6 +3215,7 @@ async function closeCancelledBridgeStart(instance: http.Server, actual: number |
 }
 
 async function startBridgeOnce(epoch: number): Promise<number | null> {
+  await restoreConversationKeys();
   bridgeRecovering = true;
   const instance = http.createServer((req, res) => {
     if (bridgeRecovering) {
@@ -4497,12 +4502,13 @@ function describe(command: Command, client: string | null, claimedSummary?: stri
   const spec = command.spec;
   // A resume's claim is persisted by /commands/redeem before this renderer is called. A
   // command shown to app/UI code without a browser document still carries no brief at all.
-  const text = spec.type === 'resume'
+  const body = spec.type === 'resume'
     ? client && claimedSummary !== undefined
       ? bootstrapText(spec, claimedSummary)
       : ''
     : bootstrapText(spec, '');
   const conversation = spec.type === 'revive' || spec.type === 'send' ? spec.conversationId : null;
+  const text = body ? `${body}\n\n${conversationKeyInstruction(conversationKeyForCommand(command.id, conversation))}` : '';
   // Earlier app-typed texts for this exact chat, so the page can tell the app's own wedged
   // draft (clear or send it) from user writing (refuse, typed). The command's own text is
   // excluded — the page compares that case directly and treats it as "already typed".

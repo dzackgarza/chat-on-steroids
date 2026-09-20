@@ -20,7 +20,8 @@ export function serverInstructions(
   surface: SurfaceId = 'core',
   platform: NodeJS.Platform = process.platform
 ): string {
-  return surface === 'desktop' ? desktopInstructions(ctx) : coreInstructions(ctx, platform);
+  return 'Every call requires conversation_key. Use this chat’s supplied key, or send "new" once to obtain one without executing. Retain it across Core/Desktop calls; never copy another chat’s key.\n\n' +
+    (surface === 'desktop' ? desktopInstructions(ctx) : coreInstructions(ctx, platform));
 }
 
 function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform): string {

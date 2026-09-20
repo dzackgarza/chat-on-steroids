@@ -24,6 +24,7 @@ const {
   sessionsRoot
 } = await import('../src/main/session/store.js');
 const { prepareHandoff, resumeBootstrapMatches, resumeBootstrapText } = await import('../src/main/session/handoff.js');
+const { conversationKeyInstruction } = await import('../src/main/session/conversation-key.js');
 const goal = await import('../src/main/goal.js');
 const { makeTempDir, removeTempDir } = await import('./helpers.js');
 
@@ -326,6 +327,19 @@ it('treats only known resume-bootstrap formatting artifacts as provenance-equiva
   expect(resumeBootstrapMatches(bootstrap.replace('exact task', 'exact  task'), handoff)).toBe(false);
   expect(resumeBootstrapMatches(` ${bootstrap}`, handoff)).toBe(false);
   expect(resumeBootstrapMatches(`${bootstrap} `, handoff)).toBe(false);
+});
+
+it('recognizes the replacement key even when the brief quotes an older key', () => {
+  const oldKey = `ck_${'a'.repeat(43)}`;
+  const newKey = `ck_${'b'.repeat(43)}`;
+  const brief = `Continue the work.\n\n${conversationKeyInstruction(oldKey)}`;
+  const bootstrap = resumeBootstrapText(brief);
+  const keyed = `${bootstrap}\n\n${conversationKeyInstruction(newKey)}`;
+  expect(resumeBootstrapMatches(bootstrap, brief)).toBe(true);
+  expect(resumeBootstrapMatches(keyed, brief)).toBe(true);
+  expect(resumeBootstrapMatches(keyed.replace(/\n/g, '\r\n'), brief)).toBe(true);
+  expect(resumeBootstrapMatches(keyed.replace('Continue the work.', 'Change the task.'), brief)).toBe(false);
+  expect(resumeBootstrapMatches(`${keyed}\nextra instructions`, brief)).toBe(false);
 });
 
 it('does not publish committed-resume provenance when the durable rebind write fails', async () => {

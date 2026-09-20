@@ -1544,7 +1544,7 @@ describe('canonical recorder 1.8', () => {
   it('names the missing x-request-id join key when filing a headerless call under Unattributed', async () => {
     const warnings = (): string[] =>
       getLog()
-        .filter((entry) => entry.level === 'warn' && entry.message.includes('no x-request-id'))
+        .filter((entry) => entry.level === 'warn' && entry.message.includes('no usable x-request-id'))
         .map((entry) => entry.message);
     const before = warnings().length;
     const call = await recordToolCall({

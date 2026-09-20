@@ -244,10 +244,15 @@ that discards that retained ownership. Turning Multi-agent **off is only an exec
 queued browser work is withdrawn and active workers are parked, but every prime-owned worker
 history stays durable across disabled app restarts and is available again after re-enable.
 
-Agent identity is deliberately fail-closed. `spawn`, worker messaging and other identity-sensitive
-operations require the companion extension to prove which ChatGPT conversation made the MCP call.
-If the same chat is being used from a client the extension cannot observe, such as a phone app,
-ordinary Core tools can still work but multi-agent control is refused rather than guessed.
+Every tool call requires an app-issued `conversation_key`, retained by the model for that
+conversation. App-opened chats receive it in their initial message. Otherwise, the model
+sends `conversation_key: "new"` once: that call only issues a key, then the model retries
+its operation with the key. Missing or unknown keys cannot execute tools.
+
+Keys route recordings, workspaces, terminals and agent messages without request headers.
+They are cooperative routing identifiers, so a model must never copy another chat's key.
+A standalone key creates its own local history; it does not automatically identify the
+browser transcript. App-opened chats and continuations receive browser-bound keys.
 
 This is experimental browser automation, and parallel chats can edit the same files or spend account limits quickly. Use it only on work you can recover, keep worker ownership explicit, and turn the feature off when you do not want ChatGPT tabs opened or coordinated automatically. The terms note in [Experimental browser augmentation and OpenAI terms](#experimental-browser-augmentation-and-openai-terms) applies here.
 
@@ -256,7 +261,7 @@ This is experimental browser automation, and parallel chats can edit the same fi
 - **Tools missing or still visible after a permission change:** refresh/review the custom app in ChatGPT, or recreate it if needed, then start a new conversation so it discovers the current schema.
 - **Extension says app not found:** session recording or multi-agent mode must be on for the browser bridge to run; then reopen the extension popup.
 - **Extension version mismatch:** reload the unpacked extension after every app update.
-- **`agents` says `UNIDENTIFIED_CALLER`:** open/use that same ChatGPT conversation in the paired desktop browser so the extension can observe its connector request id. The app intentionally will not infer agent identity from the active tab or timing.
+- **A tool requests `conversation_key`:** refresh the connector schema and use the key supplied to this chat. If no key was supplied, request one with `"new"` and retry. `CONVERSATION_KEY_PENDING` means the browser has not acknowledged the app-opened chat yet.
 - **OS/browser warning about an unverified app:** expected for the unsigned beta. Verify `SHA256SUMS.txt` before overriding an OS trust prompt.
 - **Linux says secure credential storage is unavailable:** start/unlock GNOME Keyring, KWallet or another Secret Service provider, then restart the app. The insecure Electron `basic_text` fallback is intentionally rejected.
 - **Tunnel unavailable:** use Advanced settings to point at an explicit `tunnel-client` / `cloudflared` executable, or use the bundled copy from the release build.

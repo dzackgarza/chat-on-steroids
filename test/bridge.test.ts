@@ -14,6 +14,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
 import type { ContinuationSnapshot } from '../src/main/session/continuation.js';
 import type { SwarmSnapshot } from '../src/main/agents.js';
+import { conversationForKey, conversationKeyForCommand, conversationKeyInstruction } from '../src/main/session/conversation-key.js';
+import { startMcpServer } from '../src/main/mcp/server.js';
 
 // safeStorage only exists inside a running Electron main process. The bridge stores
 // its bearer token through it, so the test provides the same interface, unencrypted.
@@ -1394,12 +1396,15 @@ describe('delivering a bootstrap', () => {
     // unit tests supplied a mocked `type: 'resume'`.
     expect(redeemed.type).toBe('resume');
     expect(redeemed.text).toContain('NEXT — finish the bridge rewrite.');
+    const key = redeemed.text.match(/conversation_key: (ck_[A-Za-z0-9_-]{43})/)![1];
+    expect(() => conversationForKey(key)).toThrow('CONVERSATION_KEY_PENDING');
 
     const ack = await request('POST', '/commands/ack', {
       body: { id: command!.id, status: 'sent', conversationId: 'abcdef12-3456-7890-abcd-ef1234567890' }
     });
     expect(ack.status).toBe(200);
     expect(ack.body.committed).toBe(true);
+    expect(conversationForKey(key)).toBe('abcdef12-3456-7890-abcd-ef1234567890');
     expect(pendingCommands()).toEqual([]);
   });
 
@@ -1612,14 +1617,13 @@ describe('delivering a bootstrap', () => {
     expect(continuationByToken(againToken)?.state).not.toBe('aborted');
   });
 
-  it('types the worker its task, and nothing about joining, keys or identity', async () => {
+  it('types the worker its task and its app-issued conversation key', async () => {
     await pair();
     spawn({ workers: [{ task: 'Audit the compaction transaction end to end' }], caller: { conversationId: PRIME_CHAT } });
     const command = await redeem();
 
     expect(command.agent).toBe('worker-1');
-    // The task itself is the first message. That is the whole invariant: the chat this app
-    // opened is already a worker, so there is nothing for the model to do about identity.
+    // The task remains first; the app provides the key rather than asking the model to join.
     expect(command.text.startsWith('Audit the compaction transaction end to end')).toBe(true);
     expect(command.text).not.toMatch(/join/i);
     expect(command.text).not.toMatch(/agent[_ ]key/i);
@@ -1627,6 +1631,7 @@ describe('delivering a bootstrap', () => {
     // It still says how to report, because that is about the work rather than about who it is.
     expect(command.text).toContain('action=message');
     expect(command.text).toContain('finish');
+    expect(command.text).toMatch(/conversation_key: ck_[A-Za-z0-9_-]{43}/);
 
     await flushDurable();
     const stored = await readDurable<unknown>('bridge-commands');
@@ -1646,6 +1651,8 @@ describe('delivering a bootstrap', () => {
     spawn({ workers: [{ task: 'audit the compaction' }], caller: { conversationId: PRIME_CHAT } });
     const command = await redeem();
     const conversationId = 'abcdef12-3456-7890-abcd-ef1234567890';
+    const key = command.text.match(/conversation_key: (ck_[A-Za-z0-9_-]{43})/)![1];
+    expect(() => conversationForKey(key)).toThrow('CONVERSATION_KEY_PENDING');
     expect(swarmState().agents.find((agent) => agent.id === 'worker-1')?.state).toBe('invited');
 
     await request('POST', '/commands/ack', {
@@ -1657,8 +1664,27 @@ describe('delivering a bootstrap', () => {
     const worker = swarmState().agents.find((agent) => agent.id === 'worker-1')!;
     expect(worker.state).toBe('active');
     expect(worker.conversationId).toBe(conversationId);
+    expect(conversationForKey(key)).toBe(conversationId);
     expect(pendingCommands()).toEqual([]);
     expect(pendingWorkerSpawns()).toEqual([]);
+    const endpoint = await startMcpServer(() => ({
+      roots: [], caps: getConfig().capabilities, readOnly: true, sessionTools: false, agentTools: true
+    }));
+    try {
+      const response = await fetch(endpoint.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+          name: 'agents', arguments: { action: 'status', conversation_key: key }
+        } })
+      });
+      const raw = await response.text();
+      const reply = JSON.parse(raw.trimStart().startsWith('{') ? raw : raw.split('\n').find((line) => line.startsWith('data:'))!.slice(5));
+      expect(reply.result.isError).not.toBe(true);
+      expect(reply.result.structuredContent.self).toBe('worker-1');
+    } finally {
+      await endpoint.stop();
+    }
   });
 
   it('keeps the worker command durable until the worker binding itself crosses its crash barrier', async () => {
@@ -4385,8 +4411,11 @@ describe('local send', () => {
 
     const boot = await request('POST', '/commands/redeem', { body: { id, client: 'tab-1', conversationId: chat } });
     expect(boot.status).toBe(200);
-    // Verbatim. A worker bootstrap appends its protocol paragraph here; a local send must not.
-    expect(boot.body.command.text).toBe(text);
+    // Preserve the user's text and provision the same conversation's connector identity.
+    const key = boot.body.command.text.match(/conversation_key: (ck_[A-Za-z0-9_-]{43})/)?.[1];
+    expect(key).toBeDefined();
+    expect(boot.body.command.text).toBe(`${text}\n\n${conversationKeyInstruction(key!)}`);
+    expect(conversationForKey(key!)).toBe(chat);
     expect(boot.body.command.conversationId).toBe(chat);
     expect(boot.body.command.agent).toBeNull();
 
@@ -4582,14 +4611,15 @@ describe('local send', () => {
     expect(boot.status).toBe(200);
     // Squeezed of all whitespace: the composer is a rich-text editor and paragraph breaks
     // vanish under textContent, so this is the only stable comparison form.
-    expect(boot.body.command.staleDrafts).toContain('wedgemeplease');
-    expect(boot.body.command.staleDrafts).not.toContain('follow-uppush');
+    const instruction = conversationKeyInstruction(conversationKeyForCommand(first.body.command.id, chat));
+    expect(boot.body.command.staleDrafts).toContain(`wedge me please\n\n${instruction}`.replace(/\s/g, ''));
+    expect(boot.body.command.staleDrafts).not.toContain(boot.body.command.text.replace(/\s/g, ''));
   });
 
   it('publishes the same ledger on the /activity feed the wedged tab is already polling', async () => {
     await pair();
     const chat = '7b5e6f7a-8b9c-4d0e-9f1a-3b4c5d6e7f8a';
-    await send({ conversationId: chat, text: 'the wedged text' });
+    const sent = await send({ conversationId: chat, text: 'the wedged text' });
     await waitForOpened(1);
     // /activity answers with the ledger only for a conversation the recorder knows is open.
     await request('POST', '/events', {
@@ -4597,7 +4627,8 @@ describe('local send', () => {
     });
     const activity = await request('GET', `/activity?conversationId=${chat}&since=0`);
     expect(activity.status).toBe(200);
-    expect(activity.body.staleDrafts).toContain('thewedgedtext');
+    const instruction = conversationKeyInstruction(conversationKeyForCommand(sent.body.command.id, chat));
+    expect(activity.body.staleDrafts).toContain(`the wedged text\n\n${instruction}`.replace(/\s/g, ''));
   });
 
   it('classifies a page draft refusal as draft_left_in_composer with the preserve-user-work hint', async () => {

@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import type { Handoff } from '../../shared/session.js';
 import { logInfo } from '../logger.js';
 import { getSession, saveHandoff } from './store.js';
+import { conversationKeyInstruction } from './conversation-key.js';
 
 export interface PrepareHandoffInput {
   sessionId: string;
@@ -51,7 +52,13 @@ export function resumeBootstrapText(summary: string): string {
 export function resumeBootstrapMatches(recorded: string, summary: string): boolean {
   const canonical = (value: string): string =>
     value.replace(/\u00c2\u00a0/g, ' ').replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n');
-  return canonical(recorded) === canonical(resumeBootstrapText(summary));
+  const actual = canonical(recorded);
+  const base = canonical(resumeBootstrapText(summary));
+  if (actual === base) return true;
+  if (!actual.startsWith(base)) return false;
+  const suffix = actual.slice(base.length);
+  const key = suffix.match(/^\n\nChat On Steroids conversation_key: (ck_[A-Za-z0-9_-]{43})\n/)?.[1];
+  return key !== undefined && suffix === `\n\n${conversationKeyInstruction(key)}`;
 }
 
 /**

@@ -20,12 +20,13 @@
  */
 
 import { rawPromises as fs } from '../rawfs.js';
-import { hasInboundIdentity, inboundConnectorSession, inboundRequestId } from './inbound.js';
+import { inboundConnectorSession, inboundRequestId } from './inbound.js';
+import { conversationForKey, startConversationKey } from '../session/conversation-key.js';
 import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { Capabilities, Root } from '../../shared/types.js';
 import { FsOpError, formatBytes, type FileInfo } from '../fsops.js';
-import { logError, logInfo, logWarn } from '../logger.js';
+import { logInfo, logWarn } from '../logger.js';
 import {
   SandboxError,
   isAbsoluteVirtualPath,
@@ -43,12 +44,10 @@ import {
   acknowledgeOffersForConversation,
   dormantWorkerNotice,
   endedWorkerNotice,
-  hasDormantWorkerLeases,
   sleepSilentDetachedWorkers,
   noteAgentAlive,
   agentForCaller,
   agentForFinishCaller,
-  hasRetiredWorkerLeases,
   offerMessages,
   offerMessagesForConversation,
   persistCriticalSwarmNow,
@@ -63,17 +62,13 @@ import {
   currentCall,
   emptyEvidence,
   noteOutcome,
-  holdWhileSettling,
   runInCallContext,
   trackInFlight,
   trackMcpRequest,
   type CallContext
 } from './call-context.js';
 import {
-  awaitFreshCallOrigin,
   evidenceWindow,
-  freshCallOrigin,
-  inferDegradedCaller,
   recordAgentMessage,
   recordToolCall
 } from '../session/recorder.js';
@@ -230,32 +225,6 @@ function noteOutcomeSafely(outcome: 'ok' | 'rejected' | 'error'): void {
   }
 }
 
-/**
- * The conversation this call was made from, if this call itself proved it.
- *
- * The only identity any agent has, and the reason no tool here carries a key. It reads one
- * thing: ChatGPT's own message model naming *this* tool request, in exactly one conversation,
- * at or after the moment this call started. Not `provenConversation()` — that reports whichever
- * chat has drawn connector rows lately and keeps answering for a minute after that chat went
- * quiet, which on a machine with one busy chat says the same thing whoever is calling. Not the
- * active chat, not the last chat, not a guess.
- *
- * Deliberately non-blocking, and deliberately after the handler has run. Non-blocking because
- * this is on the path of every ordinary read and exec, and waiting on the browser to answer a
- * question about attribution would make the browser a dependency of reading a file. After the
- * handler because the page reports on its own tick: a call that took a second has had a second
- * for its evidence to arrive, which is exactly the calls whose attribution matters most.
- *
- * A call that cannot be placed simply has no agent. It is not refused — most calls in most
- * installs are an ordinary chat with no swarm anywhere near it, and a phone talking to the same
- * connector is not a worker impersonation attempt. What it does not get is somebody else's
- * inbox, and control of the run: `agents` establishes identity for itself, and refuses without
- * it by name.
- */
-function callerConversation(tool: string, startedAt: number, requestId: string | null): string | null {
-  return freshCallOrigin(tool, startedAt, requestId);
-}
-
 /** The only SDK handler context field this layer consumes; request identity comes from ingress ALS. */
 type McpCallContext = Pick<ServerContext, 'sessionId'>;
 
@@ -280,14 +249,7 @@ function requestIdOf(mcpCtx: McpCallContext | undefined): string | null {
   return inboundRequestId();
 }
 
-/**
- * Whether the MCP transport ever gave us a session id, once a real call has arrived.
- *
- * Recorded rather than assumed, because it is the one thing that would let this app know
- * which conversation is calling without asking the browser at all. Until it does, identity
- * comes from page evidence. This is what the Activity log reports on the first tool call of
- * each run.
- */
+/** Diagnostic only: caller routing uses the app-issued key, regardless of transport. */
 let transportIdentity: { checked: boolean; present: boolean } = { checked: false, present: false };
 
 export function transportIdentityStatus(): { checked: boolean; present: boolean } {
@@ -299,41 +261,9 @@ function noteTransportIdentity(transportKey: string | null): void {
   transportIdentity = { checked: true, present: transportKey !== null };
   logInfo(
     transportKey
-      ? 'MCP transport supplied a session id — agent identity could be bound to the transport'
-      : 'MCP transport supplied no session id (stateless connector) — agent identity comes from page evidence'
+      ? 'MCP transport supplied a session id; caller identity uses conversation_key'
+      : 'MCP transport supplied no session id; caller identity uses conversation_key'
   );
-}
-
-/**
- * Whether each attribution-header state has been reported yet.
- *
- * The x-request-id join key is the only thing that can ever place a call in a
- * conversation, so a transport that stops carrying it silently degrades every call to
- * Unattributed — where the composer's charge-against-every-chat rule blocks pushes
- * fleet-wide. That condition was live for 20k+ calls in 2026-09 without one log line.
- * Report it loudly the first time it is observed. Once per state, not per call: the
- * per-call forensic line lives in the recorder, and repeating a process-level fact at
- * error level would only drown the bounded log.
- */
-let attributionNoted: { present: boolean; absent: boolean } = { present: false, absent: false };
-let missingInboundContextNoted = false;
-
-function noteTransportAttribution(requestId: string | null): void {
-  if (!hasInboundIdentity() && !missingInboundContextNoted) {
-    missingInboundContextNoted = true;
-    logError('MCP dispatch has no inbound identity context; inspect HTTP ingress and adapter context propagation.');
-  }
-  if (requestId === null && !attributionNoted.absent) {
-    attributionNoted.absent = true;
-    logError(
-      'MCP tool dispatch has no usable x-request-id; see ingress diagnostics for missing versus rejected headers ' +
-        'and the context-propagation alarm for missing dispatch context. Exact request-id attribution is unavailable; ' +
-        'calls require degraded attribution evidence or remain Unattributed.'
-    );
-  } else if (requestId !== null && !attributionNoted.present) {
-    attributionNoted.present = true;
-    logInfo('MCP transport supplied x-request-id — tool calls can be attributed to their conversations');
-  }
 }
 
 /**
@@ -394,12 +324,12 @@ async function dispatch(
   transportKey: string | null,
   requestId: string | null,
   surface: SurfaceId,
+  conversationId: string,
   run: () => Promise<ToolResult>
 ): Promise<ToolResult> {
   // The context is built here, one layer out from where the work happens, because the
   // compaction barrier asks about the whole request and not just the handler. A call is
-  // still unsettled while it waits for its request-id evidence, while its outcome is being
-  // recorded, and while its result is on the way back — and a handoff written in any of
+  // still unsettled while its outcome is being recorded and its result is on the way back — and a handoff written in any of
   // those gaps describes a machine that has not finished changing. The counter therefore
   // opens with the request and closes with it.
   const context: CallContext = {
@@ -410,7 +340,7 @@ async function dispatch(
     caller: {
       transportKey,
       requestId,
-      conversationId: null,
+      conversationId,
       sessionKey: inboundConnectorSession(),
       inferredConversationId: null,
       inferredMethod: null
@@ -419,7 +349,7 @@ async function dispatch(
     evidence: emptyEvidence()
   };
   return trackMcpRequest(() =>
-    trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, requestId, surface, run))
+    trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, surface, run))
   );
 }
 
@@ -428,61 +358,17 @@ async function dispatchTracked(
   name: string,
   args: unknown,
   transportKey: string | null,
-  requestId: string | null,
   surface: SurfaceId,
   run: () => Promise<ToolResult>
 ): Promise<ToolResult> {
   noteTransportIdentity(transportKey);
-  noteTransportAttribution(requestId);
   // Recorded here rather than in `guard` because only this layer knows which server
   // answered, and "was this connector ever actually used from ChatGPT" is a per-connector
   // question the setup screen has to answer honestly.
   surfaceToolCallAt.set(surface, Date.now());
   const isFinish = isFinishCall(name, args);
   const startedAt = context.startedAt;
-  // Cheap, non-blocking ingress identity. When the page has already reported this exact
-  // request id, identity-sensitive handlers (workspace/session/agents) see it before they
-  // touch state. If the page is one tick late this stays null; only handlers that actually
-  // require identity wait for their own exact mate. Ordinary absolute reads/execs never wait.
-  context.caller.conversationId = callerConversation(name, startedAt, requestId);
-  // The 2026-09 connector platform sends no request id at all (measured live), so exact
-  // ingress identity above can never fire for it. Resolve the degraded tiers at arrival:
-  // the only managed chat generating right now, or a connector session key bound at such a
-  // moment. This scopes the charge (countFor) and the eventual record to one conversation,
-  // but it is never identity authority — the agent broker, inboxes and workspace gates
-  // below consult only the exact caller.conversationId.
-  if (!context.caller.conversationId) {
-    const inferred = inferDegradedCaller(context.caller.sessionKey ?? null);
-    if (inferred) {
-      context.caller.inferredConversationId = inferred.conversationId;
-      context.caller.inferredMethod = inferred.method;
-    }
-  }
-  // Only calls that need an *existing* per-chat workspace before the handler runs are
-  // identity-sensitive here. An absolute read or an exec with an explicit absolute workdir is
-  // self-contained and must stay fast; if its exact page mate is late, workspace.ts simply
-  // declines to learn a guessed workspace. Relative paths, omitted exec workdir and a patch with
-  // no explicit base really do consume caller state, so they wait for their exact request-id
-  // mate while a swarm is active. Use the full exact-id window, not the shorter prime window:
-  // the live worker failure that motivated IDENTITY_EVIDENCE_MS arrived ~8 seconds late.
-  const identitySensitive = needsWorkspaceIdentity(name, args);
-  if (!context.caller.conversationId && identitySensitive && swarmRunning() && requestId) {
-    context.caller.conversationId = await awaitFreshCallOrigin(name, startedAt, IDENTITY_EVIDENCE_MS, { requestId });
-  }
-  // A run that ended leaves an explicit short-lived lease tombstone for each open worker
-  // chat. Resolve exact request identity before ordinary tools too while such leases exist;
-  // otherwise an explicit-workdir exec could keep mutating after its worker was retired.
-  if (!context.caller.conversationId && hasRetiredWorkerLeases() && requestId) {
-    context.caller.conversationId = await awaitFreshCallOrigin(name, startedAt, IDENTITY_EVIDENCE_MS, { requestId });
-  }
-  // Dormant histories are long-lived identity fences, not active slot claims. An old worker tab
-  // may still issue a stale server-side call after its run parked, and without exact request-id
-  // attribution an absolute read/exec would otherwise look like an unrelated ordinary chat and
-  // run successfully. Resolve the exact mate for every call while such worker conversations
-  // exist, just as we do for short-lived retired worker leases.
-  if (!context.caller.conversationId && hasDormantWorkerLeases() && requestId) {
-    context.caller.conversationId = await awaitFreshCallOrigin(name, startedAt, IDENTITY_EVIDENCE_MS, { requestId });
-  }
+  // The required app-issued conversation key was resolved before dispatch.
   // Two things about liveness, both before the agent is resolved so that the answer this
   // call gets is the state this call itself established.
   //
@@ -537,12 +423,6 @@ async function dispatchTracked(
   // inbox that rode on the missing result. Every other tool call from the same chat is refused
   // by endedWorkerNotice as before.
   const endedWorker = isFinish ? null : endedWorkerNotice(context.caller.conversationId);
-  const retiredLeaseAmbiguous = hasRetiredWorkerLeases() && !context.caller.conversationId;
-  const dormantLeaseAmbiguous = hasDormantWorkerLeases() && !context.caller.conversationId;
-  // In a swarm, a relative/defaulted filesystem operation is not safe to execute after the
-  // exact caller lookup timed out: its workspace is part of the requested operation. Falling
-  // back to the first approved root turns an attribution outage into wrong-project mutation.
-  // Refuse and let the model retry once page evidence is healthy instead.
   const result = await runInCallContext(context, () =>
       dormantWorker
         ? Promise.resolve(fail(dormantWorker))
@@ -554,33 +434,8 @@ async function dispatchTracked(
           )
         : endedWorker
         ? Promise.resolve(fail(endedWorker))
-        : retiredLeaseAmbiguous
-        ? Promise.resolve(
-            fail(
-              'CALLER_IDENTITY_REQUIRED: a recently retired worker tab may still be open, and the connector could not prove this call belongs to a different chat. No local tool was run. Reload the extension evidence path or wait for the retired lease to expire.'
-            )
-          )
-        : dormantLeaseAmbiguous
-        ? Promise.resolve(
-            fail(
-              'CALLER_IDENTITY_REQUIRED: a dormant worker chat still belongs to its prime history, and the connector could not prove this call belongs to a different conversation. No local tool was run. Restore the browser-extension identity path and retry.'
-            )
-          )
-        : swarmRunning() && identitySensitive && !context.caller.conversationId
-        ? Promise.resolve(
-            fail(
-              'CALLER_IDENTITY_REQUIRED: this operation needs this chat’s exact workspace, but the connector could not prove which ChatGPT conversation made the call. Retry after the extension reconnects; no file or command was changed.'
-            )
-          )
         : run()
   );
-  // Identity, once, from this call's own evidence — see callerConversation. `agents` has
-  // already established its own inside the call and adopted it, and re-reading here would
-  // only be able to disagree with the stronger answer it waited for.
-  if (!context.caller.conversationId) {
-    const resolved = callerConversation(name, startedAt, requestId);
-    if (resolved) context.caller.conversationId = resolved;
-  }
   // Never erase an identity a handler proved more strongly (agents::callerNow). The old
   // post-handler pass could fail to rediscover evidence that callerNow had already reserved
   // and then set agent back to null, which is the live WORKER_IDENTITY_LOST / missing-inbox
@@ -630,55 +485,21 @@ async function dispatchTracked(
     bind: context.bindOnAttribution ?? null,
     requestId: context.caller.requestId,
     conversationId: context.caller.conversationId,
+    attributionMethod: 'conversation_key',
     inferredConversationId: context.caller.inferredConversationId ?? null,
     inferredMethod: context.caller.inferredMethod ?? null
   });
-  // Exact request-id identity needs no browser wait, so make its durable session append part
-  // of completing the MCP call. The recorder catches storage failures and returns null, so a
-  // broken history never breaks the tool itself. Only the degraded/unidentified path remains
-  // fire-and-forget because it may still spend a grace window waiting for page evidence.
-  if (context.caller.conversationId) {
-    await recording;
-    if (name === 'observe' || name === 'computer') {
-      logInfo(`desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`);
-    }
-  } else {
-    if (name === 'observe' || name === 'computer') {
-      void recording.then(() =>
-        logInfo(`desktop timing recorder_wait_ms=0 recorder_async_ms=${Date.now() - recorderStartedAt} attributed=false`)
-      );
-    }
-    holdWhileSettling(context, recording);
+  // The validated key supplies identity before execution. Recording belongs to this
+  // request's completion boundary, with no browser grace window or fleet-wide charge.
+  await recording;
+  if (name === 'observe' || name === 'computer') {
+    logInfo(`desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`);
   }
   // Retire a completed run only after this call has had every chance to acknowledge and
   // receive its inbox. Doing it inside acknowledgeOffers would let `agents status` destroy
   // the run halfway through identifying itself; here the handler and result are already done.
   releaseQuiescentRun();
   return delivered;
-}
-
-/** Whether this handler must know which chat it is before resolving its paths. */
-function needsWorkspaceIdentity(name: string, args: unknown): boolean {
-  const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
-  const relative = (value: unknown): boolean =>
-    typeof value === 'string' && !isAbsoluteVirtualPath(value) && !isNativeWindowsPath(value);
-  if (name === 'read') {
-    const paths = Array.isArray(input['paths']) ? input['paths'] : [];
-    return paths.some(relative);
-  }
-  if (name === 'find') return relative(input['path']);
-  if (name === 'apply_patch') {
-    // Codex's apply_patch surface has no cwd argument. Relative patch paths therefore always
-    // consume the turn/chat cwd analogue maintained by this connector.
-    return true;
-  }
-  if (name === 'exec_command') {
-    // Every exec in a swarm also needs caller identity so a long-running session can be
-    // owned by the right chat even when the cwd itself was explicit.
-    const workdir = input['workdir'];
-    return swarmRunning() || workdir === undefined || relative(workdir);
-  }
-  return false;
 }
 
 /**
@@ -825,7 +646,7 @@ export interface SurfaceRegistrar {
   agentToolsExposed: boolean;
   /** Whether `find` is part of this endpoint's surface. See ToolContext.exposedFind. */
   findExposed: boolean;
-  register<Schema extends z.ZodType>(
+  register<Schema extends z.ZodObject>(
     name: string,
     config: {
       title?: string;
@@ -870,13 +691,29 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
     registered: () => [...names],
     register(name, config, handler) {
       names.push(name);
-      // No identity field is ever added here. Every tool's schema is exactly what its
-      // surface declared: who is calling is a fact about the conversation, established from
-      // page evidence in `dispatch`, and never something the model is asked to carry.
-      server.registerTool(name, config, ((args: never, mcpCtx?: McpCallContext) =>
-        dispatch(name, args, mcpCtx?.sessionId ?? null, requestIdOf(mcpCtx), surface, () =>
-          handler(args)
-        )) as never);
+      const inputSchema = config.inputSchema.safeExtend({
+        conversation_key: z.string().min(1).max(100).describe(
+          'This chat’s key; "new" to obtain one.'
+        )
+      });
+      server.registerTool(name, { ...config, inputSchema }, (async (input: Record<string, unknown>, mcpCtx?: McpCallContext) => {
+        const { conversation_key: key, ...args } = input;
+        if (key === 'new') {
+          const issued = await startConversationKey();
+          logInfo(`MCP ${surface} ${name}: conversation key issued; operation not executed`);
+          return fail(`CONVERSATION_KEY_ISSUED: ${issued}\nNo operation ran. Retain this key for this conversation and retry with conversation_key set to it.`);
+        }
+        let conversationId: string;
+        try { conversationId = conversationForKey(key as string); }
+        catch (error) {
+          const message = (error as Error).message;
+          logInfo(`MCP ${surface} ${name}: ${message}`);
+          return fail(message);
+        }
+        return dispatch(name, args, mcpCtx?.sessionId ?? null, requestIdOf(mcpCtx), surface, conversationId, () =>
+          handler(args as never)
+        );
+      }) as never);
     },
     guarded(cap, name, fn) {
       return guard(name, async () => {

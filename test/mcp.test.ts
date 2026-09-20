@@ -21,6 +21,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectiveCapabilities, defaultConfig } from '../src/main/config.js';
+import { conversationKeyForCommand } from '../src/main/session/conversation-key.js';
 import { getLog } from '../src/main/logger.js';
 import { lastRequestAt, selfTestHeaders, startMcpServer, tunnelProbeHeaders, type McpEndpoint } from '../src/main/mcp/server.js';
 import { lastToolCallAt, type ToolContext } from '../src/main/mcp/tools.js';
@@ -36,13 +37,12 @@ import {
 import { resetWorkspaces, setWorkspaceFor } from '../src/main/workspace.js';
 import { DEFAULT_CAPABILITIES, type Capabilities, type Root } from '../src/shared/types.js';
 import { emptyEvidence, noteExec, noteOutcome, runInCallContext, type CallContext } from '../src/main/mcp/call-context.js';
-import { observeRequestCorrelation } from '../src/main/session/correlation.js';
+import { observeRequestCorrelation, requestCorrelation } from '../src/main/session/correlation.js';
 import { resetSessionBindingsForTests } from '../src/main/session/connector-session.js';
 import {
   flushRecorder,
   recordChatObservations,
   resetRecorderForTests,
-  sessionForConversation,
   unattributedSession
 } from '../src/main/session/recorder.js';
 import { readEvents } from '../src/main/session/store.js';
@@ -148,10 +148,22 @@ let nextId = 1;
  * Every request names its surface, because "which server answered" is the property most
  * of this file is about. There is no default-surface helper on purpose.
  */
+/** Provision fixture identities explicitly; raw missing/new/unknown cases live in conversation-key.test.ts. */
+function keyedParams(method: string, params: unknown, headers: Record<string, string> = {}): unknown {
+  if (method !== 'tools/call' || !params || typeof params !== 'object') return params;
+  const input = params as { name?: string; arguments?: Record<string, unknown> };
+  const requestId = headers['x-request-id']?.split('/')[0];
+  const conversation = requestCorrelation(requestId)?.conversationId ?? 'test-default-conversation';
+  return { ...input, arguments: {
+    conversation_key: conversationKeyForCommand(`fixture-${conversation}`, conversation),
+    ...input.arguments
+  } };
+}
+
 async function call(surface: SurfaceId, method: string, params: unknown = {}): Promise<any> {
   const res = await rawPost(
     endpoint.urls[surface],
-    JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params })
+    JSON.stringify({ jsonrpc: '2.0', id: nextId++, method, params: keyedParams(method, params) })
   );
   return { status: res.status, body: decode(res) };
 }
@@ -177,7 +189,7 @@ async function modern(
     id: nextId++,
     method,
     params: {
-      ...params,
+      ...(keyedParams(method, params, extraHeaders) as Record<string, unknown>),
       _meta: {
         [META_VERSION]: PROTOCOL_2026,
         [META_CAPABILITIES]: {}
@@ -301,14 +313,14 @@ describe('transport attribution alarm', () => {
    * kernel must raise one loud error naming the transport condition the first time a
    * headerless tool call arrives, without spamming one line per call at error level.
    */
-  it('raises one loud error the first time a tool call arrives with no x-request-id', async () => {
+  it('does not alarm about a missing header when the call supplies its conversation key', async () => {
     const alarms = (): number =>
       getLog().filter((entry) => entry.level === 'error' && entry.message.includes('x-request-id')).length;
     expect(alarms()).toBe(0);
     await modern('tools/call', { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } });
-    expect(alarms()).toBe(1);
+    expect(alarms()).toBe(0);
     await modern('tools/call', { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } });
-    expect(alarms()).toBe(1);
+    expect(alarms()).toBe(0);
   });
   it('distinguishes absent, rejected and accepted headers at HTTP ingress without exposing values', async () => {
     const start = getLog().length;
@@ -327,79 +339,26 @@ describe('transport attribution alarm', () => {
   });
 });
 
-/**
- * The adaptation to what the 2026-09 connector platform actually sends. Captured live on
- * 2026-09-09 from real ChatGPT traffic on the rack: tools/call arrives with NO x-request-id
- * anywhere (headers or body), and the page-side metadata.request_id UUIDs appear nowhere in
- * the request — the exact join is gone. The one per-conversation identity on the wire is the
- * opaque `x-openai-session` header, distinct across three concurrently generating workers
- * and stable across each worker's own calls. These tests drive the full HTTP → ingress →
- * dispatcher → recorder path exactly as that platform does.
- */
-describe('degraded attribution tiers for the headerless connector platform', () => {
-  const KEY_A = 'v1/e2eSessionKeyAlpha00000000000000000000000000000000';
-  const CONV_A = 'conv-e2e-temporal-owner';
-  const CONV_B = 'conv-e2e-second-generator';
-
-  afterAll(async () => {
-    await flushRecorder();
-    resetRecorderForTests();
-    resetSessionBindingsForTests();
-  });
-
-  it('attributes a headerless call to the only generating chat as temporal_unique', async () => {
-    const observed = await recordChatObservations(CONV_A, [
-      { kind: 'turn_start', time: Date.now(), turnId: 'g-e2e-temporal-1' }
-    ]);
-    const reply = await modern(
-      'tools/call',
-      { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } },
-      { 'X-OpenAI-Session': KEY_A }
-    );
+describe('conversation keys supersede transport attribution', () => {
+  it('routes by the supplied key despite competing browser activity and connector-session headers', async () => {
+    const owner = 'conv-key-owner';
+    const other = 'conv-other-generator';
+    const observed = await recordChatObservations(owner, [{ kind: 'turn_start', time: Date.now(), turnId: 'key-owner-turn' }]);
+    await recordChatObservations(other, [{ kind: 'turn_start', time: Date.now(), turnId: 'other-turn' }]);
+    const key = conversationKeyForCommand('fixture-key-owner', owner);
+    const reply = await modern('tools/call', {
+      name: 'read', arguments: { paths: ['/workspace/notes.txt'], conversation_key: key }
+    }, { 'X-OpenAI-Session': 'v1/unrelated-connector-session' });
     expect(failed(reply)).toBe(false);
     await flushRecorder();
     const events = await readEvents(observed.sessionId!, { kinds: ['tool_call'] });
     const recorded = events.filter((event) => event.kind === 'tool_call');
-    expect(recorded.length).toBe(1);
-    expect(recorded[0]!.call.conversationId).toBe(CONV_A);
-    expect(recorded[0]!.call.attributionMethod).toBe('temporal_unique');
-  });
-
-  it('attributes by the learned session key while several chats generate', async () => {
-    await recordChatObservations(CONV_B, [
-      { kind: 'turn_start', time: Date.now(), turnId: 'g-e2e-second-1' }
-    ]);
-    // Two chats generate now, so the temporal tier alone cannot place this call; only the
-    // binding learned for KEY_A at the temporally unique moment above can.
-    const reply = await modern(
-      'tools/call',
-      { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } },
-      { 'X-OpenAI-Session': KEY_A }
-    );
-    expect(failed(reply)).toBe(false);
-    await flushRecorder();
-    const sessionId = (await sessionForConversation(CONV_A))!;
-    const events = await readEvents(sessionId, { kinds: ['tool_call'] });
-    const recorded = events.filter((event) => event.kind === 'tool_call');
-    expect(recorded.length).toBe(2);
-    expect(recorded.at(-1)!.call.conversationId).toBe(CONV_A);
-    expect(recorded.at(-1)!.call.attributionMethod).toBe('connector_session');
-  });
-
-  it('leaves an unknown key among several generating chats unattributed', async () => {
-    const reply = await modern(
-      'tools/call',
-      { name: 'read', arguments: { paths: ['/workspace/notes.txt'] } },
-      { 'X-OpenAI-Session': 'v1/e2eNeverBoundKey000000000000000000000000000000000' }
-    );
-    expect(failed(reply)).toBe(false);
-    await flushRecorder();
-    const bucket = unattributedSession();
-    expect(bucket).not.toBeNull();
-    const events = await readEvents(bucket!, { kinds: ['tool_call'] });
-    const recorded = events.filter((event) => event.kind === 'tool_call');
-    expect(recorded.at(-1)!.call.attributionMethod).toBe('unattributed');
-    expect(recorded.at(-1)!.call.conversationId).toBeNull();
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.call.conversationId).toBe(owner);
+    expect(recorded[0]!.call.attributionMethod).toBe('conversation_key');
+    expect(unattributedSession()).toBeNull();
+    resetRecorderForTests();
+    resetSessionBindingsForTests();
   });
 });
 
@@ -711,30 +670,14 @@ describe('surface boundaries', () => {
    * also the only thing ChatGPT caches per connector session, so a field absent here is a
    * field that cannot come back without a reconnect.
    */
-  const keyFields = async (surface: 'core' | 'desktop'): Promise<string[]> => {
-    return toolList(await call(surface, 'tools/list'))
-      .filter((tool) => {
-        const properties = Object.keys(tool.inputSchema?.properties ?? {});
-        return properties.some((name) => name === 'agent_key' || name.endsWith('_key')) && tool.name !== 'agents';
-      })
-      .map((tool) => tool.name as string);
-  };
-
-  it('offers no key field on any tool, with multi-agent fully on', async () => {
+  it('requires conversation_key on every tool, including agents and Desktop', async () => {
     everything();
-    expect(await keyFields('core')).toEqual([]);
-    expect(await keyFields('desktop')).toEqual([]);
-
-    // Not even on `agents`, which used to keep one for recovery. An agent is the ChatGPT
-    // conversation it runs in, and there is now no argument anywhere that says otherwise.
-    const agentsTool = toolList(await core('tools/list')).find((tool) => tool.name === 'agents')!;
-    for (const field of Object.keys(agentsTool.inputSchema.properties)) {
-      expect(field, field).not.toMatch(/key|secret|token/i);
+    for (const surface of ['core', 'desktop'] as const) {
+      for (const tool of toolList(await call(surface, 'tools/list'))) {
+        expect(tool.inputSchema.required, tool.name).toContain('conversation_key');
+      }
     }
-
-    // And an ordinary read from a worker's chat carries nothing at all.
-    const call1 = await core('tools/call', { name: 'read', arguments: { paths: ['/workspace/src/app.ts'] } });
-    expect(failed(call1)).toBe(false);
+    expect(failed(await core('tools/call', { name: 'read', arguments: { paths: ['/workspace/src/app.ts'] } }))).toBe(false);
   });
 
   it('removes the agents tool entirely once multi-agent is switched off', async () => {
@@ -1028,8 +971,8 @@ describe('2025-era clients', () => {
   it('exposes Codex view_image separately and returns native MCP image content', async () => {
     const tool = toolList(await core('tools/list')).find((entry) => entry.name === 'view_image');
     const schema = tool?.inputSchema;
-    expect(Object.keys(schema?.properties ?? {})).toEqual(['path']);
-    expect(schema?.required).toEqual(['path']);
+    expect(Object.keys(schema?.properties ?? {})).toEqual(['path', 'conversation_key']);
+    expect(schema?.required).toEqual(['path', 'conversation_key']);
     expect(schema?.additionalProperties).toBe(false);
     expect(tool?.outputSchema).toBeUndefined();
 
@@ -1414,7 +1357,7 @@ describe('capability gating', () => {
     const advertised = toolList(await core('tools/list')).find((tool) => tool.name === 'session');
     expect(advertised?.inputSchema).toMatchObject({
       properties: { action: { enum: ['search', 'read'] } },
-      required: ['action']
+      required: ['action', 'conversation_key']
     });
     expect(advertised?.inputSchema?.properties).not.toHaveProperty('limit');
     expect(advertised?.inputSchema?.properties).not.toHaveProperty('call_id');
@@ -1812,8 +1755,8 @@ describe('sandbox enforcement through the tool layer', () => {
     ctx.readOnly = false;
     ctx.caps = withCaps({ create: true });
     const tool = toolList(await core('tools/list')).find((entry) => entry.name === 'apply_patch')!;
-    expect(Object.keys(tool.inputSchema.properties)).toEqual(['patch']);
-    expect(tool.inputSchema.required).toEqual(['patch']);
+    expect(Object.keys(tool.inputSchema.properties)).toEqual(['patch', 'conversation_key']);
+    expect(tool.inputSchema.required).toEqual(['patch', 'conversation_key']);
     expect(tool.inputSchema.additionalProperties).toBe(false);
   });
 
@@ -2892,9 +2835,10 @@ describe('exec_command and write_stdin', () => {
       'yield_time_ms',
       'max_output_tokens',
       'shell',
-      'login'
+      'login',
+      'conversation_key'
     ]);
-    expect(exec.inputSchema.required ?? []).toEqual([]);
+    expect(exec.inputSchema.required).toEqual(['conversation_key']);
     expect(exec.inputSchema.additionalProperties).toBe(false);
     expect(exec.inputSchema.properties.workdir.type).toBe('string');
     expect(exec.inputSchema.properties.cmds.type).toBe('array');
@@ -2920,9 +2864,10 @@ describe('exec_command and write_stdin', () => {
       'chars',
       'yield_time_ms',
       'max_output_tokens',
-      'declare_persistent'
+      'declare_persistent',
+      'conversation_key'
     ]);
-    expect(stdin.inputSchema.required).toEqual(['session_id']);
+    expect(stdin.inputSchema.required).toEqual(['session_id', 'conversation_key']);
     expect(stdin.inputSchema.additionalProperties).toBe(false);
     expect(stdin.inputSchema.properties.session_id.type).toBe('number');
     expect(stdin.inputSchema.properties.chars.type).toBe('string');
@@ -3130,7 +3075,7 @@ describe('exec_command and write_stdin', () => {
     // outlive the manager entry between calls, which is exactly when a silent declaration
     // would let the model believe a dead server was protected. (A wholly unknown id is
     // refused even earlier, by the ownership guard.)
-    noteExecOwner(999_999, null);
+    noteExecOwner(999_999, 'test-default-conversation');
     try {
       const reply = await core('tools/call', {
         name: 'write_stdin',

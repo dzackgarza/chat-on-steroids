@@ -1408,6 +1408,7 @@ export interface ToolCallInput {
   requestId?: string | null;
   /** Exact conversation already proven for this request by the dispatcher, when available. */
   conversationId?: string | null;
+  attributionMethod?: 'conversation_key';
   /**
    * Conversation the dispatcher inferred from degraded evidence at arrival, when no exact
    * proof exists (see inferDegradedCaller). Used only after the exact tiers have failed,
@@ -1450,8 +1451,8 @@ export function recordToolCall(input: ToolCallInput): Promise<ToolCallRecord | n
     const correlation = input.requestId ? requestCorrelation(input.requestId) : null;
     const target: Target = {
       conversationId: input.conversationId,
-      sessionId: correlation?.conversationId === input.conversationId ? correlation.sessionId : null,
-      attribution: 'request_id',
+      sessionId: input.attributionMethod === 'conversation_key' ? null : correlation?.conversationId === input.conversationId ? correlation.sessionId : null,
+      attribution: input.attributionMethod ?? 'request_id',
       turnId: live?.turnId ?? null
     };
     if (input.bind) bindAgentConversation(input.bind, input.conversationId);
@@ -1614,6 +1615,7 @@ async function fileToolCall(input: ToolCallInput, target: Target): Promise<ToolC
       requestId: input.requestId ?? null,
       conversationId: target.conversationId,
       attributionMethod:
+        target.attribution === 'conversation_key' ||
         target.attribution === 'push_correlated' ||
         target.attribution === 'temporal_unique' ||
         target.attribution === 'connector_session'

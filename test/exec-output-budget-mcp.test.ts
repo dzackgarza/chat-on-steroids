@@ -18,6 +18,7 @@ import { afterEach, expect, it } from 'vitest';
 import { defaultConfig, initConfigPath, saveConfig } from '../src/main/config.js';
 import { initDurableStore, resetDurableForTests } from '../src/main/durable.js';
 import { startMcpServer, type McpEndpoint } from '../src/main/mcp/server.js';
+import { startConversationKey } from '../src/main/session/conversation-key.js';
 import { validateNewRoot } from '../src/main/sandbox.js';
 import { initSessionStore, resetSessionStoreForTests, unsetSessionRootForTests } from '../src/main/session/store.js';
 
@@ -96,6 +97,7 @@ async function execOutput(url: string, maxOutputTokens: number | undefined): Pro
       params: {
         name: 'exec_command',
         arguments: {
+          conversation_key: await startConversationKey(),
           cmd: PROBE_CMD,
           workdir: '/probe',
           ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens })
