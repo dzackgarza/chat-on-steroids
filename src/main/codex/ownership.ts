@@ -81,8 +81,3 @@ export function moveExecConversationOwners(fromConversationId: string, toConvers
   }
   return moved;
 }
-
-/** Test seam: the registry is process-global state with no natural lifetime boundary. */
-export function resetExecOwnershipForTests(): void {
-  owners.clear();
-}

@@ -87,7 +87,7 @@ jobs:
         if: github.ref_type == 'tag'
         run: node -e "const v=require('./package.json').version;if(process.env.GITHUB_REF_NAME!=='v'+v)throw new Error('Tag '+process.env.GITHUB_REF_NAME+' does not match package version '+v)"
 
-      - name: Verify
+      - name: Local checks
         run: npm run verify:ci
 
       - name: Prove native runner target

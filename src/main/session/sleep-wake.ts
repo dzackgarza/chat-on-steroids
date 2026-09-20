@@ -692,12 +692,3 @@ export async function restoreSleepWake(): Promise<void> {
   }
   persist();
 }
-
-export function resetSleepWakeForTests(): void {
-  for (const record of records.values()) clearTimer(record);
-  records.clear();
-  pendingTypedSends.clear();
-  pushWindow = null;
-  events.length = 0;
-  driver = null;
-}

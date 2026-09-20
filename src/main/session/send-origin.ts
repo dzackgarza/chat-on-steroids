@@ -179,11 +179,3 @@ export function recordOutOfBandSend(conversationId: string, at: number, sleepCan
 export function sendOriginStatus(): { events: OutOfBandSendEvent[] } {
   return { events: [...events] };
 }
-
-export function resetSendOriginForTests(startedAtOverride: number = Date.now()): void {
-  startedAt = startedAtOverride;
-  appSends.clear();
-  events.length = 0;
-  // The in-flight provider is deliberately kept: the bridge wires it once at startup and
-  // suites reset per-test state without restarting the bridge.
-}

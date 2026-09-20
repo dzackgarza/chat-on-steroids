@@ -157,16 +157,10 @@
   const RENDER_STREAM_KEY = 'renderStreamEnabled';
   /** Timestamps are useful for debugging, but too noisy for the normal transcript. */
   const SHOW_TIMES_KEY = 'showStreamTimes';
-  /**
-   * Production now starts with transcript overwrite enabled. Tests deliberately start off
-   * and opt in case-by-case so renderer regressions do not contaminate unrelated capture
-   * tests. The storage preference is loaded before the first production paint, avoiding a
-   * one-frame flash when somebody has explicitly switched Overwrite off.
-   */
-  const TEST_MODE = typeof globalThis.CLF_TEST_HOOK === 'function';
-  let RENDER_STREAM = TEST_MODE ? false : true;
+  /** The storage preference is loaded before the first paint, avoiding a one-frame flash. */
+  let RENDER_STREAM = true;
   let SHOW_TIMES = false;
-  let renderPreferenceReady = TEST_MODE;
+  let renderPreferenceReady = false;
   const renderStreamAllowed = () => RENDER_STREAM && renderPreferenceReady;
   let lastPresentationScrollInputAt = -Infinity;
 
@@ -194,7 +188,7 @@
   }
 
   async function loadRenderPreference() {
-    if (TEST_MODE || !globalThis.chrome || !chrome.storage || !chrome.storage.local) {
+    if (!globalThis.chrome || !chrome.storage || !chrome.storage.local) {
       renderPreferenceReady = true;
       return;
     }
@@ -456,19 +450,10 @@
    * fabricates a boundary, it only makes sure the already-earned one is noticed on time.
    */
   let settleCheckTimer = null;
-  /** When the armed settle check is due, for the test hook; 0 when none is armed. */
-  let settleCheckDueAt = 0;
-
   function armSettleCheck(delayMs) {
     if (settleCheckTimer !== null || delayMs <= 0) return;
-    settleCheckDueAt = Date.now() + delayMs;
-    // The harness stubs the periodic loops out and drives observe() itself; an instant
-    // fake timer here would slam every settle window shut the moment it opened. Same
-    // seam, and same reason, as scheduleActivityPull's re-arm.
-    if (TEST_MODE) return;
     settleCheckTimer = setTimeout(() => {
       settleCheckTimer = null;
-      settleCheckDueAt = 0;
       if (!alive || !sameChat()) return;
       observe();
     }, delayMs);
@@ -479,7 +464,6 @@
       clearTimeout(settleCheckTimer);
       settleCheckTimer = null;
     }
-    settleCheckDueAt = 0;
   }
   /**
    * Assistant sections that already had a completed-message action before this generation.
@@ -8776,26 +8760,17 @@
       // shows, and the finished message only arrives here — so it polls at the live cadence
       // even in a hidden tab, which is exactly the tab this feature runs in.
       const drafting = Boolean(goalDraft) || goalPhase === 'requesting' || goalPhase === 'drafting';
-      // Re-arming is a periodic loop, and periodic loops belong to the live page, exactly as
-      // for every(): the harness stubs setInterval out so every() never ticks, and drives each
-      // behaviour through the test hook instead. This pull re-arms with setTimeout rather than
-      // setInterval, so it walked straight past that seam — and the harness's setTimeout runs
-      // its callback in a microtask, which turned one background poll into an unbroken
-      // microtask chain that starved the event loop. The next test then waited forever for a
-      // window 'load' event that no macrotask could ever deliver.
-      if (!TEST_MODE) {
-        scheduleActivityPull(
-          drafting
-            ? LIVE_ACTIVITY_MS
-            : hidden
-              ? HIDDEN_ACTIVITY_MS
-              : generating
-                ? LIVE_ACTIVITY_MS
-                : active
-                  ? ACTIVITY_MS
-                  : IDLE_ACTIVITY_MS
-        );
-      }
+      scheduleActivityPull(
+        drafting
+          ? LIVE_ACTIVITY_MS
+          : hidden
+            ? HIDDEN_ACTIVITY_MS
+            : generating
+              ? LIVE_ACTIVITY_MS
+              : active
+                ? ACTIVITY_MS
+                : IDLE_ACTIVITY_MS
+      );
     }, Math.max(0, delay));
   }
 
@@ -9041,67 +9016,4 @@
     }
   };
 
-  /**
-   * Handed to the extension regression tests, which run this file with a real DOM but no
-   * Chrome. Nothing on the live page defines this hook, so nothing on the live page can
-   * reach in through it.
-   */
-  if (typeof globalThis.CLF_TEST_HOOK === 'function') {
-    globalThis.CLF_TEST_HOOK({
-      planLabels,
-      controlState,
-      stageView,
-      goalStageView,
-      settingsView,
-      toggleMenu,
-      closeMenu,
-      renderControl,
-      noteGoalTurn,
-      maybeSendGoalReply,
-      GOAL_STABLE_MS,
-      emit,
-      flush,
-      observe,
-      syncTheme,
-      meterView,
-      paint,
-      renderStreams,
-      foldBootstrap,
-      injectControl,
-      injectStage,
-      pullActivity,
-      runCommand,
-      startCompact,
-      refreshFiber,
-      fiberFor,
-      readDescriptor,
-      /** Reading order, so a test can pin it against `src/shared/chronology.ts` directly. */
-      chronological,
-      streamTurnGroups,
-      visibleStream,
-      /** So a test settles a turn by the real window rather than a copy of the number. */
-      TURN_SETTLE_MS,
-      /**
-       * When the armed background-safe settle re-check is due, or 0. TEST_MODE never
-       * schedules the real timer (the harness's instant timers would slam every settle
-       * window shut), so this readback is how a test proves the follow-up look is booked
-       * for a hidden tab where neither mutations nor the throttled interval will provide
-       * one.
-       */
-      settleCheckDueAt: () => settleCheckDueAt,
-      STALL_MS,
-      ERROR_RECOVERY_RETRY_MS,
-      STOP_FOR_PUSH_RETRY_MS,
-      PRESENTATION_SCROLL_IDLE_MS,
-      /** Test-only: production defaults ON; tests opt into renderer cases explicitly. */
-      setRenderStream: (on) => {
-        RENDER_STREAM = on === true;
-        renderPreferenceReady = true;
-      },
-      renderStreamEnabled: () => RENDER_STREAM,
-      setShowTimes: (on) => {
-        SHOW_TIMES = on === true;
-      }
-    });
-  }
 })();

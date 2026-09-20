@@ -226,6 +226,24 @@ export async function resumeWorkstream(id: string): Promise<boolean> {
   });
 }
 
+/** Script-owned hard recovery: fence the current owner and enter the same archive/replacement
+ * path used after automatic revival exhaustion. This exists so an external steward can replace
+ * a demonstrably dead workstream without reproducing the bridge's private state machine. */
+export async function replaceWorkstream(id: string): Promise<boolean> {
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (!row || !['active', 'recovering'].includes(row.phase) || !row.conversationId) return false;
+    row.phase = 'archiving';
+    row.attempts = 3;
+    row.nextCheck = 0;
+    row.commandId = null;
+    row.actionId = `archive-${row.lock}`;
+    row.error = null;
+    await save();
+    return true;
+  });
+}
+
 export const STEWARD_CONTINUATION = 'Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. Preserve other workers’ changes, finish the substantive work, and keep the workstream moving.';
 export function workstreamPrompt(row: Workstream): string {
   return `Continue workstream ${row.id}. Claim it with workstream_lock="claim:${row.id}" before executing tools.\n${row.workspace ? `Project: ${row.workspace}\n` : ''}${row.context}\n${STEWARD_CONTINUATION}`;

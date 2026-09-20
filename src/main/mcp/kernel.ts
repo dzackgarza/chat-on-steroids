@@ -68,11 +68,7 @@ import {
   trackMcpRequest,
   type CallContext
 } from './call-context.js';
-import {
-  evidenceWindow,
-  recordAgentMessage,
-  recordToolCall
-} from '../session/recorder.js';
+import { recordAgentMessage, recordToolCall } from '../session/recorder.js';
 import { readOverflowText } from '../session/store.js';
 import type { StoredText } from '../../shared/session.js';
 
@@ -216,8 +212,8 @@ export async function guard(name: string, fn: () => Promise<ToolResult>): Promis
   }
 }
 
-// noteOutcome is only meaningful inside a call context; guard is also used by tests and
-// by internal paths that have none, and a missing context must not turn into an error.
+// noteOutcome is only meaningful inside a call context. Internal paths can have none, and a
+// missing context must not turn into an error.
 function noteOutcomeSafely(outcome: 'ok' | 'rejected' | 'error'): void {
   try {
     noteOutcome(outcome);
@@ -775,7 +771,7 @@ export const MAX_HANDOFF_CHARS = 400_000;
  * and a join happens once, but long enough that a page reporting on its own tick lands
  * inside it. Nothing falls back to "the only chat that has been active lately".
  */
-export const PRIME_EVIDENCE_MS = evidenceWindow(2_500);
+export const PRIME_EVIDENCE_MS = 2_500;
 
 /**
  * The same window for a call ChatGPT gave a request id, which is waiting for one exact
@@ -787,7 +783,7 @@ export const PRIME_EVIDENCE_MS = evidenceWindow(2_500);
  * at 16:34:04. The wait is event-driven and ends the instant the mate lands, so the extra
  * seconds are only ever spent by a call that was going to be refused anyway.
  */
-export const IDENTITY_EVIDENCE_MS = evidenceWindow(15_000);
+export const IDENTITY_EVIDENCE_MS = 15_000;
 
 /**
  * The same window again for the two `agents` actions whose refusal cannot be retried cheaply.
@@ -801,7 +797,7 @@ export const IDENTITY_EVIDENCE_MS = evidenceWindow(15_000);
  * seconds after the window that refused them. Kept well inside ChatGPT's own connector
  * timeout, so a slow proof still comes back as a spawned run rather than as a dead call.
  */
-export const SPAWN_EVIDENCE_MS = evidenceWindow(30_000);
+export const SPAWN_EVIDENCE_MS = 30_000;
 
 /**
  * Recovers the complete text behind a stored field.

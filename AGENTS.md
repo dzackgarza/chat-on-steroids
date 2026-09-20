@@ -148,7 +148,7 @@ Release numbers are authoritative in `package.json`, `src/main/version.ts` and
 `extension/manifest.json`; the bridge protocol is `version.ts::BRIDGE_PROTOCOL`. Tests assert
 the app/extension versions stay in sync, so this architecture guide deliberately does not
 copy a release number that can drift. Core is cross-platform; main process is TypeScript;
-extension is plain MV3 JavaScript with no build step; Vitest; `node-pty` is the main native
+extension is plain MV3 JavaScript with no build step; `node-pty` is the main native
 terminal dependency. Desktop automation remains explicitly Windows-only.
 
 Fresh-install defaults from `config.ts` — **all Core tool permissions on**, **read-only off**,
@@ -250,7 +250,7 @@ src/renderer/main.ts          setup/settings/connection/activity UI
 src/renderer/chat.ts          session timeline, handoff, swarm UI
 src/main/computer/*           screenshots, UI Automation, SendInput/clipboard helper
 src/main/tunnel/*             index.ts lifecycle · health.ts metrics · locate.ts binaries
-test/*.test.ts                49 suites, named for the subsystem they cover
+scripts/live-chatgpt-workstream.mjs  real daemon/extension/ChatGPT workstream acceptance
 scripts/*                     build-time icon / tunnel-client / ripgrep fetchers
 electron-builder.yml          Windows/macOS/Linux package contents and target policy
 ```
@@ -329,7 +329,8 @@ and the live guards are. A server registers only tools its surface declares and 
 anything else with a protocol-level unknown-tool error; there is no merged list and no
 hidden acceptance. A deliberate reconnect is the clean boundary for changing the shape.
 
-**Tests.** `mcp.test.ts`, `config.test.ts`, `mcp-shutdown.test.ts`.
+**Acceptance.** Connector discovery/schema behavior is accepted only against the live ChatGPT
+connector. Typechecking can catch implementation errors but is not protocol proof.
 
 ## 7. One MCP call, end to end
 
@@ -388,7 +389,8 @@ outright. Never claim approved roots contain arbitrary commands — they contain
 filesystem tools. Read-only derives from the complete write-capability list, so a new write
 capability must become read-only-blocked automatically.
 
-**Tests.** `sandbox.test.ts`, plus retained bughunt repros.
+**Acceptance.** Exercise real approved/outside paths on the target OS. Security claims are about
+what the filesystem actually permits or refuses, not an in-memory path fixture.
 
 ## 9. Workspaces — `workspace.ts`
 
@@ -405,7 +407,8 @@ never silently fall back to the first approved root — that turns an attributio
 into a wrong-target mutation. Moving a workspace is state continuity, never a new
 permission; the target still has to be legal.
 
-**Tests.** `workspace.test.ts`, `swarm.test.ts`.
+**Acceptance.** Workspace effects must be observed through real connector file operations;
+worker ownership/routing requires live ChatGPT workstreams.
 
 ## 10. The Codex-derived tools — `src/main/codex/*`
 
@@ -441,8 +444,8 @@ Synchronous validation of an adversarial compressed payload is a main-process re
 risk. An invalid `image` content block can break an entire model turn — **prefer rejection
 over optimistic decoding.**
 
-**Tests.** `codex-runtime-parity`, `codex-apply-patch-parity`,
-`codex-apply-patch-invocation-parity`, `codex-view-image-parity`, `mcp`.
+**Local checks.** Real process/filesystem/image behavior lives in `exec.test.ts`,
+`exec-reaper.test.ts`, `fsops.test.ts`, `read-backend.test.ts`, and `image-decoding.test.ts`.
 
 ## 11. Identity — the spine of the whole project
 
@@ -483,8 +486,8 @@ archive flag, and the bridge opens a replacement with the saved project context 
 steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
 
-Local scripts use `/workstreams/start`, `/workstreams`, `/workstreams/pause` and
-`/workstreams/resume` with the local sender credential. The paired extension alone services
+Local scripts use `/workstreams/start`, `/workstreams`, `/workstreams/pause`,
+`/workstreams/resume` and `/workstreams/replace` with the local sender credential. The paired extension alone services
 `/workstreams/archive`. Failed browser delivery or archival is visible as blocked work;
 do not claim a replacement was made from a queue receipt alone. See README for bodies.
 
@@ -583,8 +586,8 @@ does not give the user branch an assistant turn id or recorder ownership. Do not
 assistant tool row or a descriptor conversation id; either can arrive after the kernel's identity
 window closes.
 
-**Tests.** `correlation.test.ts`, `mcp-inbound.test.ts`, `fiber.test.ts`,
-`content-script.test.ts`, `swarm.test.ts`.
+**Acceptance.** Correlation and browser identity are live-only claims. Use the installed extension,
+the real ChatGPT page and connector observations; never accept a synthetic Fiber/DOM transcript.
 
 ## 12. Session recording — `recorder.ts`, `store.ts`
 
@@ -615,7 +618,8 @@ not contain. Unattributed is a **first-class state**, not a bug to paper over.
 
 Distinct from `logger.ts`, which is small, redacted, RAM-only and operational.
 
-**Tests.** `session.test.ts`, `chronology.test.ts`, `resume.test.ts`.
+**Acceptance.** Session chronology and conversation replacement are checked on real recorded
+ChatGPT conversations, not by replaying a repository-authored event trace.
 
 ## 13. The Chrome extension — `extension/*`
 
@@ -666,7 +670,8 @@ disconnect MutationObservers and DOM/window handlers **and** unregister extensio
 must never answer a health check, compete for a worker-revival command, or repaint Overwrite
 after the successor owns the document.
 
-**Tests.** `content-script.test.ts`, `fiber.test.ts`, `extension.test.ts`.
+**Acceptance.** Extension/DOM behavior must be exercised in the installed Chrome extension against
+the current ChatGPT page. jsdom, VM pages and fake service workers are not acceptance evidence.
 
 ## 14. The browser bridge — `bridge.ts`
 
@@ -822,10 +827,9 @@ sent nothing, so nothing may bind `push_correlated` off it. `GET /sleep/status` 
 `sendOrigin: {events}` — a bounded in-memory ring of the recent ones, reporting current app
 state rather than a running total. Break-glass direct-CDP tooling still works.
 
-**Tests.** `bridge.test.ts`, `extension.test.ts`; sleep/wake in `sleep-wake.test.ts` and
-the `sleep/wake over the push path` describe of `bridge.test.ts`; send origin in the
-`send origin and self-consistency` describe of `sleep-wake.test.ts` and the `out-of-band
-send detection over the push path` describe of `bridge.test.ts`.
+**Acceptance.** Run the real bridge and installed extension. `npm run verify:live` exercises a
+disposable real ChatGPT workstream through connector activity, archive and replacement. Other
+bridge/sleep-wake changes require an equivalent live repro against the external behavior changed.
 
 ## 15. Compact & Resume — `session/continuation.ts`
 
@@ -849,7 +853,8 @@ compaction by creating a second session or copying history — the whole feature
 of one durable id. Automatic compaction is **edge-triggered and durable**: reopening an
 already-large old chat must not re-fire merely because its level sits above the threshold.
 
-**Tests.** `continuation.test.ts`, `resume.test.ts`.
+**Acceptance.** Compact/resume is accepted only when a real ChatGPT A→B replacement preserves the
+intended session/goal behavior in the running app.
 
 ## 16. Multi-agent — `agents.ts`
 
@@ -920,8 +925,8 @@ MCP/observation counters — not a heartbeat guess. Compact & Resume moves activ
 prime ownership together with session/workspace state; normal commit and recovery repair transfer
 the same complete worker history to the child conversation or move nothing.
 
-**Tests.** `agents.test.ts`, `swarm.test.ts`; the revival's browser half is in
-`bridge.test.ts`, `extension.test.ts` and `content-script.test.ts`.
+**Acceptance.** Agent spawn/revival/sleep is a live ChatGPT/browser workflow. Validate the actual
+worker conversations and connector calls; an in-memory broker simulation is not evidence.
 
 ## 17. Renderer, IPC, connection and desktop
 
@@ -985,7 +990,8 @@ Async loads use generation counters so a slow load for session A cannot paint ov
 user selected, and unsolicited state pushes must not clobber a focused unsaved form field.
 Captured ChatGPT HTML is untrusted: `chat.ts::renderedMessage()` allowlists semantic tags,
 strips attributes, drops executable/form/embed content and non-safe link schemes.
-Tests: `ipc.test.ts`, `renderer-html.test.ts`, `renderer-layout.test.ts`, `renderer-state.test.ts`.
+Acceptance: build/run the real packaged renderer and inspect the visible behavior; source-shape
+assertions and duplicated expected markup are not acceptance.
 
 **Connection and tunnel.** `connection.ts` owns local MCP server → Core publication →
 optional Desktop publication → UI status, across the `openai`, `cloudflared` and `manual`
@@ -998,7 +1004,7 @@ invalidate callbacks from replaced tunnels — reuse that for any new async stat
 is local and stays green through an internet outage, and a single failed long poll is a
 retry, not an outage — an outage is complaints that outlive a poll cycle with no completed
 poll. `diagnostics.ts` builds the UI self-test and must agree with that same grace period.
-Tests: `tunnel.test.ts`.
+Acceptance: the live `/readyz`/poll path and actual tunnel traffic are the oracle.
 
 **Desktop automation (Windows only).** `tools-desktop.ts` + `computer/*` for screenshots, UI
 Automation and SendInput/clipboard. Registration-time permission is not enough: each action re-checks. The
@@ -1006,7 +1012,8 @@ helper is prewarmed only when native Desktop capabilities are published; window 
 background-first and never focuses. Recent immutable frames bind coordinates to screenshot and
 window geometry; semantic refs bind cached elements to bounded UIA snapshots. Physical input
 revalidates the target, batches report partial completion and route evidence, and compact local
-postconditions avoid model-driven wait/observe loops. Tests: `computer*.test.ts`.
+postconditions avoid model-driven wait/observe loops. Validate these operations against the real
+Windows desktop/helper, not a fake child process or synthesized UIA reply.
 
 **On-disk state to inspect.** Electron `userData` — `%APPDATA%\chat-on-steroids\` on Windows,
 `~/Library/Application Support/chat-on-steroids/` on macOS, `${XDG_CONFIG_HOME:-~/.config}/chat-on-steroids/`
@@ -1071,36 +1078,34 @@ planned to edit changed underneath you, reread and integrate — do not replay a
 
 ### The fix loop
 
-1. Reproduce the real bug, or add a regression that **fails under the old input/ordering**.
+1. Reproduce the real bug against the authority that actually owns the behavior.
 2. Fix the earliest root cause — not the last place the wrongness became visible.
-3. Run the nearest test file.
-4. Run adjacent boundary tests when a protocol crosses modules.
-5. `npm run verify` before calling production code done.
+3. Validate against an **independent oracle**. A test is not evidence when both the behavior
+   and the expected answer were authored from the same repository assumption.
+4. `npm run verify` runs local side-effect checks: real filesystem/process/OS/git/image-decoder
+   behavior plus type/privacy checks. It does **not** establish ChatGPT integration correctness.
+5. If the change depends on ChatGPT, Chrome, the extension, conversation lifecycle, connector
+   discovery, browser timing, or undocumented web behavior, run `npm run verify:live`. That path
+   uses the installed daemon/extension and a real authenticated disposable ChatGPT conversation.
 6. `npm run build` / package checks when bundling, native modules, resources, extension
    shipping or installer behavior could differ.
 
-A good fix here has three parts: the root-cause change, a targeted regression, and a comment
-naming the non-obvious invariant when a future "simplification" could reopen it.
+**No self-authored oracle.** Do not write a test whose essential proof is that one thing this
+repository defines equals another thing this repository defines: duplicated constants, expected
+prompt strings, hand-written state-machine traces, source-code substring checks, fake ChatGPT or
+Chrome responses, mocked private APIs, or a mock that returns the response the implementation was
+written to expect. Such tests can detect editing accidents but cannot establish correctness and do
+not belong in the acceptance suite.
 
-**Green unit tests do not prove** a browser race, a Windows reparse race, an Electron
-ordering race, a live ChatGPT Fiber shape, a process race, or resource-scale behavior. Model
-the missing adversarial ordering, and use a live repro when feasible. For races prefer
-epochs, generation ids, serialized mutation queues, idempotency keys, exact identity or
-ownership locks — **not sleeps**, unless time really is the protocol. The reusable pattern:
+Mocks of an external authority are specifically forbidden as acceptance evidence. ChatGPT is a
+closed, changing external application; its DOM, private endpoints, auth/session shape, composer,
+turn lifecycle, archive semantics and extension behavior must be observed live. A green simulation
+of an invented ChatGPT contract is evidence only that the simulation agrees with itself.
 
-```text
-start A → pause A before its durable/publish step → run B to completion
-        → resume A → assert B was not overwritten, resurrected or misattributed
-```
-
-Every security or identity fix needs its **negative case**: in-root native path works /
-escaping native path fails; exact correlation routes / conflicting correlation does not
-guess; owner polls the terminal / another worker cannot; current epoch accepts the Fiber
-answer / stale epoch discards it.
-
-**Both sides of a protocol.** A compiling one-sided edit is still broken. The multi-hop
-protocols are: app↔extension bridge, content↔Fiber `postMessage`, main↔preload↔renderer
-IPC, MCP schema↔handler↔recorder summary, durable store↔restart restoration.
+Local tests remain appropriate where the oracle is genuinely independent: inspect the file that
+was really written, the process that really ran or died, the OS window that really exists, git's
+real history, or a real decoder/standard implementation. Prefer externally visible postconditions
+over internal fields and branch counters.
 
 ### Commands
 
@@ -1108,9 +1113,9 @@ IPC, MCP schema↔handler↔recorder summary, durable store↔restart restoratio
 npm install
 npm run dev                              # electron-vite dev
 npm run typecheck
-npm test -- --run test/<target>.test.ts
 npm run verify:privacy                   # public Git identity/session/path gate
-npm run verify                           # the exact CI gate: rg fetch, privacy, typecheck, full Vitest
+npm run verify                           # CI local checks only; not ChatGPT integration proof
+COS_LIVE_PLUGIN_NAME="..." npm run verify:live  # real daemon + extension + authenticated ChatGPT acceptance
 npm run build                            # electron-vite bundles
 npm run dist                             # this host OS, x64 + arm64 artifacts → release/
 npm run dist:mac / dist:linux            # explicit platform families on matching hosts
@@ -1123,8 +1128,9 @@ just install                             # build, replace the installed app, res
 it follows the launcher on PATH to whatever this machine installed, replaces that file,
 and restarts the app. Without it a rebuild changes nothing about what is running.
 
-Vitest uses real filesystem, real processes and real HTTP in many suites; default
-test/hook timeout is 30 seconds.
+There is deliberately no internal unit-test suite. Validation uses the authority that owns the
+behavior: compiler/build tooling for static/runtime construction, packaged-runtime smoke for
+shipping, the real target OS for native behavior, and live ChatGPT/Chrome for integration.
 
 ### Reading and driving ChatGPT chats from here
 
@@ -3487,46 +3493,11 @@ triggers. Send messages per [What to send them](#what-to-send-them).
 
 ### Where a regression belongs
 
-49 suites, named for the subsystem they cover. Vitest uses real filesystem, real processes
-and real HTTP in many of them.
-
-| Suite | Covers |
-| --- | --- |
-| `agents` | broker rules, prime/worker identity, at-least-once messaging |
-| `bridge` | extension<->app HTTP bridge, routes, auth, orchestration |
-| `chronology` | the order a recorded turn is read in |
-| `codex-apply-patch-parity` | V4A parser / matcher / runtime parity |
-| `codex-apply-patch-invocation-parity` | shell-intercepted `apply_patch` invocation |
-| `codex-runtime-parity` | `exec_command` / `write_stdin` runtime parity |
-| `codex-view-image-parity` | image validation, limits, transport adaptation |
-| `computer` | desktop automation; frame-id crop, focus honesty, window queries |
-| `config` | validation, migrations, read-only capability collapse |
-| `content-script` | isolated-world recorder, turn lifecycle, Overwrite render |
-| `continuation` | Compact & Resume transaction and its failure paths |
-| `correlation` | requestId->conversationId persistence, restore, conflicts |
-| `env` | the child environment handed to spawned processes |
-| `exec` | `runCommand` and process-tree termination primitives |
-| `extension` | service worker, journal, tab registry, reload recovery |
-| `fiber` | MAIN-world React extraction and its allowlist |
-| `fsops` | bounded text/image/file helpers |
-| `goal` | the goal loop's prompt, privacy boundary, one-draft rule, OpenRouter failures |
-| `ipc` | main<->renderer boundary and payload validation |
-| `mcp` | surfaces, handlers, integration — the widest suite |
-| `mcp-inbound` | `x-request-id` extraction and normalization |
-| `mcp-shutdown` | draining an accepted mutation before closing its socket |
-| `renderer-html` | sanitization of captured ChatGPT HTML |
-| `renderer-layout` | session card / timeline layout contracts |
-| `renderer-state` | unsolicited pushes must not clobber a focused dirty field |
-| `resume` | resume and handoff paths |
-| `sandbox` | path, root and containment policy — the security suite |
-| `shutdown` | bounded teardown phases that always reach the exit; terminal sessions really dying |
-| `search` | glob translation and `find` behavior |
-| `secrets` | safeStorage-backed secret store |
-| `session` | recorder merge and durable store behavior |
-| `swarm` | multi-agent integration across identity and workspace |
-| `text-match` | edit matching across line endings |
-| `tunnel` | error classification, poll metrics, outage confirmation, route self-test |
-| `workspace` | per-chat/agent workspace learning and keying |
+There is no internal regression suite. A regression belongs at its actual authority boundary.
+Filesystem/process/native changes need a real target-host repro or packaged-runtime smoke.
+Everything whose authority is ChatGPT/Chrome belongs in a live acceptance path. The workstream
+path is `npm run verify:live`; other browser/connector changes need an equally direct live repro.
+Do not add a fake local suite to make externally owned behavior look testable.
 
 ### Delegating to workers
 
@@ -3568,7 +3539,7 @@ x64/ARM64 AppImage+DEB. Windows stays per-user-capable, `asInvoker`, no forced e
 - Uninstall/package replacement deliberately preserves per-user app data.
 
 Before cutting a version, synchronize `package.json`, `src/main/version.ts` and
-`extension/manifest.json`, and run the full suite. After installing a local build, verify
+`extension/manifest.json`, and run the local gates plus the relevant live/runtime acceptance. After installing a local build, verify
 the **packaged** app really contains the target extension/tunnel/ripgrep/native runtime and can
 execute its PTY/parser/image stack — a successful installer/archive build does not prove it.
 
@@ -3594,9 +3565,9 @@ MCP request lifecycle, approved-path enforcement, process execution, desktop con
 and resource limits. Keep public documentation focused on contracts and invariants rather than
 publishing exploit recipes or detailed reproductions for unresolved weaknesses.
 
-Before changing one of these areas, reproduce the behavior against the current tree, preserve
-fail-closed behavior, add a deterministic regression where practical, and verify neighboring
-negative/security cases. Suspected security issues and reproduction details belong through the
+Before changing one of these areas, reproduce the behavior against the current authority, preserve
+fail-closed behavior, and verify neighboring negative/security cases with an independent oracle.
+For ChatGPT/Chrome boundaries that means a live repro, not a mock. Suspected security issues and reproduction details belong through the
 private process in `SECURITY.md`, not in public issues, comments, or fixtures.
 
 **Do not scatter fixes across symptoms before proving the shared root.**
@@ -3606,11 +3577,11 @@ private process in `SECURITY.md`, not in public issues, comments, or fixtures.
 - The reproduced failure is gone **for the root reason** — not hidden in the UI, not retried
   until lucky.
 - The neighboring negative / security case still holds.
-- A targeted regression captures the old failure ordering or input.
+- Validation uses an oracle independent of the implementation; ChatGPT/Chrome behavior is accepted live.
 - Every producer and consumer of any changed protocol agrees.
 - Model-visible schema and user-visible surface still match the implementation.
 - Unrelated dirty work is untouched.
-- Targeted tests pass and `npm run verify` passes.
+- Relevant local checks pass and `npm run verify` passes; `npm run verify:live` also passes for ChatGPT/Chrome changes.
 - Build/packaging checked when the changed layer can differ after bundling.
 - Comments and this file updated only where behavior genuinely changed.
 

@@ -54,10 +54,6 @@ export function enableConsoleFailureEcho(): void {
   echoFailuresToStderr = true;
 }
 
-export function resetConsoleFailureEchoForTests(): void {
-  echoFailuresToStderr = false;
-}
-
 export function log(level: LogEntry['level'], message: string): void {
   const agent = currentAgent();
   const entry: LogEntry = {

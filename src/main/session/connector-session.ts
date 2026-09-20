@@ -230,18 +230,3 @@ export function noteSessionKeySeen(sessionKey: string, at: number = Date.now()):
   }
   return at;
 }
-
-/** First sighting of a key, or null if this process has never seen it. Diagnosis/tests. */
-export function sessionKeyFirstSeenAt(sessionKey: string): number | null {
-  return firstSeenByKey.get(sessionKey) ?? null;
-}
-
-/** Whether this key has contradictory temporal evidence. Diagnosis/tests only. */
-export function sessionBindingConflicted(sessionKey: string): boolean {
-  return byKey.get(sessionKey)?.conflicted === true;
-}
-
-export function resetSessionBindingsForTests(): void {
-  byKey.clear();
-  firstSeenByKey.clear();
-}

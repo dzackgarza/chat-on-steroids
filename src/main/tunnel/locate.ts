@@ -179,9 +179,3 @@ export function bundledVersion(): string | null {
     return null;
   }
 }
-
-/** Test seam for environment/path-resolution cases. */
-export function resetTunnelLocatorCacheForTests(): void {
-  locateCache.clear();
-  bundledVersionCache.clear();
-}

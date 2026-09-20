@@ -157,7 +157,7 @@ export async function writeDurableNow(name: string, value: unknown): Promise<voi
   }
 }
 
-/** Writes everything queued right now. Called before the app quits, and by tests. */
+/** Writes everything queued right now before the app quits. */
 export async function flushDurable(): Promise<void> {
   for (const [name, timer] of timers) {
     clearTimeout(timer);
@@ -183,15 +183,4 @@ export async function flushDurable(): Promise<void> {
     }
     if (firstError) throw firstError;
   }
-}
-
-/** Test seam: drops queued writes without touching disk. */
-export function resetDurableForTests(): void {
-  for (const timer of timers.values()) clearTimeout(timer);
-  timers.clear();
-  pending.clear();
-  retryAttempts.clear();
-  root = '';
-  nextGeneration = 1;
-  inFlight = Promise.resolve();
 }

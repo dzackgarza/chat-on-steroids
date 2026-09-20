@@ -3851,25 +3851,3 @@ function deserializeAgents(entries: readonly SerializedAgent[], savedAt: number)
   }
   return { agents, repaired };
 }
-
-/** Test seam: forgets everything without touching disk. */
-export function resetAgentsForTests(): void {
-  run = null;
-  dormantRuns.clear();
-  unpublishedRun = null;
-  activeSpawnStage = null;
-  activeFinishStages.clear();
-  retiredWorkers.clear();
-  livenessFloor = 0;
-  spawnRequest = null;
-  reviveRequest = null;
-  persist = null;
-  persistNow = null;
-  criticalMutationRevision = 0;
-  persistedCriticalRevision = 0;
-  criticalPersistFlight = null;
-  retiredPersist = null;
-  retiredPersistNow = null;
-  listeners.clear();
-  endListeners.clear();
-}

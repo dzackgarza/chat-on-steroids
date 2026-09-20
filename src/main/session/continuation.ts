@@ -67,7 +67,7 @@ import { clearGoalObjective, goalObjectiveFor, moveGoalObjective } from '../goal
 import { writeDurableNow, writeDurableSoon } from '../durable.js';
 import { prepareHandoff, resumeBootstrapMatches } from './handoff.js';
 import { ensureHandoffRecorded, recordHandoff, rebindConversation } from './recorder.js';
-import { endResumeClaim, noteResumeClaim, resetResumeGate } from './resume-gate.js';
+import { endResumeClaim, noteResumeClaim } from './resume-gate.js';
 import {
   ensureCommittedResumeHandoff,
   findSessionByConversation,
@@ -1158,17 +1158,4 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
     // require an immediate durable write and therefore continue to fail closed.
     logWarn(`continuation recovery could not persist its repaired snapshot: ${err instanceof Error ? err.message : String(err)}`);
   }
-}
-
-/** Test seam. */
-export function resetContinuationsForTests(): void {
-  byToken.clear();
-  openingBySession.clear();
-  commitLocks.clear();
-  recoveryHooks = {};
-  // The gate is part of this module's state even though it lives next door, and a claim
-  // outlives a cleared transaction by RESUME_CLAIM_WINDOW_MS. Left behind, it makes the
-  // *next* test's unrelated new chat wait for a replacement that will never come.
-  resetResumeGate();
-  changed();
 }

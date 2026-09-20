@@ -277,11 +277,27 @@ Scripts use the loopback bridge and its existing `state/local-token` bearer cred
 | `GET /workstreams` | Owner conversation, phase, activity/expiry times, recovery attempts, pending command and error |
 | `POST /workstreams/pause` | `{ "id": "research" }`; stops recovery and refuses its tool calls |
 | `POST /workstreams/resume` | `{ "id": "research" }`; resumes a paused owner |
+| `POST /workstreams/replace` | `{ "id": "research" }`; immediately fences the current owner and enters the same archive/replacement path used after failed automatic recovery |
 
 Use `/send/outcome?id=COMMAND_ID` for initial delivery. Workstream status separately tracks
 lease activity and recovery. The extension credential cannot manage workstreams through
 these local-script routes. Reload the extension and refresh connector discovery after an
 upgrade that adds the required lock field.
+
+For changes that depend on ChatGPT or Chrome behavior, the acceptance check is live rather
+than simulated:
+
+```sh
+COS_LIVE_PLUGIN_NAME="Chat On Steroids Core2" npm run verify:live
+```
+
+This creates a disposable real ChatGPT workstream using the installed daemon and extension,
+waits for real connector activity, drives the real archive/replacement path, asks ChatGPT's
+current backend whether the old conversation is actually archived, verifies a distinct live
+replacement conversation, then pauses/archives the fixture. It intentionally fails when the
+external ChatGPT contract has changed; mocked ChatGPT responses are not used for acceptance.
+`COS_LIVE_PLUGIN_NAME` must be the actual ChatGPT plugin whose schema has been refreshed against
+the daemon being exercised.
 
 This is experimental browser automation, and parallel chats can edit the same files or spend account limits quickly. Use it only on work you can recover, keep worker ownership explicit, and turn the feature off when you do not want ChatGPT tabs opened or coordinated automatically. The terms note in [Experimental browser augmentation and OpenAI terms](#experimental-browser-augmentation-and-openai-terms) applies here.
 

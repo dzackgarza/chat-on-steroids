@@ -2196,28 +2196,3 @@ export async function deleteSession(id: string): Promise<void> {
   invalidateAssetUsage(id);
   publishAttachmentRemoval(id);
 }
-
-/** Test seam: forgets in-memory state without touching the files. */
-export function resetSessionStoreForTests(): void {
-  for (const entry of open.values()) if (entry.metaTimer) clearTimeout(entry.metaTimer);
-  open.clear();
-  opening.clear();
-  reconciling.clear();
-  sessionAssetUsage.clear();
-  globalAssetUsage = null;
-  missingCurrentConversations.clear();
-  attachmentCatalog = null;
-  attachmentCatalogLoading = null;
-  attachmentEpoch = 0;
-}
-
-/** Test seam: puts the store back to never having been told where to write. */
-export function unsetSessionRootForTests(): void {
-  root = '';
-  sessionAssetUsage.clear();
-  globalAssetUsage = null;
-  missingCurrentConversations.clear();
-  attachmentCatalog = null;
-  attachmentCatalogLoading = null;
-  attachmentEpoch = 0;
-}

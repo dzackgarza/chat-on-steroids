@@ -69,10 +69,9 @@ export interface SurfaceDefinition {
   /**
    * Every tool this surface can ever advertise, in listing order.
    *
-   * The authority for tests, for the setup UI's "what you get" list, and for the
-   * cross-surface leakage assertions. A tool that appears here and nowhere else is a
-   * bug in one direction; a tool registered on a server that does not name it here is
-   * a bug in the other.
+   * The authority for the setup UI's "what you get" list and server registration. A tool
+   * that appears here and nowhere else is a bug in one direction; a tool registered on a
+   * server that does not name it here is a bug in the other.
    */
   tools: readonly string[];
 }

@@ -60,7 +60,6 @@ import {
   observeRequestCorrelations,
   requestCorrelation,
   requestCorrelationConflicted,
-  resetCorrelationRegistryForTests,
 } from './correlation.js';
 import {
   learnSessionBinding,
@@ -954,32 +953,13 @@ export function inferDegradedCaller(
 }
 
 /**
- * Shortens the evidence waits for the test suite, and only for it.
- *
- * These windows exist because a real browser reports a request id up to several seconds
- * after the connector already answered. The suite has no browser: it hands the recorder its
- * evidence in the same process, microseconds later, or deliberately never. So every test
- * that asserts "this ends up unattributed" paid the full fifteen seconds to prove a
- * negative, and a handful of them dominated the whole run.
- *
- * Never set outside the test runner, so production keeps the measured windows. The value is
- * also clamped to the production one, so this can only ever make a wait shorter.
- */
-export function evidenceWindow(production: number): number {
-  const raw = process.env.CLF_EVIDENCE_MS;
-  if (raw === undefined) return production;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? Math.min(parsed, production) : production;
-}
-
-/**
  * How long a completed MCP call may wait for its exact page-side request id observation.
  *
  * This wait is request-specific: only the identical normalized x-request-id can satisfy it.
  * Chrome-off, conflicting, or missing evidence ends in Unattributed activity rather than a
  * tool/time/generation guess.
  */
-const REQUEST_ID_GRACE_MS = evidenceWindow(15_000);
+const REQUEST_ID_GRACE_MS = 15_000;
 
 /**
  * Late exact request-id evidence can arrive after a call already fell into Unattributed.
@@ -1431,8 +1411,8 @@ let recordChain: Promise<unknown> = Promise.resolve();
  * the page to report the exact request-id/message evidence that proves where the call came from, and nothing
  * ChatGPT is waiting on may wait on the browser: with sequential file and command tools
  * a second of that per call is the difference between a companion that feels immediate
- * and one that feels broken. The connector fires this and moves on; the returned promise
- * is for tests and for the flush at quit.
+ * and one that feels broken. The connector fires this and moves on; shutdown awaits the
+ * returned promise through the recorder flush.
  *
  * The two halves are queued differently on purpose. Every call's request-specific evidence
  * window opens the moment the call lands, all of them at once, so a burst of calls costs one
@@ -2385,34 +2365,6 @@ export async function sessionTokens(sessionId: string): Promise<number> {
 
 export function estimate(text: string): number {
   return estimateTokens(text);
-}
-
-/** Test seam. */
-export function resetRecorderForTests(): void {
-  resetCorrelationRegistryForTests();
-  conversations.clear();
-  detachedWhileGenerating.clear();
-  // The progress clock outlives its conversation entry on purpose (a slept chat still has
-  // one), so it has to be cleared explicitly here or a reset test inherits the previous
-  // test's "the recording last changed just now" and passes for the wrong reason.
-  lastStored.clear();
-  observationChains.clear();
-  sessionInitializations.clear();
-  pendingOrigins.clear();
-  unattributedSessionId = null;
-  lastActiveSessionId = null;
-  if (attributionRepairTimer) {
-    clearTimeout(attributionRepairTimer);
-    attributionRepairTimer = null;
-  }
-  attributionRepairRequested = false;
-  attributionRepairChain = Promise.resolve();
-  agentConversationLookup = () => null;
-  agentBinder = () => undefined;
-  if (notifyTimer) {
-    clearTimeout(notifyTimer);
-    notifyTimer = null;
-  }
 }
 
 export function markSessionActive(sessionId: string): void {

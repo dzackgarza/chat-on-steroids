@@ -29,7 +29,7 @@
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { bindCommandConversationKey, bindObservedConversationKey, conversationKeyForCommand, conversationKeyInstruction, persistConversationKeys, restoreConversationKeys } from './session/conversation-key.js';
-import { bindWorkstreamReplacement, blockWorkstreamAction, claimWorkstream, configureWorkstream, currentWorkstreamAction, finishWorkstreamArchive, nextWorkstreamActions, observeWorkstreamMessages, pauseWorkstream, recordWorkstreamCommand, recordWorkstreamStart, restoreWorkstreams, resumeWorkstream, workstreamIdSchema, workstreamPrompt, workstreamStatus } from './workstreams.js';
+import { bindWorkstreamReplacement, blockWorkstreamAction, claimWorkstream, configureWorkstream, currentWorkstreamAction, finishWorkstreamArchive, nextWorkstreamActions, observeWorkstreamMessages, pauseWorkstream, recordWorkstreamCommand, recordWorkstreamStart, replaceWorkstream, restoreWorkstreams, resumeWorkstream, workstreamIdSchema, workstreamPrompt, workstreamStatus } from './workstreams.js';
 import { unifiedExecManager } from './codex/manager.js';
 import { execOwner } from './codex/ownership.js';
 import { promises as fs } from 'node:fs';
@@ -127,8 +127,7 @@ import {
   continuationByToken,
   continuationForSession,
   openContinuationNow,
-  repairPrimeFromResumeShadow,
-  resetContinuationsForTests
+  repairPrimeFromResumeShadow
 } from './session/continuation.js';
 import { noteResumeOpening } from './session/resume-gate.js';
 import { notePushTyped, sendRefusalFor, sleepWakeStatus } from './session/sleep-wake.js';
@@ -167,11 +166,9 @@ function inFlightCallsFor(conversationId: string | null, limit = 20): InFlightCa
 /** Fixed candidates so the extension can find the app without being told a port. */
 export const DEFAULT_PORTS = [8765, 8766, 8767, 8768, 8769];
 /**
- * The shipped range is fixed on purpose, but the test suite runs many bridges in parallel
- * forks on a machine where an installed app already holds 8765. A test whose own bind lost
- * that race used to fall through to the real app's bridge: 401s at best, and at worst a
- * test POSTing observations into the user's actual history. `CLF_BRIDGE_PORTS=0` asks the
- * OS for a free port per bridge instead, so no run can collide with another or with the app.
+ * The shipped range is fixed on purpose. Isolated live-acceptance/dev daemons can run beside
+ * an installed app that already holds 8765; `CLF_BRIDGE_PORTS=0` asks the OS for a free port,
+ * and an explicit list lets an isolated browser profile target a known parallel bridge.
  */
 const PORTS = ((): number[] => {
   const raw = process.env.CLF_BRIDGE_PORTS;
@@ -1144,7 +1141,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
    * chat, presses Stop, or reloads a page, all of which the person at this keyboard can
    * already do by hand; the other three only say what happened.
    */
-  if (route === '/workstreams' || route === '/workstreams/start' || route === '/workstreams/pause' || route === '/workstreams/resume') {
+  if (route === '/workstreams' || route === '/workstreams/start' || route === '/workstreams/pause' || route === '/workstreams/resume' || route === '/workstreams/replace') {
     if (!(await localSenderAuthorised(req))) return json(res, 401, { error: 'unauthorised' }, origin);
     if (route === '/workstreams' && req.method === 'GET') {
       return json(res, 200, { workstreams: workstreamStatus().map(({ ownerKey, lock, retiredKeys, ...row }) => ({
@@ -1163,6 +1160,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       const paused = await pauseWorkstream(id.data);
       await sweepWorkstreams();
       return json(res, paused ? 200 : 404, { paused }, origin);
+    }
+    if (route === '/workstreams/replace') {
+      const replacing = await replaceWorkstream(id.data);
+      await sweepWorkstreams();
+      return json(res, replacing ? 202 : 409, { replacing }, origin);
     }
     if (typeof body['context'] !== 'string' || body['context'].length > 40_000) {
       return json(res, 400, { error: 'context_required_max_40000' }, origin);
@@ -5247,30 +5249,6 @@ export async function restoreCommands(): Promise<void> {
   // Do not resurrect the old global active claim merely because no request exists yet to run
   // the usual dispatcher/stale-sweep release hook.
   releaseQuiescentRun();
-}
-
-/** Test seam. */
-export function resetBridgeForTests(): void {
-  for (const command of commands) if (command.timer) clearTimeout(command.timer);
-  if (browserPresenceTimer) clearTimeout(browserPresenceTimer);
-  browserPresenceTimer = null;
-  commands = [];
-  commandReceipts = [];
-  commandRetirementsAwaitingBroker.clear();
-  commandLeaseWrites.clear();
-  commandRedeems.clear();
-  appDraftLedger = new Map();
-  sendVerifyHorizons.clear();
-  bridgeRecovering = false;
-  bridgeShutdownRequested = false;
-  resetContinuationsForTests();
-  sessionTokens.clear();
-  openInBrowser = null;
-  closeInBrowser = null;
-  lastSeenAt = null;
-  extensionVersion = null;
-  versionWarned = false;
-  requestWindow = { start: Date.now(), count: 0 };
 }
 
 export function bridgePort(): number | null {
