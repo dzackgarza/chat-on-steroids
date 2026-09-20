@@ -4243,7 +4243,7 @@ function workstreamCommandCurrent(command: Command): boolean {
   return workstreamStatus().some((row) => row.actionId === nonce);
 }
 /** One recovery driver, owned by the bridge maintenance timer and its shutdown. */
-export async function sweepWorkstreams(): Promise<void> {
+export async function sweepWorkstreams(now = Date.now()): Promise<void> {
   if (workstreamSweep) return workstreamSweep;
   workstreamSweep = (async () => {
     if (await browserDisconnected()) return;
@@ -4252,7 +4252,7 @@ export async function sweepWorkstreams(): Promise<void> {
       const receipt = receiptFor(row.commandId);
       if (receipt && !receipt.committed) await blockWorkstreamAction(row.id, row.actionId, receipt.error ?? 'initial_delivery_failed');
     }
-    const actions = await nextWorkstreamActions();
+    const actions = await nextWorkstreamActions(now);
     const liveActions = new Set(actions.map((row) => row.actionId));
     for (const command of [...commands]) {
       if (command.spec.type === 'send' && /^(revive|replace)-wl_/.test(command.spec.nonce) && !liveActions.has(command.spec.nonce)) {

@@ -403,14 +403,18 @@ class FakeStorageArea {
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     this.data = next;
   }
+
+  async remove(keys: string[] | string): Promise<void> {
+    for (const key of Array.isArray(keys) ? keys : [keys]) delete this.data[key];
+  }
 }
 
 interface WorkerHarness {
   send(message: Record<string, unknown>, tabId?: number, documentId?: string): Promise<any>;
   /** Fires Chrome's real tab-close lifecycle event. */
   closeTab(tabId: number): Promise<void>;
-  /** Fires the periodic retry/sweep alarm. */
-  fireAlarm(): Promise<void>;
+  /** Fires one of Chrome's periodic alarms. */
+  fireAlarm(name?: string): Promise<void>;
   /** Fires only Chrome's navigation-start signal, without inventing a replacement document. */
   startTabNavigation(tabId: number, url?: string): Promise<void>;
   /** Fires Chrome's tab URL-change lifecycle event. */
@@ -456,6 +460,7 @@ function loadWorker(options: {
   tabsQuery?: () => Promise<Array<{ id?: number; windowId?: number; url?: string; pendingUrl?: string }>>;
   tabsSendMessage?: (tabId: number, message: Record<string, unknown>) => Promise<unknown>;
   tabsReload?: (tabId: number) => Promise<unknown>;
+  scriptingExecuteScript?: (details: Record<string, any>) => Promise<any[]>;
 }): WorkerHarness {
   let listener: ((message: any, sender: any, sendResponse: (value: any) => void) => boolean) | null = null;
   const tabRemovedListeners: Array<(tabId: number) => void> = [];
@@ -468,7 +473,7 @@ function loadWorker(options: {
   const tabsSendMessage = vi.fn(options.tabsSendMessage ?? (async () => ({ ok: true })));
   const tabsRemove = vi.fn(async () => undefined);
   const tabsReload = vi.fn(options.tabsReload ?? (async () => undefined));
-  const scriptingExecuteScript = vi.fn(async () => []);
+  const scriptingExecuteScript = vi.fn(options.scriptingExecuteScript ?? (async () => []));
   const scriptingInsertCSS = vi.fn(async () => undefined);
   const alarmCreate = vi.fn(() => undefined);
   const alarmClear = vi.fn(async () => true);
@@ -576,8 +581,8 @@ function loadWorker(options: {
       for (const fn of tabCreatedListeners) fn(tab);
       for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     },
-    async fireAlarm() {
-      for (const fn of alarmListeners) fn({ name: 'clf-bridge-drain' });
+    async fireAlarm(name = 'clf-bridge-drain') {
+      for (const fn of alarmListeners) fn({ name });
       for (let turn = 0; turn < 8; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     },
     async closeTab(tabId: number) {
@@ -1080,6 +1085,150 @@ describe('extension command delivery', () => {
     expect(result.ok).toBe(true);
     expect(tokens).toEqual(['Bearer stale-token', 'Bearer second-token']);
     expect(local.data.token).toBe('second-token');
+  });
+});
+
+describe('workstream archive recovery', () => {
+  const paired = { port: 8765, token: 'paired-token' };
+
+  it('stops the exact old chat, verifies archive state, then acknowledges the archive', async () => {
+    const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff';
+    const action = { id: 'research', actionId: 'archive-wl_test', conversationId };
+    const order: string[] = [];
+    const bridgeFetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
+      const url = new URL(input);
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/workstreams/archive' && init.method === 'POST') {
+        order.push('archive-ack');
+        expect(JSON.parse(String(init.body))).toEqual({ id: action.id, actionId: action.actionId, error: null });
+        return response(200, { accepted: true });
+      }
+      if (url.pathname === '/workstreams/archive') {
+        order.push('archive-list');
+        return response(200, { actions: [action] });
+      }
+      return response(404, {});
+    });
+    const pageFetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
+      const target = String(input);
+      if (target === '/api/auth/session') {
+        order.push('auth-session');
+        return { ok: true, status: 200, async json() { return { accessToken: 'page-token' }; } };
+      }
+      if (target === `/backend-api/conversation/${conversationId}` && init.method === 'PATCH') {
+        order.push('archive-patch');
+        expect((init.headers as Record<string, string>).Authorization).toBe('Bearer page-token');
+        expect(JSON.parse(String(init.body))).toEqual({ is_archived: true });
+        return { ok: true, status: 200, async json() { return {}; } };
+      }
+      if (target === `/backend-api/conversation/${conversationId}`) {
+        order.push('archive-check');
+        return { ok: true, status: 200, async json() { return { is_archived: true }; } };
+      }
+      throw new Error(`unexpected page fetch: ${target}`);
+    });
+    const scriptingExecuteScript = async (details: Record<string, any>) => {
+      if (details.files) return [];
+      const source = `(${String(details.func)})(...${JSON.stringify(details.args ?? [])})`;
+      if (details.world === 'MAIN') {
+        const result = await vm.runInNewContext(source, {
+          location: { pathname: `/c/${conversationId}` },
+          fetch: pageFetch,
+          AbortSignal,
+          setTimeout,
+          clearTimeout
+        });
+        return [{ result }];
+      }
+      const result = await vm.runInNewContext(source, {
+        CLF_DOM: {
+          conversationId: () => conversationId,
+          stopButton: () => ({ click: () => order.push('stop-old-chat') }),
+          generating: () => false
+        },
+        setTimeout,
+        clearTimeout
+      });
+      return [{ result }];
+    };
+    const local = new FakeStorageArea(paired);
+    const worker = loadWorker({
+      local,
+      session: new FakeStorageArea(),
+      fetch: bridgeFetch,
+      tabsQuery: async () => [{ id: 42, url: `https://chatgpt.com/c/${conversationId}` }],
+      tabsGet: async () => ({ id: 42, url: `https://chatgpt.com/c/${conversationId}`, status: 'complete' }),
+      scriptingExecuteScript
+    });
+
+    await worker.fireAlarm('clf-workstream-recovery');
+
+    expect(order.filter((step) => step !== 'archive-list')).toEqual([
+      'stop-old-chat',
+      'auth-session',
+      'archive-patch',
+      'archive-check',
+      'archive-ack'
+    ]);
+    expect(order.indexOf('archive-check')).toBeLessThan(order.indexOf('archive-ack'));
+    expect(worker.tabsRemove).toHaveBeenCalledWith(42);
+    expect(local.data.workstreamArchiveReceipt).toBeUndefined();
+    expect(worker.tabsCreate).not.toHaveBeenCalled();
+    expect(pageFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not acknowledge success or close the old tab when archive verification fails', async () => {
+    const conversationId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeef';
+    const action = { id: 'research', actionId: 'archive-wl_failed', conversationId };
+    const posts: Array<Record<string, unknown>> = [];
+    const bridgeFetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
+      const url = new URL(input);
+      if (url.pathname === '/hello') return response(200, { app: 'chat-on-steroids', paired: true });
+      if (url.pathname === '/workstreams/archive' && init.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)));
+        return response(200, { accepted: true });
+      }
+      if (url.pathname === '/workstreams/archive') return response(200, { actions: [action] });
+      return response(404, {});
+    });
+    const pageFetch = vi.fn(async (input: string, init: Record<string, unknown> = {}) => {
+      const target = String(input);
+      if (target === '/api/auth/session') return { ok: true, status: 200, async json() { return { accessToken: 'page-token' }; } };
+      if (target === `/backend-api/conversation/${conversationId}` && init.method === 'PATCH') {
+        return { ok: true, status: 200, async json() { return {}; } };
+      }
+      if (target === `/backend-api/conversation/${conversationId}`) {
+        return { ok: true, status: 200, async json() { return { is_archived: false }; } };
+      }
+      throw new Error(`unexpected page fetch: ${target}`);
+    });
+    const worker = loadWorker({
+      local: new FakeStorageArea(paired),
+      session: new FakeStorageArea(),
+      fetch: bridgeFetch,
+      tabsQuery: async () => [{ id: 43, url: `https://chatgpt.com/c/${conversationId}` }],
+      tabsGet: async () => ({ id: 43, url: `https://chatgpt.com/c/${conversationId}`, status: 'complete' }),
+      scriptingExecuteScript: async (details) => {
+        if (details.files) return [];
+        const source = `(${String(details.func)})(...${JSON.stringify(details.args ?? [])})`;
+        if (details.world === 'MAIN') {
+          return [{ result: await vm.runInNewContext(source, {
+            location: { pathname: `/c/${conversationId}` }, fetch: pageFetch, AbortSignal, setTimeout, clearTimeout
+          }) }];
+        }
+        return [{ result: await vm.runInNewContext(source, {
+          CLF_DOM: { conversationId: () => conversationId, stopButton: () => null, generating: () => false },
+          setTimeout, clearTimeout
+        }) }];
+      }
+    });
+
+    await worker.fireAlarm('clf-workstream-recovery');
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ id: action.id, actionId: action.actionId });
+    expect(String(posts[0]?.error)).toContain('archive_not_confirmed');
+    expect(worker.tabsRemove).not.toHaveBeenCalled();
   });
 });
 
