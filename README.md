@@ -255,14 +255,14 @@ executes the requested operation. Subsequent calls carry both returned tokens.
 Keys route recordings, workspaces, terminals and agent messages without request headers.
 They are cooperative routing identifiers, so a model must never copy another chat's key.
 The browser binding is required before execution, so automatic recovery can address the
-actual ChatGPT thread. A lease expires after ten minutes without new tool or recorded chat
+actual ChatGPT thread. A lease expires after five minutes without new tool or recorded chat
 activity. Another conversation can claim the workstream immediately after expiry. A
 superseded lock cannot execute tools; already admitted calls must settle and retained
 terminal processes are stopped before the successor executes.
 
-The app attempts up to three continuation messages, checking after 1, 2, and 4 minutes.
-New activity cancels recovery; polling and the app's own continuation text do not renew a
-lease. If recovery fails, the extension stops and archives the actual ChatGPT conversation,
+The app gives a stalled workstream one same-chat continuation push and a 30-second recovery
+window. New activity cancels recovery; polling and the app's own continuation text do not renew
+a lease. If recovery fails, the extension stops and archives the actual ChatGPT conversation,
 confirms its archived state, and the app opens a fresh thread for the same workstream.
 The opening message includes the saved project context and generic instructions to read
 AGENTS.md, TODOs and vault plans as needed, then begin the next unblocked DAG work.

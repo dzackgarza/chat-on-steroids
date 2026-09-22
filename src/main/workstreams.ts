@@ -9,7 +9,7 @@ import { execOwner } from './codex/ownership.js';
 import { runningToolCalls } from './mcp/call-context.js';
 import type { ChatObservation } from './session/recorder.js';
 
-export const WORKSTREAM_LEASE_MS = 10 * 60_000;
+export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 export const RECOVERY_BACKOFF_MS = [60_000, 120_000, 240_000] as const;
 export const workstreamIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const rowSchema = z.object({
