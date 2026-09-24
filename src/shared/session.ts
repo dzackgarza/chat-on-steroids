@@ -150,6 +150,8 @@ export const ATTRIBUTION_LABELS: Record<CallAttribution, string> = {
 };
 
 export interface ToolCallRecord {
+  /** Internal code-mode invocation: retained for audit, never a separate model exchange. */
+  nested?: boolean;
   callId: string;
   tool: string;
   attribution: CallAttribution;

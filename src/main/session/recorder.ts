@@ -1044,6 +1044,8 @@ export interface ToolCallInput {
   requestId?: string | null;
   /** Exact conversation already proven for this request by the dispatcher, when available. */
   conversationId?: string | null;
+  /** Called from inside a code-mode `exec` script. See ToolCallRecord.nested. */
+  nested?: boolean;
 }
 
 /** Writing runs one at a time, so the log keeps call order. See recordToolCall. */
@@ -1201,6 +1203,7 @@ async function fileToolCall(input: ToolCallInput, target: Target): Promise<ToolC
       outcome: input.outcome,
       durationMs: input.durationMs,
       summary,
+      ...(input.nested ? { nested: true } : {}),
       ...(evidence.changes.length > 0 ? { changes: evidence.changes } : {}),
       ...(assets.length > 0 ? { assets } : {})
     };

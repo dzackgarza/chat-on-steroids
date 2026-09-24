@@ -57,7 +57,8 @@ describe('portable browser-backed feature parity', () => {
       'exec_command',
       'write_stdin',
       'session',
-      'agents'
+      'agents',
+      'exec'
     ]);
     expect(surfaceIsUseful('core', config.capabilities, 'darwin')).toBe(true);
     expect(surfaceIsUseful('desktop', config.capabilities, 'darwin')).toBe(false);

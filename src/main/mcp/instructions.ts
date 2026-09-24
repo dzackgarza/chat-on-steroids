@@ -14,6 +14,7 @@ import { getConfig } from '../config.js';
 import { isGitRepository } from '../toolchain.js';
 import type { ToolContext } from './kernel.js';
 import { surfaceDefinition, type SurfaceId } from './surfaces.js';
+import { CODE_MODE_INSTRUCTIONS } from './code-mode-tool.js';
 
 export function serverInstructions(
   ctx: ToolContext,
@@ -143,6 +144,7 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform): string {
     );
   }
 
+  lines.push('', CODE_MODE_INSTRUCTIONS);
   return lines.join('\n');
 }
 

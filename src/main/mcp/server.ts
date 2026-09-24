@@ -318,7 +318,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
     prmPath: `${PRM_PREFIX}${surface.basePath}`,
     url: '',
     handler: toNodeHandler(
-      createMcpHandler(() => buildServer(stableContext(surface.id), surface.id)),
+      createMcpHandler(() => buildServer(stableContext(surface.id), surface.id, () => stableContext(surface.id))),
       { onerror: (error) => logError(`MCP handler error (${surface.id}): ${error.message}`) }
     )
   }));

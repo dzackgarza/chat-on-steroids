@@ -572,7 +572,7 @@ describe('surface boundaries', () => {
     everything();
     const names = toolNames(await core('tools/list'));
     // find is absent because exec_command is present — they are mutually exclusive.
-    expect(names).toEqual(['agents', 'apply_patch', 'exec_command', 'read', 'session', 'view_image', 'write_stdin']);
+    expect(names).toEqual(['agents', 'apply_patch', 'exec', 'exec_command', 'read', 'session', 'view_image', 'write_stdin']);
     for (const name of surfaceDefinition('desktop').tools) expect(names, name).not.toContain(name);
   });
 
@@ -749,9 +749,9 @@ describe('surface boundaries', () => {
     const coreTools = toolList(await core('tools/list'));
     const desktopTools = toolList(await desktop('tools/list'));
 
-    // Counts are the design: Core is capped at seven live schemas because find and the exec
-    // pair cannot both exist, and Desktop is two.
-    expect(coreTools).toHaveLength(7);
+    // Counts are the design: Core is capped at eight live schemas — seven because find and the
+    // exec pair cannot both exist, plus code mode — and Desktop is two.
+    expect(coreTools).toHaveLength(8);
     expect(desktopTools).toHaveLength(2);
 
     // And the size, which is what a discovery pull actually costs the model on every
@@ -857,7 +857,8 @@ describe('2025-era clients', () => {
     // Short enough not to burn the model's context on every conversation. Everything added
     // since this bound was set paid for itself by tightening a line that said the same thing
     // at greater length; raise it only for guidance that removes calls, never for prose.
-    expect(instructions.length).toBeLessThan(2500);
+    // Code mode's composition guidance is the one raise: it exists to fold calls into one.
+    expect(instructions.length).toBeLessThan(4000);
   });
 
   it('points at the other connector rather than pretending the capability does not exist', async () => {
@@ -953,7 +954,7 @@ describe('capability gating', () => {
     ctx.caps = effectiveCapabilities(config);
     ctx.readOnly = true;
 
-    expect(toolNames(await core('tools/list'))).toEqual(['find', 'read', 'view_image']);
+    expect(toolNames(await core('tools/list'))).toEqual(['exec', 'find', 'read', 'view_image']);
   });
 
   it('offers apply_patch only when a writing permission is on', async () => {

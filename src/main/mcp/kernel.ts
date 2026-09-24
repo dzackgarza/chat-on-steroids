@@ -361,7 +361,8 @@ async function dispatch(
   transportKey: string | null,
   requestId: string | null,
   surface: SurfaceId,
-  run: () => Promise<ToolResult>
+  run: () => Promise<ToolResult>,
+  parent?: CallContext
 ): Promise<ToolResult> {
   // The context is built here, one layer out from where the work happens, because the
   // compaction barrier asks about the whole request and not just the handler. A call is
@@ -369,16 +370,18 @@ async function dispatch(
   // recorded, and while its result is on the way back — and a handoff written in any of
   // those gaps describes a machine that has not finished changing. The counter therefore
   // opens with the request and closes with it.
+  //
+  // A code-mode child (`parent` set) inherits the identity its `exec` call already proved.
   const context: CallContext = {
     startedAt: Date.now(),
     transportKey,
-    agent: null,
-    caller: { transportKey, requestId, conversationId: null },
+    agent: parent?.agent ?? null,
+    caller: parent ? { ...parent.caller } : { transportKey, requestId, conversationId: null },
     outcome: null,
     evidence: emptyEvidence()
   };
   return trackMcpRequest(() =>
-    trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, requestId, surface, run))
+    trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, requestId, surface, run, !!parent))
   );
 }
 
@@ -389,8 +392,10 @@ async function dispatchTracked(
   transportKey: string | null,
   requestId: string | null,
   surface: SurfaceId,
-  run: () => Promise<ToolResult>
+  run: () => Promise<ToolResult>,
+  nested: boolean
 ): Promise<ToolResult> {
+  if (nested) return dispatchNested(context, name, args, surface, run);
   noteTransportIdentity(transportKey);
   // Recorded here rather than in `guard` because only this layer knows which server
   // answered, and "was this connector ever actually used from ChatGPT" is a per-connector
@@ -467,58 +472,8 @@ async function dispatchTracked(
     }
   }
   context.agent = isFinish ? agentForFinishCaller(context.caller) : agentForCaller(context.caller);
-  const retiredWorker = retiredWorkerForConversation(context.caller.conversationId);
-  // Parking a run releases its global execution claim without retiring its worker chats. Those
-  // exact conversations remain workers, though: a stale sleeping/terminal worker tab must not
-  // turn into an ordinary unidentified chat and keep running local tools merely because another
-  // prime currently owns the active run (or because no run is active at all). Only the owning
-  // prime's explicit agents message may wake a sleeping worker.
-  const dormantWorker = isFinish ? null : dormantWorkerNotice(context.caller.conversationId);
-  // A worker that really is over learns so on its own next call. Without this its calls
-  // resolved to nobody and ran anyway, so a chat the user had ended went on writing files
-  // in the name of no agent at all.
-  // A terminal worker may do exactly one thing: retry its own idempotent finish after a lost
-  // result. It still has a tombstone identity for that call so the dispatcher can re-offer the
-  // inbox that rode on the missing result. Every other tool call from the same chat is refused
-  // by endedWorkerNotice as before.
-  const endedWorker = isFinish ? null : endedWorkerNotice(context.caller.conversationId);
-  const retiredLeaseAmbiguous = hasRetiredWorkerLeases() && !context.caller.conversationId;
-  const dormantLeaseAmbiguous = hasDormantWorkerLeases() && !context.caller.conversationId;
-  // In a swarm, a relative/defaulted filesystem operation is not safe to execute after the
-  // exact caller lookup timed out: its workspace is part of the requested operation. Falling
-  // back to the first approved root turns an attribution outage into wrong-project mutation.
-  // Refuse and let the model retry once page evidence is healthy instead.
-  const result = await runInCallContext(context, () =>
-      dormantWorker
-        ? Promise.resolve(fail(dormantWorker))
-        : retiredWorker
-        ? Promise.resolve(
-            fail(
-              `WORKER_RETIRED: ${retiredWorker.id} was retired because ${retiredWorker.reason}. This chat can no longer use local tools. Stop working and return to the prime chat.`
-            )
-          )
-        : endedWorker
-        ? Promise.resolve(fail(endedWorker))
-        : retiredLeaseAmbiguous
-        ? Promise.resolve(
-            fail(
-              'CALLER_IDENTITY_REQUIRED: a recently retired worker tab may still be open, and the connector could not prove this call belongs to a different chat. No local tool was run. Reload the extension evidence path or wait for the retired lease to expire.'
-            )
-          )
-        : dormantLeaseAmbiguous
-        ? Promise.resolve(
-            fail(
-              'CALLER_IDENTITY_REQUIRED: a dormant worker chat still belongs to its prime history, and the connector could not prove this call belongs to a different conversation. No local tool was run. Restore the browser-extension identity path and retry.'
-            )
-          )
-        : swarmRunning() && identitySensitive && !context.caller.conversationId
-        ? Promise.resolve(
-            fail(
-              'CALLER_IDENTITY_REQUIRED: this operation needs this chat’s exact workspace, but the connector could not prove which ChatGPT conversation made the call. Retry after the extension reconnects; no file or command was changed.'
-            )
-          )
-        : run()
-  );
+  const refusal = workerFenceRefusal(context.caller.conversationId, identitySensitive, isFinish);
+  const result = await runInCallContext(context, () => (refusal ? Promise.resolve(fail(refusal)) : run()));
   // Identity, once, from this call's own evidence — see callerConversation. `agents` has
   // already established its own inside the call and adopted it, and re-reading here would
   // only be able to disagree with the stronger answer it waited for.
@@ -600,6 +555,87 @@ async function dispatchTracked(
   return delivered;
 }
 
+/** Why a call from this conversation may not run a local tool, or null when it may. */
+function workerFenceRefusal(conversationId: string | null, identitySensitive: boolean, isFinish: boolean): string | null {
+  // Parking a run releases its global execution claim without retiring its worker chats. Those
+  // exact conversations remain workers, though: a stale sleeping/terminal worker tab must not
+  // turn into an ordinary unidentified chat and keep running local tools merely because another
+  // prime currently owns the active run (or because no run is active at all). Only the owning
+  // prime's explicit agents message may wake a sleeping worker.
+  const dormantWorker = isFinish ? null : dormantWorkerNotice(conversationId);
+  if (dormantWorker) return dormantWorker;
+  const retiredWorker = retiredWorkerForConversation(conversationId);
+  if (retiredWorker) {
+    return `WORKER_RETIRED: ${retiredWorker.id} was retired because ${retiredWorker.reason}. This chat can no longer use local tools. Stop working and return to the prime chat.`;
+  }
+  // A worker that really is over learns so on its own next call. Without this its calls
+  // resolved to nobody and ran anyway, so a chat the user had ended went on writing files
+  // in the name of no agent at all.
+  // A terminal worker may do exactly one thing: retry its own idempotent finish after a lost
+  // result. It still has a tombstone identity for that call so the dispatcher can re-offer the
+  // inbox that rode on the missing result. Every other tool call from the same chat is refused
+  // by endedWorkerNotice as before.
+  const endedWorker = isFinish ? null : endedWorkerNotice(conversationId);
+  if (endedWorker) return endedWorker;
+  if (hasRetiredWorkerLeases() && !conversationId) {
+    return 'CALLER_IDENTITY_REQUIRED: a recently retired worker tab may still be open, and the connector could not prove this call belongs to a different chat. No local tool was run. Reload the extension evidence path or wait for the retired lease to expire.';
+  }
+  if (hasDormantWorkerLeases() && !conversationId) {
+    return 'CALLER_IDENTITY_REQUIRED: a dormant worker chat still belongs to its prime history, and the connector could not prove this call belongs to a different conversation. No local tool was run. Restore the browser-extension identity path and retry.';
+  }
+  // In a swarm, a relative/defaulted filesystem operation is not safe to execute after the
+  // exact caller lookup timed out: its workspace is part of the requested operation. Falling
+  // back to the first approved root turns an attribution outage into wrong-project mutation.
+  // Refuse and let the model retry once page evidence is healthy instead.
+  if (swarmRunning() && identitySensitive && !conversationId) {
+    return 'CALLER_IDENTITY_REQUIRED: this operation needs this chat’s exact workspace, but the connector could not prove which ChatGPT conversation made the call. Retry after the extension reconnects; no file or command was changed.';
+  }
+  return null;
+}
+
+/**
+ * One tool call made from inside a code-mode `exec` script.
+ *
+ * Identity was proved once, by the `exec` call, and is copied into `context`; the child does
+ * not wait for page evidence of its own and does not acknowledge or carry the worker inbox —
+ * that rides on the outer result. It still passes the same worker fences and the handler's live
+ * permission checks, and it is recorded as its own tool call, marked nested.
+ */
+async function dispatchNested(
+  context: CallContext,
+  name: string,
+  args: unknown,
+  surface: SurfaceId,
+  run: () => Promise<ToolResult>
+): Promise<ToolResult> {
+  const isFinish = isFinishCall(name, args);
+  const refusal =
+    name === 'exec'
+      ? 'CODE_MODE_RECURSION: exec cannot call exec. No tool was run.'
+      : isFinish
+      ? 'CODE_MODE_FINISH: call agents action=finish directly, not from exec. No tool was run.'
+      : workerFenceRefusal(context.caller.conversationId, needsWorkspaceIdentity(name, args), false);
+  const result = await runInCallContext(context, () => (refusal ? Promise.resolve(fail(refusal)) : run()));
+  const recording = recordToolCall({
+    tool: name,
+    args,
+    content: result.content,
+    outcome: context.outcome ?? (result.isError ? 'rejected' : 'ok'),
+    durationMs: Date.now() - context.startedAt,
+    startedAt: context.startedAt,
+    evidence: context.evidence,
+    agent: context.agent,
+    bind: null,
+    requestId: context.caller.requestId,
+    conversationId: context.caller.conversationId,
+    nested: true
+  });
+  if (context.caller.conversationId) await recording;
+  else holdWhileSettling(context, recording);
+  surfaceToolCallAt.set(surface, Date.now());
+  return result;
+}
+
 /** Whether this handler must know which chat it is before resolving its paths. */
 function needsWorkspaceIdentity(name: string, args: unknown): boolean {
   const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
@@ -621,6 +657,9 @@ function needsWorkspaceIdentity(name: string, args: unknown): boolean {
     const workdir = input['workdir'];
     return swarmRunning() || workdir === undefined || relative(workdir);
   }
+  // A code-mode script's children inherit this call's identity instead of waiting for their
+  // own, so in a swarm the script has to prove it before any child runs.
+  if (name === 'exec') return swarmRunning();
   return false;
 }
 
@@ -785,9 +824,13 @@ export interface SurfaceRegistrar {
   featureDisabled(feature: string, setting: string): ToolResult;
   /** Names actually registered on this server, in registration order. */
   registered(): string[];
+  /** Same registered handler/schema, with a fresh child recording context and inherited proof. */
+  invokeNested(name: string, args: unknown, parent: CallContext): Promise<ToolResult>;
+  descriptions(): Array<{ name: string; description: string }>;
 }
 
-export function createRegistrar(server: McpServer, ctx: ToolContext, surface: SurfaceId): SurfaceRegistrar {
+/** `server` is null for the per-child registrar code mode builds against live permissions. */
+export function createRegistrar(server: McpServer | null, ctx: ToolContext, surface: SurfaceId): SurfaceRegistrar {
   const caps = ctx.caps;
   const exposedCaps = ctx.exposedCaps ?? caps;
   // These two do not follow a capability checkbox: they are whole features the user
@@ -800,6 +843,7 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
   const agentToolsExposed = ctx.exposedAgentTools ?? agentToolsLive;
   const findExposed = ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
   const names: string[] = [];
+  const handlers = new Map<string, { description: string; run: (args: unknown) => Promise<ToolResult> }>();
 
   return {
     ctx,
@@ -811,12 +855,41 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
     agentToolsExposed,
     findExposed,
     registered: () => [...names],
+    descriptions: () => [...handlers].map(([name, entry]) => ({ name, description: entry.description })),
+    invokeNested(name, args, parent) {
+      return dispatch(
+        name,
+        args,
+        parent.caller.transportKey,
+        parent.caller.requestId,
+        surface,
+        async () => {
+          const entry = handlers.get(name);
+          return entry ? entry.run(args) : fail('UNKNOWN_TOOL: this tool is not available on this connector.');
+        },
+        parent
+      );
+    },
     register(name, config, handler) {
       names.push(name);
+      // The MCP SDK validates wire arguments; a code-mode child arrives without that layer,
+      // so it is validated here against the same schema. Zod issues omit input values.
+      handlers.set(name, {
+        description: config.description,
+        run: async (args) => {
+          const parsed = await config.inputSchema.safeParseAsync(args);
+          if (parsed.success) return handler(parsed.data);
+          const details = parsed.error.issues
+            .slice(0, 3)
+            .map((issue) => `${issue.path.map(String).join('.').slice(0, 80) || 'arguments'}: ${issue.message.slice(0, 300)}`)
+            .join('; ');
+          return fail(`INVALID_ARGUMENTS: ${details}`);
+        }
+      });
       // No identity field is ever added here. Every tool's schema is exactly what its
       // surface declared: who is calling is a fact about the conversation, established from
       // page evidence in `dispatch`, and never something the model is asked to carry.
-      server.registerTool(name, config, ((args: never, mcpCtx?: McpCallContext) =>
+      server?.registerTool(name, config, ((args: never, mcpCtx?: McpCallContext) =>
         dispatch(name, args, mcpCtx?.sessionId ?? null, requestIdOf(mcpCtx), surface, () =>
           handler(args)
         )) as never);

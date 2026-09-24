@@ -304,6 +304,7 @@ earn it today.
 | `exec_command`, `write_stdin` | `command` | `codex/unified-exec.ts` |
 | `session` | recording enabled | session subsystem |
 | `agents` | multi-agent enabled | `agents.ts` |
+| `exec` (code mode) | always; each child call re-checks its own permission | `mcp/code-mode-*.ts` (QuickJS worker), children via `kernel.ts::dispatchNested` |
 
 **Desktop** (`chat-on-steroids-desktop`, optional, **Windows-only**): `observe` needs `screen`;
 `computer` registers on `control` **or** either clipboard permission, then re-checks each

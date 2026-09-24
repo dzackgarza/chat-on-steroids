@@ -12,7 +12,7 @@ separate secret tokenized local paths.
 
 | Connector | Purpose | Possible tools |
 | --- | --- | --- |
-| **Chat On Steroids Core** | Approved files, patches, terminal, recorded-session lookup, workers | `read`, `view_image`, `find`, `apply_patch`, `exec_command`, `write_stdin`, `session`, `agents` |
+| **Chat On Steroids Core** | Approved files, patches, terminal, recorded-session lookup, workers | `read`, `view_image`, `find`, `apply_patch`, `exec_command`, `write_stdin`, `session`, `agents`, `exec` |
 | **Chat On Steroids Desktop** | **Windows only:** screen, windows, mouse/keyboard and clipboard | `observe`, `computer` |
 
 The Desktop connector is optional and Windows-only. Core is the main connector everywhere.
@@ -23,8 +23,9 @@ Desktop permissions off at runtime while preserving stored choices for a config 
 Windows. Existing configs keep explicit choices during upgrades; missing legacy permissions are
 not silently widened.
 
-With the fresh all-on capability snapshot, Core advertises seven schemas:
-`read`, `view_image`, `apply_patch`, `exec_command`, `write_stdin`, `session`, and `agents`.
+With the fresh all-on capability snapshot, Core advertises eight schemas:
+`read`, `view_image`, `apply_patch`, `exec_command`, `write_stdin`, `session`, `agents`, and
+`exec` (code mode: one JavaScript call that composes the others).
 `find` is the search fallback for a snapshot where search is enabled and command execution is
 unavailable. Tool exposure is monotonic within a running connector instance, so a permission
 changed mid-conversation can leave a previously exposed name listed; its handler still enforces

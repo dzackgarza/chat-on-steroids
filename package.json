@@ -45,9 +45,11 @@
     "test:kill": "node scripts/kill-stray-vitest.mjs"
   },
   "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "node-pty": "1.2.0-beta.15",
+    "quickjs-emscripten-core": "0.32.0",
     "sharp": "0.35.3",
     "tree-sitter": "0.25.1",
     "tree-sitter-bash": "0.25.1",
@@ -60,8 +62,8 @@
     "electron-builder": "^26.15.7",
     "electron-vite": "^5.0.0",
     "jsdom": "^30.0.1",
-    "typescript": "^7.0.2",
     "tsx": "^4.19.3",
+    "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^4.1.10"
   }

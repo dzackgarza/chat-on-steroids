@@ -133,7 +133,7 @@ Chat On Steroids publishes Core everywhere and an additional Desktop app on Wind
 
 | Connector | Purpose | Current tool names |
 | --- | --- | --- |
-| **Core** | Approved files, search, patches, terminal, session lookup, workers | `read`, `view_image`, `find`, `apply_patch`, `exec_command`, `write_stdin`, `session`, `agents` |
+| **Core** | Approved files, search, patches, terminal, session lookup, workers | `read`, `view_image`, `find`, `apply_patch`, `exec_command`, `write_stdin`, `session`, `agents`, `exec` |
 | **Desktop** | **Windows only:** screen, windows, mouse/keyboard and clipboard | `observe`, `computer` |
 
 Core declares eight possible names but exposes at most seven at once because `find` is the no-shell search fallback and is mutually exclusive with the command pair. Desktop is optional and Windows-only. Revoking a permission takes effect immediately even if ChatGPT still shows a schema cached earlier; refresh the app in ChatGPT and start a new chat when you change the exposed tool shape.
