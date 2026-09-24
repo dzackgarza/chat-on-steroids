@@ -230,8 +230,14 @@ export async function sweepExecOrphans(
   const reaped = await manager.reapIdleSessions(lifetimeMs, now);
   for (const session of reaped) {
     result.reapedSessions += 1;
+    // A session whose process already finished was not killed: its command completed and the
+    // caller simply never read the result. Saying "killed" there reads as a hung command.
+    const what =
+      session.exitedWith === undefined
+        ? `killed orphaned exec session ${session.processId}`
+        : `dropped the unread result of finished exec session ${session.processId} (exit code ${session.exitedWith ?? 'unknown'})`;
     log.warn(
-      `exec reaper: killed orphaned exec session ${session.processId} ` +
+      `exec reaper: ${what} ` +
         `(pid ${session.pid}, idle ${seconds(session.idleMs)} > lifetime ${seconds(lifetimeMs)}, ` +
         `tty=${session.tty}, cwd ${session.cwd}, command: ${session.command})`
     );

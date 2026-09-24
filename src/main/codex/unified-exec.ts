@@ -647,6 +647,8 @@ export interface ReapedExecSession {
   command: string;
   cwd: string;
   tty: boolean;
+  /** Exit code when the process had already finished and only its unread result was dropped. */
+  exitedWith: number | null | undefined;
 }
 
 /** How many ended session ids keep their end timestamp for the escapee sweep. */
@@ -747,6 +749,7 @@ export class UnifiedExecProcessManager {
       try {
         const current = this.processes.get(entry.processId);
         if (!current || current.process !== entry.process) continue;
+        const exitedWith = entry.process.hasExited() ? entry.process.exitCode() : undefined;
         // terminate() runs the tree kill whether or not the leader has exited, which is
         // what clears a dead shell's surviving group members along with a live loop.
         await entry.process.terminate();
@@ -757,7 +760,8 @@ export class UnifiedExecProcessManager {
           idleMs,
           command: entry.hookCommand,
           cwd: entry.cwd,
-          tty: entry.tty
+          tty: entry.tty,
+          exitedWith
         });
       } finally {
         release();
