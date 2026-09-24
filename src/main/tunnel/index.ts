@@ -189,6 +189,18 @@ const RECOVERY_QUIET_MS = 30_000;
  */
 const UNREACHABLE_CONFIRM_MS = 35_000;
 
+/**
+ * How long /readyz has to keep failing before the client is killed and replaced.
+ *
+ * The same reasoning as UNREACHABLE_CONFIRM_MS above, applied to the far more expensive
+ * action: terminating the process every live tool call is travelling through. /readyz is
+ * asked once, with a three-second timeout and no retry, and one miss used to kill the
+ * client; the call in flight died with it and the chat ended on ChatGPT's "Message delivery
+ * timed out". A probe can miss while the client is mid-transfer or the machine is briefly
+ * loaded, so the failure has to survive into a second watch pass.
+ */
+const UNREADY_CONFIRM_MS = 15_000;
+
 /** A run of unreachable complaints not yet contradicted by a completed poll. */
 export interface UnreachableRun {
   /** When the run began, or 0 when there is no run in progress. */
@@ -274,6 +286,8 @@ async function startOpenAiTunnel(opts: TunnelStartOptions): Promise<TunnelHandle
   let pollErrors = 0;
   /** When the current client process reached ready, for the first-poll grace period. */
   let launchedAt = 0;
+  /** When /readyz first failed in the current run of failures; 0 when it is answering. */
+  let unreadySince = 0;
   /** The client's local health server, once it has published its port. */
   let healthBase: string | null = null;
   /** Last snapshot of what the client says about itself, for the UI. */
@@ -396,11 +410,29 @@ async function startOpenAiTunnel(opts: TunnelStartOptions): Promise<TunnelHandle
         void (async () => {
           if (stopped) return;
           const ready = await probe(`${base}/readyz`);
+          // Ported from upstream 76b169e (totec448-spec/chat-on-steroids#110).
           if (!ready.ok) {
+            const now = Date.now();
+            if (unreadySince === 0) {
+              unreadySince = now;
+              logWarn(`${tag} did not answer its readiness check: ${ready.detail || 'no detail'} — rechecking before replacing it`);
+              watch(base);
+              return;
+            }
+            if (now - unreadySince < UNREADY_CONFIRM_MS) {
+              watch(base);
+              return;
+            }
+            unreadySince = 0;
             logWarn(`${tag} went unready: ${ready.detail}`);
             await stopTree(child);
             retry(ready.detail || 'The tunnel stopped responding.');
             return;
+          }
+          // Answered: whatever the earlier miss was, it was not this client being down.
+          if (unreadySince !== 0) {
+            logInfo(`${tag} answered its readiness check again; not replacing it`);
+            unreadySince = 0;
           }
 
           const read = await refreshHealth(base);
@@ -541,6 +573,7 @@ async function startOpenAiTunnel(opts: TunnelStartOptions): Promise<TunnelHandle
           shown = null;
           healthBase = base;
           launchedAt = Date.now();
+          unreadySince = 0;
           pollErrors = 0;
           run = NO_OUTAGE;
           await refreshHealth(base);
