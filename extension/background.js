@@ -1623,6 +1623,7 @@ async function noteTabConversation(source, value) {
   tabConversations[key] = conversationId;
   await persistLive();
   if (!ownsDocument(source)) return false;
+  if (/^WEB:/i.test(conversationId)) void resolveWebRoute(id, conversationId).catch(() => undefined);
   let promoted = false;
   if (previous && previous !== conversationId) {
     try {
@@ -1655,6 +1656,71 @@ async function noteTabConversation(source, value) {
     await drainCloses();
   }
   return true;
+}
+
+/**
+ * Finds the server conversation behind a tab still on a client-only /c/WEB:<uuid> route.
+ *
+ * A WEB route is a send the server has not accepted yet: no server conversation exists until
+ * ChatGPT creates one and rewrites the URL, and the backend rejects the WEB id (400). The
+ * content script reports that rewrite; this is the backstop for a rewrite it missed (dead
+ * script after an extension reload, lost POST). The user message ids ChatGPT renders are created client-side and kept by the
+ * server, so the recent conversation whose mapping holds one of them is exactly this tab's
+ * chat — unambiguous even when several attempts sent identical text.
+ */
+const webRouteResolutions = new Set();
+async function resolveWebRoute(tabId, webId) {
+  if (webRouteResolutions.has(webId)) return;
+  webRouteResolutions.add(webId);
+  try {
+    const until = Date.now() + 5 * 60_000;
+    while (Date.now() < until) {
+      if (cleanConversationId(tabConversations[String(tabId)]) !== webId) return;
+      const execution = chrome.scripting.executeScript({
+        target: { tabId }, world: 'MAIN', args: [webId],
+        func: async (id) => {
+          if (location.pathname !== `/c/${id}`) return { moved: true };
+          const ids = [...document.querySelectorAll('[data-message-id]')]
+            .filter((node) => node.getAttribute('data-message-author-role') === 'user')
+            .map((node) => node.getAttribute('data-message-id'))
+            .filter(Boolean);
+          if (ids.length === 0) return { pending: 'no rendered user message' };
+          const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
+          if (!session.ok) return { pending: `session_http_${session.status}` };
+          const { accessToken } = await session.json();
+          const headers = { Authorization: `Bearer ${accessToken}` };
+          const listed = await fetch('/backend-api/conversations?offset=0&limit=10&order=updated', {
+            headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
+          });
+          if (!listed.ok) return { pending: `list_http_${listed.status}` };
+          const recent = Date.now() - 15 * 60_000;
+          for (const item of (await listed.json()).items || []) {
+            if (Date.parse(item.create_time) < recent) continue;
+            const one = await fetch(`/backend-api/conversation/${item.id}`, {
+              headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
+            });
+            if (!one.ok) continue;
+            const mapping = (await one.json()).mapping || {};
+            if (ids.some((messageId) => mapping[messageId])) return { serverId: item.id };
+          }
+          return { pending: 'not listed yet' };
+        }
+      });
+      const result = (await Promise.race([execution, sleep(45_000).then(() => null)]).catch(() => null))?.[0]?.result;
+      if (result?.moved) return;
+      const serverId = cleanConversationId(result?.serverId);
+      if (serverId && !serverId.startsWith('WEB:')) {
+        await call('/workstreams/routes', {
+          method: 'POST',
+          body: JSON.stringify({ promotions: [{ from: webId, to: serverId }] })
+        });
+        return;
+      }
+      await sleep(15_000);
+    }
+  } finally {
+    webRouteResolutions.delete(webId);
+  }
 }
 
 function conversationStillOpen(conversationId) {

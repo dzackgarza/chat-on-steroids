@@ -260,11 +260,32 @@ async function bindWorkstreamFrontend(
  * every rewrite and resolve late ids through it.
  */
 const browserRoutePromotions = new Map<string, string>();
+const ROUTE_PROMOTIONS_STATE = "browser-route-promotions";
 function noteBrowserRoutePromotion(from: string, to: string): void {
+  if (browserRoutePromotions.get(from) === to) return;
   browserRoutePromotions.delete(from);
   browserRoutePromotions.set(from, to);
   while (browserRoutePromotions.size > 512)
     browserRoutePromotions.delete(browserRoutePromotions.keys().next().value!);
+  // Durable because a tab can still show its WEB route after a restart; the reaper and every
+  // late ACK must keep resolving it to the chat the controller now records.
+  writeDurableSoon(ROUTE_PROMOTIONS_STATE, {
+    version: 1,
+    promotions: [...browserRoutePromotions.entries()],
+  });
+}
+async function restoreBrowserRoutePromotions(): Promise<void> {
+  const saved = await readDurable<{ version?: number; promotions?: unknown }>(
+    ROUTE_PROMOTIONS_STATE,
+  );
+  if (!saved || saved.version !== 1 || !Array.isArray(saved.promotions)) return;
+  browserRoutePromotions.clear();
+  for (const entry of saved.promotions as unknown[]) {
+    if (!Array.isArray(entry)) continue;
+    const from = conversationId(entry[0]);
+    const to = conversationId(entry[1]);
+    if (from && to && from !== to) browserRoutePromotions.set(from, to);
+  }
 }
 function currentBrowserRoute(conversationId: string): string {
   let current = conversationId;
@@ -4331,6 +4352,7 @@ async function closeCancelledBridgeStart(
 async function startBridgeOnce(epoch: number): Promise<number | null> {
   await restoreConversationKeys();
   await restoreWorkstreams();
+  await restoreBrowserRoutePromotions();
   bridgeRecovering = true;
   const instance = http.createServer((req, res) => {
     if (bridgeRecovering) {
@@ -6223,6 +6245,8 @@ async function bindSentFreshCommand(command: Command): Promise<boolean> {
  * Tabs younger than the grace are left alone so a just-opened tab can register first.
  */
 const TAB_REAP_GRACE_MS = 60_000;
+const TAB_REOPEN_WINDOW_MS = 5 * 60_000;
+const tabOpenedFor = new Map<string, number>();
 const tabFirstSeen = new Map<string, number>();
 async function reapBrowserTabs(now = Date.now()): Promise<void> {
   if (!browserTabs) return;
@@ -6269,6 +6293,28 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
     if (why) leaks.push({ ...tab, why });
     else kept.add(conversation!);
   }
+  // The other half of the tally: a managed workstream chat with no tab cannot report its turn
+  // boundaries, so completed turns never advance and stalls surface only through the lease.
+  // Open it once per window; a revive's own command tab supersedes this one if both exist.
+  if (openInBrowser)
+    for (const row of workstreamStatus()) {
+      const conversation = row.conversationId ? currentBrowserRoute(row.conversationId) : null;
+      if (
+        !conversation ||
+        conversation.startsWith("WEB:") ||
+        !["active", "advancing"].includes(row.phase) ||
+        kept.has(conversation) ||
+        tabs.some((tab) => {
+          const shown = tabConversation(tab.url);
+          return shown !== null && currentBrowserRoute(shown) === conversation;
+        }) ||
+        now - (tabOpenedFor.get(conversation) ?? 0) < TAB_REOPEN_WINDOW_MS
+      )
+        continue;
+      tabOpenedFor.set(conversation, now);
+      logWarn(`tab reaper: ${row.id} has no tab for ${conversation}; opening one`);
+      await openInBrowser(`https://chatgpt.com/c/${conversation}`);
+    }
   for (const leak of leaks) {
     await browserTabs.close(leak.id);
     tabFirstSeen.delete(leak.id);

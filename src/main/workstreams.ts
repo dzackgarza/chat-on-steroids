@@ -905,6 +905,20 @@ export async function nextWorkstreamActions(
         row.nextCheck = now;
         continue;
       }
+      // A WEB:<uuid> route is a send ChatGPT had not accepted when it was bound, and it was
+      // never promoted to a server conversation. There is nothing to revive (reopening the
+      // route lands on an empty page) and nothing to archive (the backend rejects the id):
+      // retire it and open the replacement directly.
+      if (row.conversationId.startsWith("WEB:")) {
+        if (!row.retiredConversations.includes(row.conversationId))
+          row.retiredConversations.push(row.conversationId);
+        row.conversationId = null;
+        row.phase = "opening";
+        row.actionId = `replace-${row.lock}`;
+        row.commandId = null;
+        row.nextCheck = now;
+        continue;
+      }
       if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
