@@ -17,6 +17,8 @@ export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 const WORKSTREAM_CLAIM_GRACE_MS = 30_000;
 /** Tool activity this recent proves a worker alive when only the observation of its turn ended. */
 const OBSERVATION_LOSS_ACTIVITY_MS = 2 * 60_000;
+/** How long a delivered revive gives the worker to resume before the chat is replaced. */
+const REVIVE_RESPONSE_MS = 2 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
 const MAX_RECOVERY_ATTEMPTS = RECOVERY_BACKOFF_MS.length;
 export const workstreamIdSchema = z
@@ -903,6 +905,10 @@ export async function nextWorkstreamActions(
         row.actionId = null;
         row.error = "five_minute_no_movement";
       }
+      // A revive in flight is judged by its own outcome, never by a timer racing its delivery:
+      // the command's deadline bounds the wait, a failed or lost command releases the row
+      // immediately, and a delivered one starts the response window below.
+      if (row.phase === "recovering" && row.commandId !== null) continue;
       if (row.phase !== "recovering" || now < row.nextCheck) continue;
       if (!row.conversationId) {
         // No known frontend means there is nothing honest to revive or archive. This is the
@@ -1006,6 +1012,33 @@ export async function releaseFailedWorkstreamDelivery(
       row.attempts = 0;
     }
     row.nextCheck = now;
+    await save();
+    return true;
+  });
+}
+
+/**
+ * A revive message reached the stalled chat. The worker now has REVIVE_RESPONSE_MS from that
+ * moment to make an ordinary claimed call (which reactivates the row); silence past it is the
+ * failed revival that escalates to archive-and-replace.
+ */
+export async function noteWorkstreamRecoveryDelivered(
+  id: string,
+  actionId: string,
+  commandId: string,
+  deliveredAt: number,
+): Promise<boolean> {
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (
+      !row ||
+      row.phase !== "recovering" ||
+      row.actionId !== actionId ||
+      row.commandId !== commandId
+    )
+      return false;
+    row.commandId = null;
+    row.nextCheck = deliveredAt + REVIVE_RESPONSE_MS;
     await save();
     return true;
   });

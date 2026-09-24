@@ -50,6 +50,7 @@ import {
   recordWorkstreamCommand,
   recoverWorkstreamNow,
   releaseFailedWorkstreamDelivery,
+  noteWorkstreamRecoveryDelivered,
   releaseFailedWorkstreamReplacementBind,
   replaceWorkstream,
   reserveWorkstream,
@@ -5780,15 +5781,23 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
             );
           }
         } else if (
-          receipt &&
-          !receipt.committed &&
+          ((receipt && !receipt.committed) || (!receipt && !liveCommand)) &&
           ["advancing", "recovering"].includes(row.phase)
         ) {
+          // A failed send, or one whose command and receipt were both lost (restart), can
+          // never report back; release the row to its next bounded step now.
           await releaseFailedWorkstreamDelivery(
             row.id,
             actionId,
             row.commandId,
             now,
+          );
+        } else if (receipt?.committed && row.phase === "recovering") {
+          await noteWorkstreamRecoveryDelivered(
+            row.id,
+            actionId,
+            row.commandId,
+            receipt.completedAt,
           );
         }
         continue;
