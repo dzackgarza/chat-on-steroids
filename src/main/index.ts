@@ -114,6 +114,14 @@ function createWindow(): void {
   window.webContents.on('did-fail-load', (_event, code, description) =>
     logError(`window failed to load (${code}): ${description}`)
   );
+  // A renderer killed under memory pressure (Linux earlyoom/OOM killer targets renderers first)
+  // leaves the window mapped with no page behind it, and a re-launch only focuses that empty
+  // window. Reloading starts a fresh renderer, which pulls the live state from main over IPC.
+  // Recovery pattern: https://www.electronjs.org/docs/latest/api/web-contents#event-render-process-gone
+  window.webContents.on('render-process-gone', (_event, details) => {
+    logError(`window renderer gone (${details.reason}, exit ${details.exitCode})`);
+    if (!quitting && window && !window.isDestroyed()) window.webContents.reload();
+  });
   // Renderer errors are otherwise invisible from here. Only errors, and only the
   // message text — never anything the page was working with.
   window.webContents.on('console-message', (details) => {

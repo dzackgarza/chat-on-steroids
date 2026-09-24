@@ -814,6 +814,7 @@ Each has a different persistence boundary.
 | stale render / typed input clobbered | `renderer/main.ts`, `chat.ts` generation guards, `ipc.ts` push order | `ipc`, `renderer-state` |
 | screenshot / input / clipboard / stale coords | `tools-desktop.ts`, `computer/*` frame-id checks | `computer` |
 | connector offline / tunnel / self-test | `connection.ts`, `tunnel/*`, `diagnostics.ts`, `server.ts` | `tunnel`, `mcp` |
+| app window open but empty; re-launch only focuses it | Activity log `window renderer gone (<reason>)`; `index.ts::createWindow` `render-process-gone` reload. Linux earlyoom/OOM kills renderers first | live: `kill -TERM` the `--type=renderer` pid; the page must reload with state |
 | renderer has too much authority | `preload/index.ts`, `ipc.ts`, `index.ts` window config | `ipc` |
 | installed build missing extension/tunnel/rg/node-pty | `electron-builder.yml`, `extension-path.ts`, `scripts/*` | package smoke check |
 
