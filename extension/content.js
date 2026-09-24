@@ -8030,6 +8030,8 @@
    * headroom without making a genuinely stuck local call wait anywhere near BRIEF_WATCH_MS.
    */
   const TOOL_SETTLE_MS = 30_000;
+  /** How long an app-opened `/c/<id>` page may take to render its transcript. */
+  const TRANSCRIPT_RENDER_WAIT_MS = 20_000;
   /** How many silent answers about pending calls to sit through before refusing. */
   const SETTLE_UNKNOWN_TRIES = 3;
 
@@ -8545,6 +8547,14 @@
     // it — the service worker only offers the job to a document already showing the chat the
     // command names, and the redeemed command's own `conversationId` is compared below.
     const openingRoute = fromUrl ? OPENED_CONVERSATION : CLF_DOM.conversationId();
+    // An app-opened `/c/<id>` page renders its transcript some time after the route exists; a
+    // long chat on a loaded renderer can take many seconds. Classifying before that made every
+    // slow revival look like a preallocated empty chat and fail as "a different conversation".
+    // A genuinely preallocated fresh chat stays empty, so it only pays this bounded wait.
+    if (fromUrl && openingRoute && CLF_DOM.messages && CLF_DOM.messages().length === 0) {
+      if (attempt) attempt.step = 'waiting-transcript';
+      await waitUntil(() => alive && CLF_DOM.messages().length > 0, TRANSCRIPT_RENDER_WAIT_MS);
+    }
     const openingHasAuthoredConversation =
       Boolean(openingRoute) &&
       Boolean(CLF_DOM.messages && CLF_DOM.messages().length > 0);
@@ -8662,7 +8672,10 @@
       return void (await fail('it was offered to a chat that already exists and it does not name one'));
     }
     if (target && openedConversation !== target) {
-      return void (await fail('the page that was opened for it was showing a different conversation'));
+      return void (await fail(
+        `the page that was opened for it was showing a different conversation (route ${openingRoute || 'none'}, ` +
+          `${CLF_DOM.messages ? CLF_DOM.messages().length : 0} rendered messages, wanted ${target})`
+      ));
     }
     const freshRouteStillOwned = () => {
       const current = CLF_DOM.conversationId();

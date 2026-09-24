@@ -3493,6 +3493,22 @@ export function swarmState(): SwarmState {
       };
 }
 
+/**
+ * Every chat this run currently needs a browser tab for: the prime and each worker that is
+ * running or being woken. A sleeping or terminal worker needs none; waking one is a command,
+ * and the command's own tab carries it until the worker is active again.
+ */
+export function liveAgentConversations(): string[] {
+  if (!run) return [];
+  const live = new Set<string>([run.primeConversationId]);
+  for (const agent of run.agents.values()) {
+    const { state, conversationId } = agent.info;
+    if (conversationId && (state === 'active' || state === 'detached' || state === 'waking'))
+      live.add(conversationId);
+  }
+  return [...live].filter(Boolean);
+}
+
 export function agentConversation(id: string): string | null {
   return run?.agents.get(id)?.info.conversationId ?? null;
 }

@@ -151,6 +151,7 @@ import {
   stageWorkerConversationFinish,
   workerConversationGone,
   workerRevivalDeliveredSince,
+  liveAgentConversations,
   type WorkerRevival,
 } from "./agents.js";
 import {
@@ -317,7 +318,7 @@ const RATE_LIMIT = 900;
 const COMMAND_DEADLINE_MS = 90_000;
 /** Controller-owned workstream sends are unattended; a slow exact-chat/fresh-chat open must
  * not turn a five-minute stall threshold into another multi-minute wait. */
-const WORKSTREAM_COMMAND_DEADLINE_MS = 30_000;
+const WORKSTREAM_COMMAND_DEADLINE_MS = 60_000;
 /** After ChatGPT accepted a fresh managed-workstream message, only route identity remains.
  * This is a different phase from delivery: the text must never be typed again. Give the page
  * one fixed minute to publish a conversation id; repeated provisional ACK retries do not renew it. */
@@ -4474,6 +4475,9 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
         void runStaleSwarmSweep().catch((err: Error) =>
           logWarn(`stale swarm sweep failed: ${err.message}`),
         );
+        void reapBrowserTabs().catch((err: Error) =>
+          logWarn(`tab reaper failed: ${err.message}`),
+        );
         // Same maintenance cadence, independent job: close open turns whose page observer
         // has gone silent, with the honest observer_lost outcome. This is the app-side
         // half of the turn-lifecycle staleness invariant; a discarded or frozen tab sends
@@ -5868,13 +5872,34 @@ function queueResumeCommand(sessionId: string, token: string): Command {
  * a build with no window (or a test) simply falls back to the polling path instead of
  * having a browser-launching side effect nobody asked for.
  */
-let openInBrowser: ((url: string) => Promise<void>) | null = null;
+/** Resolves to the opened tab's browser target id when the opener can name it. */
+let openInBrowser: ((url: string) => Promise<string | void>) | null = null;
 
 export function setBrowserOpener(
-  open: ((url: string) => Promise<void>) | null,
+  open: ((url: string) => Promise<string | void>) | null,
 ): void {
   openInBrowser = open;
 }
+
+/**
+ * Enumerates and closes the automation browser's tabs by target id. Headless only.
+ *
+ * The app owns the exact tab tally: one per managed workstream chat, one per live agent chat
+ * and one per in-flight command. Everything else on ChatGPT is a leak, and a leak is what
+ * starved the rack's renderers until fresh chats timed out. See reapBrowserTabs().
+ */
+export interface BrowserTabs {
+  list(): Promise<Array<{ id: string; url: string }>>;
+  close(id: string): Promise<void>;
+}
+let browserTabs: BrowserTabs | null = null;
+
+export function setBrowserTabs(tabs: BrowserTabs | null): void {
+  browserTabs = tabs;
+}
+
+/** The browser target each in-flight command's tab was opened as. Memory only. */
+const commandTabTargets = new Map<string, string>();
 
 /**
  * Closes the browser tab the app opened for one command. Wired beside the opener at startup.
@@ -5978,7 +6003,8 @@ async function deliverOne(): Promise<void> {
       : `bridge: opening a fresh ChatGPT chat for ${specKey(command.spec)}`,
   );
   try {
-    await openInBrowser(url);
+    const target = await openInBrowser(url);
+    if (typeof target === "string" && target) commandTabTargets.set(command.id, target);
   } catch (err) {
     // One command is one browser-open attempt. A rejected opener can never produce an ACK,
     // so leaving the row unleased merely blocks everything behind it until some unrelated
@@ -6112,6 +6138,28 @@ function expire(command: Command): void {
     retire(command, "its worker is no longer waiting to be woken");
     return;
   }
+  // A fresh managed chat is created by its first accepted message, so a command tab that now
+  // shows /c/<id> has already sent. A lost or late ACK must not become a second replacement
+  // chat: bind the chat the tab shows, exactly as the ACK would have.
+  if (
+    spec.type === "send" &&
+    spec.conversationId === null &&
+    /^(advance|revive|replace)-wl_/.test(spec.nonce) &&
+    browserTabs &&
+    commandTabTargets.has(command.id)
+  ) {
+    void bindSentFreshCommand(command)
+      .catch((err: Error) => {
+        logWarn(`bridge: could not inspect the tab of ${specKey(spec)} — ${err.message}`);
+        return false;
+      })
+      .then((bound) => {
+        if (bound || !commands.includes(command)) return;
+        drop(command, command.lastError ?? "the chat this app opened did not report back in time");
+        deliver();
+      });
+    return;
+  }
   drop(
     command,
     command.lastError ??
@@ -6120,6 +6168,116 @@ function expire(command: Command): void {
         : "the browser extension is not active; no ChatGPT page can redeem this command"),
   );
   deliver();
+}
+
+/** The conversation a ChatGPT tab URL shows, or null for any other page. */
+function tabConversation(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "chatgpt.com") return null;
+    return conversationId(/^\/c\/([^/?#]+)/.exec(parsed.pathname)?.[1] ?? null);
+  } catch {
+    return null;
+  }
+}
+
+/** Commits an expired fresh managed send whose own tab proves the message landed. */
+async function bindSentFreshCommand(command: Command): Promise<boolean> {
+  const target = commandTabTargets.get(command.id);
+  if (!browserTabs || !target) return false;
+  const tab = (await browserTabs.list()).find((entry) => entry.id === target);
+  const shown = tab ? tabConversation(tab.url) : null;
+  if (!shown || !commands.includes(command)) return false;
+  const conversation = currentBrowserRoute(shown);
+  const receipt: CommandReceipt = {
+    id: command.id,
+    client: command.owner,
+    conversationId: conversation,
+    outcome: "committed",
+    committed: true,
+    error: null,
+    completedAt: Date.now(),
+  };
+  await bindCommandConversationKey(command.id, conversation);
+  await bindWorkstreamFrontend(command.id, conversation);
+  noteAppOriginatedSend(conversation, receipt.completedAt, sendVerifyHorizon(command.id));
+  if (!(await finalizeCommand(command, receipt))) {
+    armDeadline(command, 5_000);
+    return true;
+  }
+  commandTabTargets.delete(command.id);
+  logWarn(
+    `bridge: ${specKey(command.spec)} never acknowledged, but its tab shows ${conversation}; bound that chat instead of opening another`,
+  );
+  deliver();
+  return true;
+}
+
+/**
+ * Holds the automation browser to the exact tab tally the app can compute.
+ *
+ * Expected: one tab per chat of a managed workstream row, one per live agent chat, and the
+ * tab each in-flight command opened. Any other ChatGPT tab — a duplicate, a retired or
+ * unmanaged chat, an abandoned blank — is a leak, closed and logged loudly because each one
+ * means some path failed to clean up after itself. Closing a tab never touches the chat.
+ * Tabs younger than the grace are left alone so a just-opened tab can register first.
+ */
+const TAB_REAP_GRACE_MS = 60_000;
+const tabFirstSeen = new Map<string, number>();
+async function reapBrowserTabs(now = Date.now()): Promise<void> {
+  if (!browserTabs) return;
+  const tabs = (await browserTabs.list()).filter((tab) => {
+    try {
+      return new URL(tab.url).hostname === "chatgpt.com";
+    } catch {
+      return false;
+    }
+  });
+  for (const id of [...tabFirstSeen.keys()])
+    if (!tabs.some((tab) => tab.id === id)) tabFirstSeen.delete(id);
+  for (const tab of tabs) if (!tabFirstSeen.has(tab.id)) tabFirstSeen.set(tab.id, now);
+
+  const managed = new Set<string>(liveAgentConversations().map(currentBrowserRoute));
+  for (const row of workstreamStatus())
+    if (row.conversationId && !["paused", "blocked"].includes(row.phase))
+      managed.add(currentBrowserRoute(row.conversationId));
+  const commandTargets = new Set(
+    commands.map((command) => commandTabTargets.get(command.id)).filter(Boolean),
+  );
+  const kept = new Set<string>();
+  const leaks: Array<{ id: string; url: string; why: string }> = [];
+  // Command tabs first, so a chat being revived keeps the tab the command is working in.
+  const ordered = [
+    ...tabs.filter((tab) => commandTargets.has(tab.id)),
+    ...tabs.filter((tab) => !commandTargets.has(tab.id)),
+  ];
+  for (const tab of ordered) {
+    const shown = tabConversation(tab.url);
+    const conversation = shown ? currentBrowserRoute(shown) : null;
+    if (commandTargets.has(tab.id)) {
+      if (conversation) kept.add(conversation);
+      continue;
+    }
+    if (now - (tabFirstSeen.get(tab.id) ?? now) < TAB_REAP_GRACE_MS) continue;
+    const why = !conversation
+      ? "no conversation and no command"
+      : !managed.has(conversation)
+        ? "conversation is not managed"
+        : kept.has(conversation)
+          ? "duplicate tab"
+          : null;
+    if (why) leaks.push({ ...tab, why });
+    else kept.add(conversation!);
+  }
+  for (const leak of leaks) {
+    await browserTabs.close(leak.id);
+    tabFirstSeen.delete(leak.id);
+    logWarn(`tab reaper: closed ${leak.url} (${leak.why})`);
+  }
+  if (leaks.length > 0)
+    logWarn(
+      `tab reaper: expected at most ${managed.size + commandTargets.size} ChatGPT tabs (${managed.size} managed chats, ${commandTargets.size} in-flight commands); found ${tabs.length}, closed ${leaks.length}`,
+    );
 }
 
 /** Finishes a command that has nothing left to do, timer and all. */
@@ -6266,9 +6424,22 @@ function drop(command: Command, why: string): boolean {
   if (command.timer) clearTimeout(command.timer);
   command.timer = null;
   commands = commands.filter((entry) => entry !== command);
-  // Only a tab no page ever redeemed from: a redeemed marker stays in the URL of the chat the
-  // page is now working in, and closing that would kill a live turn to tidy a receipt.
-  if (closeInBrowser && command.claimedAt !== null && command.owner === null) {
+  // The tab this command opened is known exactly by target id; ChatGPT's route rewrite erases
+  // the URL marker the fallback below matches on. A tab that became a real chat is left for
+  // reapBrowserTabs(), which keeps it only if that chat is one the app manages.
+  const target = commandTabTargets.get(command.id);
+  commandTabTargets.delete(command.id);
+  if (browserTabs && target) {
+    const tabs = browserTabs;
+    void (async () => {
+      const tab = (await tabs.list()).find((entry) => entry.id === target);
+      if (tab && !tabConversation(tab.url)) await tabs.close(target);
+    })().catch((err: Error) =>
+      logWarn(`bridge: could not close the tab opened for ${specKey(command.spec)} — ${err.message}`),
+    );
+  } else if (closeInBrowser && command.claimedAt !== null && command.owner === null) {
+    // Only a tab no page ever redeemed from: a redeemed marker stays in the URL of the chat the
+    // page is now working in, and closing that would kill a live turn to tidy a receipt.
     void closeInBrowser(openedUrlFor(command)).catch((err) => {
       logWarn(
         `bridge: could not close the tab opened for ${specKey(command.spec)} — ${err instanceof Error ? err.message : String(err)}`,

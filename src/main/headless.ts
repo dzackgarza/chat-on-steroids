@@ -21,7 +21,7 @@ import { initSessionStore } from './session/store.js';
 import { restoreRequestCorrelations } from './session/correlation.js';
 import { initDurableStore } from './durable.js';
 import { APP_VERSION } from './version.js';
-import { setBrowserCloser, setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
+import { setBrowserCloser, setBrowserOpener, setBrowserTabs, shutdownBridge, startBridge } from './bridge.js';
 import { restoreSleepWake, setSleepWakeDriver, sleepWakeSettings } from './session/sleep-wake.js';
 import { stopExecReaper } from './exec-reaper.js';
 import { unifiedExecManager } from './codex/manager.js';
@@ -143,7 +143,11 @@ async function main(): Promise<void> {
       });
       if (!res.ok) {
         console.warn(`Failed to open URL in headless browser via CDP: ${res.statusText}`);
+        return;
       }
+      // /json/new answers with the new target; its id is how the app tracks this exact tab.
+      const opened = (await res.json().catch(() => null)) as { id?: unknown } | null;
+      return typeof opened?.id === 'string' ? opened.id : undefined;
     } catch (err) {
       console.warn(`CDP opener failed on port ${devtoolsPort}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -171,6 +175,26 @@ async function main(): Promise<void> {
       const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${target.id}`);
       if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
     }
+  });
+
+  // Exact tab accounting for the tab reaper, over the same CDP HTTP endpoint.
+  setBrowserTabs({
+    list: async () => {
+      const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
+      const listed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`);
+      if (!listed.ok) throw new Error(`CDP /json/list answered ${listed.status} ${listed.statusText}`);
+      const targets = (await listed.json()) as Array<{ id?: string; type?: string; url?: string }>;
+      return targets.flatMap((target) =>
+        target.type === 'page' && typeof target.id === 'string' && typeof target.url === 'string'
+          ? [{ id: target.id, url: target.url }]
+          : [],
+      );
+    },
+    close: async (id: string) => {
+      const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
+      const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${encodeURIComponent(id)}`);
+      if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
+    },
   });
 
   // The sleep/wake tab driver, over the same CDP HTTP endpoint. Unlike the opener above it
