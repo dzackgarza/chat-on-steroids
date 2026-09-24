@@ -1847,6 +1847,70 @@ export async function setSessionOrigin(id: string, origin: SessionOrigin, title:
 }
 
 /**
+ * Detaches the durable session from its current ChatGPT frontend while preserving chatIds.
+ *
+ * Managed workstreams own their recorder session independently of browser conversation ids.
+ * Historical sessions created before that invariant may still carry a current conversation
+ * attachment; clear only that attachment in place, preserving the full event history and
+ * conversation lineage as metadata.
+ */
+export async function detachSessionConversation(
+  id: string,
+  expectedConversationId: string | null = null,
+): Promise<boolean> {
+  const entry = await ensureOpen(id);
+  return enqueueSessionOperation(entry, 'detach conversation', async () => {
+    const current = entry.summary.conversationId;
+    if (
+      expectedConversationId !== null &&
+      current !== expectedConversationId
+    )
+      return false;
+    if (current === null) return true;
+    const staged: SessionSummary = {
+      ...entry.summary,
+      conversationId: null,
+      // Ownership migration is not new model/session activity; preserve ordering.
+      updatedAt: entry.summary.updatedAt,
+    };
+    await writeSummary(staged, entry.historySeq);
+    Object.assign(entry.summary, staged);
+    entry.metaDirty = false;
+    publishAttachmentSummary(entry.summary);
+    return true;
+  });
+}
+
+/**
+ * Records one browser conversation in a durable session's lineage without making it the
+ * session's owner/current identity.
+ *
+ * Workstream recorder sessions are conversation-neutral. This is metadata only, useful for
+ * history/debugging after a replacement frontend is gone.
+ */
+export async function noteSessionConversationLineage(
+  id: string,
+  conversationId: string,
+): Promise<boolean> {
+  if (!conversationId) return false;
+  const entry = await ensureOpen(id);
+  return enqueueSessionOperation(entry, 'conversation lineage', async () => {
+    if (entry.summary.chatIds.includes(conversationId)) return true;
+    const staged: SessionSummary = {
+      ...entry.summary,
+      chatIds: [...entry.summary.chatIds, conversationId],
+      // Metadata attachment is not new model/session work; preserve ordering.
+      updatedAt: entry.summary.updatedAt,
+    };
+    await writeSummary(staged, entry.historySeq);
+    Object.assign(entry.summary, staged);
+    entry.metaDirty = false;
+    publishAttachmentSummary(entry.summary);
+    return true;
+  });
+}
+
+/**
  * Attaches this durable session to a different ChatGPT conversation.
  *
  * The single canonical session-transfer primitive: Compact & Resume does not create a
@@ -1887,10 +1951,10 @@ export async function rebindSession(
   const entry = await ensureOpen(id);
   return enqueueSessionOperation(entry, 'rebind', async () => {
     if (entry.summary.conversationId !== fromConversationId) return false;
-    // Browser conversation ids are UUID-like. A handful of store unit tests deliberately
+    // Browser conversation ids are UUID-like or WEB:<uuid>. A handful of store unit tests deliberately
     // use short symbolic ids and reuse them across retained temp sessions; ownership safety
     // applies to the real identity domain rather than manufacturing a test-only collision.
-    if (/^[0-9a-f-]{8,64}$/i.test(toConversationId)) {
+    if (/^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
       const target = await findSessionByConversation(toConversationId, { requireUnique: true });
       if (target && target.id !== id) {
         logWarn(`session ${id} cannot move to ${toConversationId}: that chat already belongs to ${target.id}`);

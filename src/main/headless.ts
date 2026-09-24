@@ -178,9 +178,26 @@ async function main(): Promise<void> {
   // abort of that sleep or wake, never as something to paper over. /json/new is PUT-only on
   // current Chrome, and /json/close/<id> is the HTTP form of Target.closeTarget.
   setSleepWakeDriver({
-    openConversationTab: async (conversationId: string) => {
+    openConversationTab: async (
+      conversationId: string,
+      options?: { remountExisting?: boolean },
+    ) => {
       const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
       const url = `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`;
+      const listed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`);
+      if (!listed.ok) throw new Error(`CDP /json/list answered ${listed.status} ${listed.statusText}`);
+      const targets = (await listed.json()) as Array<{ id?: string; type?: string; url?: string }>;
+      const existing = targets.find(
+        (target) =>
+          target.type === 'page' &&
+          typeof target.url === 'string' &&
+          target.url.includes(`/c/${conversationId}`)
+      );
+      if (existing && !options?.remountExisting) return;
+      if (existing?.id) {
+        const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${existing.id}`);
+        if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
+      }
       const res = await fetch(`http://127.0.0.1:${devtoolsPort}/json/new?${encodeURIComponent(url)}`, {
         method: 'PUT'
       });

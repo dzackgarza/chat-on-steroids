@@ -33,28 +33,28 @@ export interface CallEvidence {
 }
 
 /**
- * What this call was proven to be, rather than what it claimed.
+ * Per-call routing/diagnostic metadata.
  *
- * Kept in the call context rather than threaded through every handler. There is nothing
- * secret in it: identity here is a conversation id gathered from page evidence, which the
- * recorder writes down on purpose.
+ * Ordinary caller authority is `CallContext.workstreamId` plus its opaque claim token. The
+ * browser/request fields below are optional evidence about which ChatGPT frontend displayed a
+ * call; they may support recording diagnostics but never grant tool/agent/workspace authority.
  */
 export interface CallCaller {
+  /** Logical workstream admitted for this call. Ordinary caller identity authority. */
+  workstreamId?: string | null;
   transportKey: string | null;
   /**
    * ChatGPT's own id for this request, from the `x-request-id` header the connector
    * arrives with, trimmed to the part before the `/`.
    *
-   * This is the join. ChatGPT stamps the same id on the request in its own message model,
-   * the extension reports it, and the two meet here — so a call names the conversation
-   * that issued it outright, rather than being placed by when it happened to arrive.
+   * Historical/diagnostic join only. ChatGPT stamps the same id on the request in its own
+   * message model and the extension may report it from a page.
    * Measured live on 2026-08-18: header `wfr_01a014bdd7cd7a15b6b533d3ce2b42f2/yqy1`
    * against page evidence `read#wfr_01a014bdd7cd7a15b6b533d3ce2b42f2`.
    */
   requestId: string | null;
   /**
-   * The ChatGPT conversation this call was proven to come from, when this call's own
-   * evidence named one. Never anything the model wrote.
+   * ChatGPT conversation associated by optional browser/request evidence. Not caller authority.
    */
   conversationId: string | null;
   /**
@@ -66,8 +66,7 @@ export interface CallCaller {
   /**
    * The conversation inferred from degraded evidence at arrival, when exact proof was
    * absent: the only managed chat generating (`temporal_unique`) or a session key bound at
-   * such a moment (`connector_session`). Charge-scoping and recording only — never identity
-   * authority: agent resolution, inboxes and workspaces still require `conversationId`.
+   * such a moment (`connector_session`). Charge-scoping and recording diagnostics only.
    */
   inferredConversationId?: string | null;
   inferredMethod?: 'push_correlated' | 'temporal_unique' | 'connector_session' | null;
@@ -78,6 +77,12 @@ export interface CallContext {
   startedAt: number;
   /** MCP tool name, so an in-flight call can be named in a refusal without a second lookup. */
   tool: string;
+  /** Logical workstream admitted for this call, when the connector supplied one. */
+  workstreamId: string | null;
+  /** Opaque claim token that admitted this call; rotates on every workstream reclaim. */
+  workstreamClaimId: string | null;
+  /** Durable recorder session owned by the logical workstream, when already established. */
+  workstreamSessionId: string | null;
   /** Stable per-conversation key when the transport offers one, else null. */
   transportKey: string | null;
   /** Resolved agent id in multi-agent mode, else null. */
@@ -90,16 +95,6 @@ export interface CallContext {
    */
   outcome: ToolOutcome | null;
   evidence: CallEvidence;
-  /**
-   * An agent whose chat this call would identify, if the recorder can place the call.
-   *
-   * Only `agents action=spawn` sets it, and only for the prime: the prime's chat is the user's
-   * own, so nothing opened it on the app's behalf and there is no report to bind it from.
-   * The binding therefore waits for the same evidence the record itself waits for —
-   * resolved after the call, because the page renders the block for a call while it is
-   * still running and reports it on its own tick, which is usually after the answer.
-   */
-  bindOnAttribution?: string;
 }
 
 const storage = new AsyncLocalStorage<CallContext>();
@@ -155,7 +150,11 @@ let inFlightRequests = 0;
  *
  * See `mayOwnUnattributedCall` in session/recorder.ts for the evidence behind a `false`.
  */
-export type UnattributedChargeScope = (conversationId: string, arrivedAt: number) => boolean;
+export type UnattributedChargeScope = (
+  conversationId: string,
+  arrivedAt: number,
+  workstreamId?: string | null,
+) => boolean;
 
 function countFor(
   calls: Iterable<CallContext>,
@@ -187,7 +186,7 @@ function charged(
   if (conversationId === null) return true;
   const owner = call.caller.conversationId ?? call.caller.inferredConversationId ?? null;
   if (owner !== null) return owner === conversationId;
-  return scope === null || scope(conversationId, call.startedAt);
+  return scope === null || scope(conversationId, call.startedAt, call.workstreamId);
 }
 
 /** Requests still inside dispatch, and therefore still potentially doing tool work. */
@@ -202,6 +201,10 @@ export function runningToolCalls(
 export interface InFlightCall {
   tool: string;
   ageMs: number;
+  /** Stable logical workstream that admitted this call. */
+  workstreamId: string | null;
+  /** Opaque claim token that admitted this call. */
+  workstreamClaimId: string | null;
   /** The conversation this call is charged to, or null when nothing has placed it yet. */
   conversationId: string | null;
   /** How that owner was established; `unattributed` is the charge-everyone case. */
@@ -236,12 +239,55 @@ export function inFlightCallCensus(
     rows.push({
       tool: call.tool,
       ageMs: Math.max(0, now - call.startedAt),
+      workstreamId: call.workstreamId,
+      workstreamClaimId: call.workstreamClaimId,
       conversationId: owner,
       attribution: exact ? 'exact' : (call.caller.inferredMethod ?? 'unattributed')
     });
   }
   rows.sort((left, right) => right.ageMs - left.ageMs);
   return rows.slice(0, limit);
+}
+
+/** Running calls owned by one logical workstream, independent of browser attribution. */
+export function runningToolCallsForWorkstream(
+  workstreamId: string,
+  claimId: string | null = null,
+): number {
+  let count = 0;
+  for (const call of running) {
+    if (call.workstreamId !== workstreamId) continue;
+    if (claimId !== null && call.workstreamClaimId !== claimId) continue;
+    count += 1;
+  }
+  return count;
+}
+
+/** In-flight calls owned by one logical workstream, oldest first. */
+export function inFlightCallsForWorkstream(
+  workstreamId: string,
+  limit = 20,
+): InFlightCall[] {
+  const now = Date.now();
+  return [...running]
+    .filter((call) => call.workstreamId === workstreamId)
+    .map((call) => {
+      const exact = call.caller.conversationId ?? null;
+      const owner = exact ?? call.caller.inferredConversationId ?? null;
+      const attribution: InFlightCall['attribution'] = exact
+        ? 'exact'
+        : (call.caller.inferredMethod ?? 'unattributed');
+      return {
+        tool: call.tool,
+        ageMs: Math.max(0, now - call.startedAt),
+        workstreamId: call.workstreamId,
+        workstreamClaimId: call.workstreamClaimId,
+        conversationId: owner,
+        attribution,
+      };
+    })
+    .sort((left, right) => right.ageMs - left.ageMs)
+    .slice(0, limit);
 }
 
 /** Finished tool work whose unattributed durable record is still landing. */
@@ -332,12 +378,6 @@ export function currentAgent(): string | null {
 /** Who the running call was proven to be. Empty outside a call. */
 export function currentCaller(): CallCaller {
   return storage.getStore()?.caller ?? { transportKey: null, requestId: null, conversationId: null };
-}
-
-/** Asks for `agent` to be bound to this call's conversation once it can be identified. */
-export function bindOnAttribution(agent: string): void {
-  const context = storage.getStore();
-  if (context) context.bindOnAttribution = agent;
 }
 
 export function noteOutcome(outcome: ToolOutcome): void {

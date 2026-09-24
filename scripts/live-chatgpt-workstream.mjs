@@ -174,7 +174,7 @@ const id = `live-acceptance-${Date.now()}`;
 const context = [
   'LIVE ACCEPTANCE FIXTURE ONLY.',
   'Do not edit files, run shell commands, or touch another workstream.',
-  `Use the plugin named ${pluginName}, not any other connector, to READ AGENTS.md in /home/dzack/gitclones/chat-on-steroids.`,
+  `Use the plugin named ${pluginName}, not any other connector. First call \`workstream\` with action="continue" and workstream="${id}", then use the returned workstream_id to READ AGENTS.md in /home/dzack/gitclones/chat-on-steroids.`,
   'After that one connector read, stop. This read is the entire DAG task for this fixture.'
 ].join(' ');
 let oldConversation = null;
@@ -182,7 +182,7 @@ let replacementConversation = null;
 
 try {
   const startedAt = Date.now();
-  await bridgePost('/workstreams/start', { id, context });
+  await bridgePost('/workstreams/start', { id, context, autoAdvance: false });
 
   const first = await waitFor('real workstream conversation + connector activity', async () => {
     const rows = (await bridgeGet('/workstreams')).workstreams ?? [];

@@ -26,18 +26,123 @@ REPO_COPY = {
         "progress": "Architecture repair work",
     },
     "lean-categories": {
-        "objective": "Locate and verify existing Lean implementations for textbook mathematics before any new formal definitions are written.",
-        "progress": "Reference discovery",
+        "objective": "Realize the minimized source-faithful definition frontier in Lean, source by source, now that prior-art discovery is complete.",
+        "progress": "Definition realization",
     },
     "new-qual-site": {
-        "objective": "Build and solve a source-faithful archive of qualifying-exam and advanced-course problems while continuing to ingest recoverable source PDFs.",
-        "progress": "Problem archive",
+        "objective": "Finish the post-publication Author-solutions DAG by writing and banking complete source-faithful proofs one problem card at a time.",
+        "progress": "Author solutions",
     },
     "sage-categories": {
-        "objective": "Maintain the accepted category framework and reopen implementation work only when a concrete regression or newly requested capability appears.",
-        "progress": "Required implementation status",
+        "objective": "Finish framework completion by validating the integrated static projection at exact current HEAD through the repository-defined public consumers, then close final delivery.",
+        "progress": "Current-head acceptance",
     },
 }
+
+LEAN_SOURCE_TITLES = {
+    "01": "Dummit–Foote, Abstract Algebra",
+    "02": "Munkres, Topology",
+    "03": "Riehl, Category Theory in Context",
+    "04": "Atiyah–Macdonald, Introduction to Commutative Algebra",
+    "05": "Weibel, An Introduction to Homological Algebra",
+    "06": "Hartshorne, Algebraic Geometry",
+    "07": "Hatcher, Algebraic Topology",
+    "08": "Lee, Introduction to Smooth Manifolds",
+    "09": "Neukirch, Algebraic Number Theory",
+    "10": "Serre, Local Fields",
+    "11": "Peters–Sterk, Symmetric and Quadratic Forms",
+    "12": "Beauville, Complex Algebraic Surfaces",
+    "13": "Matsumura, Commutative Ring Theory",
+    "14": "Humphreys, Introduction to Lie Algebras and Representation Theory",
+    "15": "Humphreys, Reflection Groups and Coxeter Groups",
+    "16": "Humphreys, Linear Algebraic Groups",
+    "17": "Lurie, Kerodon",
+}
+
+RESEARCH_MANAGER_COPY = {
+    "terminal-session": "Run the repaired public Sage session and notebook examples end to end, then verify that the displayed mathematical objects and maps are correct.",
+    "research-sage-runtime": "Restore the repository's supported Sage runtime after the source-level architecture repairs are complete.",
+    "owner-api-convergence": "Move public mathematical operations from free functions onto the objects, morphisms, categories, or functors that mathematically own them, and remove obsolete global entry points.",
+    "framing-primary-epi": "Represent a framed module by its actual chosen surjection from a free module, so generators and the framing map are projections of one construction.",
+    "framing-specialization-convergence": "Make lattices, presented modules, fractional ideals, group modules, and related specializations reuse the same underlying framing construction instead of rebuilding it locally.",
+    "owned-provenance-data": "Replace hidden source/provenance attributes with explicit mathematical construction data wherever later operations genuinely depend on a chosen source or comparison map.",
+    "refinement-convergence": "Construct standard mathematical structure at object creation time instead of installing it later through order-dependent runtime refinement.",
+    "generator-lexicon": "Make public generator displays describe the mathematical generator set or image rather than the Python mechanism storing it.",
+    "ambiguous-generator-names": "Replace ambiguous public names such as bare gens, basis, or dual with names that state which mathematical structure is meant.",
+    "categorical-representation-convergence": "Use one authoritative representation for equivalent categorical data such as contravariant functors, bifunctors, and adjunction data, deriving the other views mechanically.",
+    "owned-product-codomains": "Return mathematical product objects from public APIs instead of exposing Python tuples or lists as the mathematical result.",
+    "mathematical-return-types": "Give public operations mathematical return types rather than generic framework types after their APIs have stabilized.",
+    "assertion-frontiers": "Replace generic not-implemented control flow with precise supported mathematical domains and explicit unsupported computational boundaries.",
+    "placeholder-stubs": "Remove unconditional public placeholders so every mathematical operation either works on a stated domain or is an explicit abstract contract.",
+    "group-module-scalar-change-convergence": "Make scalar extension and restriction of group modules one construction that owns both object and morphism transport.",
+    "memoization-convergence": "Move theory-specific identity caches onto the shared construction-identity mechanism without identifying genuinely different mathematical choices.",
+    "singular-kernel-delegation": "Delegate finitely presented module kernel computations to the maintained Sage/Singular operation rather than reproducing the algorithm in Python orchestration.",
+    "torsion-action-delegation": "Route torsion-form orbit and stabilizer computations through the general group-action interface, with GAP hidden behind that owner.",
+    "imperative-algorithm-cleanup": "Replace remaining generic hand-written traversal, grouping, and multiplication algorithms with their mathematical or mature-library owners where such an owner exists.",
+    "coordinate-firewall": "Keep coordinate/storage views only where a chosen finite presentation makes them mathematical data; ordinary public interaction should use semantic objects and maps.",
+    "ownership-test-contract": "Update tests so they prove the owner-based public API directly instead of silently reinstalling removed compatibility globals.",
+    "canonical-notebook-contract": "Rewrite the main research notebook around mathematical questions and executable claims using the repaired public API, then execute it during terminal verification.",
+    "architecture-remediation": "Complete all architecture repairs found by the repository-wide audit and close each finding at its mathematical owner before terminal verification.",
+    "refactor-audit": "After the repaired architecture passes the public session, inspect the repository for duplicated or disorganized internal sources of truth and repair concrete findings.",
+    "type-paydown": "Improve useful static typing after the architecture settles, without distorting the mathematical API merely to satisfy the checker.",
+    "bloat-audit-loop": "Run the repository's final source-aware quality review after all required implementation and verification work is complete.",
+}
+
+NEW_QUAL_MANAGER_COPY = {
+    "policy-consolidation": "Keep one authoritative editorial and contribution guide for the problem archive, with obsolete duplicate policy documents removed.",
+    "copy-policy-repair": "Read the existing reader-facing site copy against the current editorial standards and rewrite every violating passage without changing its mathematics.",
+    "pdf-source-intake": "Finish processing every remaining source PDF into source-faithful problem records or justified reference material so the archive's problem population is stable.",
+    "math-defect-repair": "Resolve every known incorrect mathematical statement, proof, title, or source transcription against the original source.",
+    "merged-proof-adjudication": "Mathematically review competing proofs created by branch consolidation and retain or combine the correct proof for each affected problem.",
+    "ag-notes-migration": "Finish migrating the remaining algebraic-geometry study notes into the site's definitions, theorems, examples, and reference pages.",
+    "tooling-remediation": "Fix the known authoring, validation, and rendering defects that can let broken mathematical content pass or display incorrectly.",
+    "complaints-clearance": "Resolve every currently recorded site or content defect at its owning source before publication.",
+    "publication-milestone": "Publish a revision only after source intake, mathematical repairs, copy repair, note migration, tooling repairs, and the known defect list are all complete.",
+    "select": "Choose the next source-ordered problem that still lacks a solution.",
+    "read": "Read the selected problem together with its original source before proving it.",
+    "prove": "Write a complete mathematical proof for the selected problem.",
+    "attach": "Attach that proof to the problem card in the archive's required structured format.",
+    "source-review": "Compare any source-provided solution only after independently reading the problem, incorporating only mathematically justified improvements.",
+    "commit": "Review the finished proof for correctness and source fidelity, then bank that one solved problem before choosing another.",
+}
+
+
+def manager_task(repo_name: str, ident: str, fallback: str, raw: str = "") -> str:
+    """Return presentation copy that makes sense without repository-local vocabulary."""
+    if repo_name == "research":
+        return RESEARCH_MANAGER_COPY.get(ident, fallback)
+    if repo_name == "new-qual-site":
+        return NEW_QUAL_MANAGER_COPY.get(ident, fallback)
+    if repo_name == "lean-categories":
+        source = re.match(r"fc(\d{2})-(mapping|definition-residue-pass2|definitions)$", ident)
+        if source:
+            title = LEAN_SOURCE_TITLES.get(source.group(1), "the selected reference text")
+            phase = source.group(2)
+            if phase == "mapping":
+                return f"Locate and verify existing formalizations for every indexed definition in {title}."
+            if phase == "definition-residue-pass2":
+                return f"Run a broader second prior-art search for definitions in {title} that still lack a located implementation."
+            return f"Implement the definitions from {title} that remain after prior-art search, preserving the complete source meaning."
+        fixed = {
+            "corpus": "Maintain the admitted reference-text corpus and its explicit source scope.",
+            "catalogue": "Index every mathematical item in the admitted reference texts before filtering by implementation availability.",
+            "mapping": "Locate and verify existing formalizations for indexed mathematics before writing project-local replacements.",
+            "definition-mapping-convergence": "Finish prior-art discovery for every indexed definition before any new definition is authored.",
+            "definitions": "Implement only the definitions that remain after prior-art discovery, preserving their complete source meaning and intrinsic laws.",
+            "definition-realization-convergence": "Verify that every indexed definition now has a usable, source-faithful Lean realization.",
+            "audit-authored-definitions": "Replace locally authored definitions with verified existing implementations wherever the prior-art audit found one.",
+            "definition-positive-route-audit": "Recheck every claimed existing implementation against the complete textbook definition and the actual referenced declaration.",
+            "definition-residue-pass2": "Combine the source-by-source second searches and return any unresolved first-pass gaps to the appropriate source review.",
+            "definition-open-ended-prior-art-search": "Run one final unconstrained search across formalization projects and package ecosystems for any remaining definition before authoring it locally.",
+            "definition-source-conformance": "Compare every realized definition with its original textbook statement, including all data, hypotheses, equations, and intrinsic laws.",
+            "theorems": "Formalize the remaining theorem statements after the definitional layer is complete.",
+            "arithmetic-lattice-foundations": "Build the general arithmetic-lattice foundations required by later project mathematics after the reference-text programme is complete.",
+            "refactor-audit": "Consolidate duplicated or misplaced Lean after the mathematical corpus work is complete.",
+            "lint-paydown": "Resolve useful linter findings that improve mathematical legibility without contorting statements merely to silence tools.",
+            "bloat-audit-loop": "Run the final source-aware quality review after the required mathematical and refactoring work is complete.",
+        }
+        return fixed.get(ident, fallback)
+    return public_task(raw, fallback)
 
 WINDOWS = [
     ("1h", 3600),
@@ -174,11 +279,17 @@ def dirty(repo: Path) -> dict[str, object]:
     return {"count": len(lines), "by_status": by_status}
 
 
-def checkbox_dag(path: Path, fallback: str) -> list[dict[str, object]]:
+def checkbox_dag(path: Path, fallback: str, repo_name: str) -> list[dict[str, object]]:
     text = path.read_text(errors="replace").splitlines()
     nodes: list[dict[str, object]] = []
     pat = re.compile(r"^- \[([ x])\] \*\*`([^`]+)`\*\*\. \*\*Needs:\*\* (.*)")
+    optional_cut = next(
+        (i for i, line in enumerate(text) if repo_name == "research" and line.startswith("## Optional research consumers")),
+        len(text),
+    )
     for index, line in enumerate(text):
+        if index >= optional_cut:
+            break
         match = pat.match(line)
         if not match:
             continue
@@ -192,12 +303,59 @@ def checkbox_dag(path: Path, fallback: str) -> list[dict[str, object]]:
             if text[cursor].strip():
                 body.append(text[cursor])
             cursor += 1
-        description = public_task(" ".join(body), fallback)
+        raw = " ".join(body)
+        description = manager_task(repo_name, ident, fallback, raw)
         nodes.append({"id": ident, "closed": closed, "needs": needs, "public": description})
     return nodes
 
 
-def table_dag(path: Path, fallback: str) -> list[dict[str, object]]:
+def new_qual_dag(path: Path, fallback: str) -> list[dict[str, object]]:
+    """Read both the publication DAG and the per-problem solution DAG.
+
+    The publication programme deliberately uses prose bullets whose completion
+    state is the leading ``Closed <date>.`` sentence, while the repeated
+    solution state machine uses checkboxes.  Treating the file as a checkbox
+    list hides the entire publication programme from the owner dashboard.
+    """
+    text = path.read_text(errors="replace").splitlines()
+    nodes: list[dict[str, object]] = []
+    milestone_start = next(
+        (i for i, line in enumerate(text) if line.startswith("### Milestone:")),
+        next(i for i, line in enumerate(text) if line.startswith("### Current route")),
+    )
+    solutions_start = next(i for i, line in enumerate(text) if line.startswith("### Solutions after the milestone"))
+    bullet = re.compile(r"^- \*\*`([^`]+)`\*\*\.\s*(.*)")
+    for index in range(milestone_start, solutions_start):
+        match = bullet.match(text[index])
+        if not match:
+            continue
+        ident, opening = match.groups()
+        cursor = index + 1
+        body = [opening]
+        while cursor < solutions_start and not bullet.match(text[cursor]):
+            if text[cursor].strip():
+                body.append(text[cursor])
+            cursor += 1
+        raw = " ".join(body)
+        needs_match = re.search(r"\*\*Needs:\*\*\s*([^.]*)", raw)
+        needs_text = needs_match.group(1).strip() if needs_match else "none"
+        needs = [] if needs_text.lower() == "none" else re.findall(r"`([^`]+)`", needs_text)
+        closed = bool(re.match(r"\*\*Closed\b", opening))
+        nodes.append(
+            {
+                "id": ident,
+                "closed": closed,
+                "needs": needs,
+                "public": manager_task("new-qual-site", ident, public_task(raw, fallback), raw),
+            }
+        )
+    # The stable per-card state machine is retained below the publication
+    # milestone and should appear only with its real prerequisite edges.
+    nodes.extend(checkbox_dag(path, fallback, "new-qual-site"))
+    return nodes
+
+
+def table_dag(path: Path, fallback: str, repo_name: str) -> list[dict[str, object]]:
     nodes: list[dict[str, object]] = []
     for line in path.read_text(errors="replace").splitlines():
         if not line.startswith("| `"):
@@ -209,7 +367,7 @@ def table_dag(path: Path, fallback: str) -> list[dict[str, object]]:
         description = cols[1]
         needs = re.findall(r"`([^`]+)`", cols[2])
         closed = "**Closed" in description or "**Completed" in description or "Completed " in description
-        public = fallback if ident == "bloat-audit-loop" else public_task(description, fallback)
+        public = manager_task(repo_name, ident, fallback, description)
         nodes.append(
             {
                 "id": ident,
@@ -258,17 +416,44 @@ def process_rows(repo: Path) -> list[dict[str, object]]:
     return rows[:40]
 
 
-def lean_progress(repo: Path) -> dict[str, object]:
-    path = repo / "FOUNDATIONAL_DEFINITIONS.tsv"
-    with path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle, delimiter="\t"))
-    unresolved = [row for row in rows if row.get("action") in {"search", "residue-search", "unmatched"}]
-    sourced = len(rows) - len(unresolved)
+def lean_progress(repo: Path, dag: list[dict[str, object]]) -> dict[str, object]:
+    """Report the current Sweep-III source, not the already-closed mapping phase."""
+    current = next(
+        (
+            str(node["id"])
+            for node in dag
+            if not node["closed"] and re.fullmatch(r"fc\d{2}-definitions", str(node["id"]))
+        ),
+        None,
+    )
+    if current is None:
+        return {
+            "headline": "The source-by-source definition realization frontier is closed",
+            "detail": "No FCxx definition-realization node remains open in the current TODO dependency table.",
+            "remaining": 0,
+            "total": 0,
+        }
+    source = current[2:4]
+    text = (repo / "FOUNDATIONAL_FRONTIER.md").read_text(errors="replace")
+    section = re.search(
+        rf"^## FC{source} — Definitions\n(?P<body>.*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        raise RuntimeError(f"FOUNDATIONAL_FRONTIER.md has no FC{source} Definitions section")
+    counts = re.search(
+        r"Delivered/directly reusable by mapping: \*\*(\d+)/(\d+)\*\*; pending realization: \*\*(\d+)\*\*",
+        section.group("body"),
+    )
+    if counts is None:
+        raise RuntimeError(f"FC{source} Definitions section has no realization count")
+    delivered, total, remaining = map(int, counts.groups())
     return {
-        "headline": f"{len(unresolved):,} definitions still need a located implementation or a completed negative search",
-        "detail": f"{sourced:,} of {len(rows):,} indexed definitions currently have a non-search disposition. This count measures reference discovery, not theorem proving.",
-        "remaining": len(unresolved),
-        "total": len(rows),
+        "headline": f"FC{source}: {remaining:,} definition realizations remain",
+        "detail": f"{delivered:,} of {total:,} FC{source} definitions are delivered or directly reusable by the current mapping. This is the active Sweep-III source; later sources remain serialized by the TODO DAG.",
+        "remaining": remaining,
+        "total": total,
     }
 
 
@@ -334,10 +519,15 @@ def queue_history(repo: Path, limit: int = 240) -> list[dict[str, object]]:
 def repo_payload(name: str, repo: Path, classification: str) -> dict[str, object]:
     copy = REPO_COPY[name]
     fallback = copy["objective"]
-    dag = checkbox_dag(repo / "TODO.md", fallback) if name in {"research", "new-qual-site"} else table_dag(repo / "TODO.md", fallback)
+    if name == "new-qual-site":
+        dag = new_qual_dag(repo / "TODO.md", fallback)
+    elif name == "research":
+        dag = checkbox_dag(repo / "TODO.md", fallback, name)
+    else:
+        dag = table_dag(repo / "TODO.md", fallback, name)
     summary = open_ready(dag)
     if name == "lean-categories":
-        progress = lean_progress(repo)
+        progress = lean_progress(repo, dag)
     elif name == "new-qual-site":
         progress = nq_progress(repo)
     elif name == "research":

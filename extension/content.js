@@ -41,7 +41,10 @@
   //
   // So: publish a handle instead of a flag and let a replacement supersede a dead one. A
   // *healthy* incumbent still wins, so the ordinary static/recovery race is unchanged.
-  const RECORDER_VERSION = 10;
+  // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
+  // already-injected content world. Extension reload does not necessarily destroy that world;
+  // background recovery uses this number to decide whether reinjection must supersede it.
+  const RECORDER_VERSION = 12;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -106,8 +109,8 @@
    */
   const PRESENTATION_SCROLL_IDLE_MS = 240;
   const STATUS_MS = 15_000;
-  /** Longer than any honest tool call: past this a silent turn is called stalled. */
-  const STALL_MS = 10 * 60 * 1000;
+  /** Longer than any acceptable managed action: past this a silent turn is stalled. */
+  const STALL_MS = 5 * 60 * 1000;
   /** What a stalled chat is restarted with. It already holds everything it was doing. */
   const STALL_RESTART_TEXT = 'Continue';
   /**
@@ -136,14 +139,33 @@
    * to the conversation, so a chat wedged this way stayed wedged, and the app read it as dead
    * and replaced a chat that was only waiting out a limit.
    */
-  const RECOVERABLE_ERRORS = ['too many requests', 'rate limit', 'message delivery timed out'];
+  const RATE_LIMIT_ERRORS = [
+    'too many requests',
+    'rate limit',
+    'temporarily limited access',
+    'temporarily limited access to your conversations'
+  ];
+  const RECOVERABLE_ERRORS = ['message delivery timed out'];
   /**
-   * How long to leave a rate limit alone before trying to clear it.
+   * How long to leave a recoverable page error alone before trying to clear it.
    *
    * Long enough that the limit has plausibly lapsed; retrying inside it just re-earns the same
    * banner and spends more of the account's capacity.
    */
   const ERROR_RECOVERY_RETRY_MS = 5 * 60 * 1000;
+
+  /** Platform throttle: controller transport state, never a page-authored retry signal. */
+  function rateLimitError() {
+    const matches = (value) => {
+      const text = String(value || '').toLowerCase();
+      return RATE_LIMIT_ERRORS.some((fragment) => text.includes(fragment));
+    };
+    const found = CLF_DOM.errors ? CLF_DOM.errors() : [];
+    if (found.some((entry) => matches(entry && entry.text))) return true;
+    return CLF_DOM.blockingDialogText
+      ? matches(CLF_DOM.blockingDialogText())
+      : false;
+  }
   /**
    * How long a tab the app opened for a command defers to a tab that already holds that chat.
    *
@@ -655,6 +677,8 @@
   let job = null;
   /** Local tool calls the app still has running. Only ever a hint from /activity. */
   let pendingTools = 0;
+  /** Controller-managed repository workstream; its controller owns five-minute recovery. */
+  let managedWorkstream = false;
   /**
    * Whitespace-squeezed texts the app itself asked to be typed into this chat, from
    * `/activity`. A composer draft matching one of these is the app's own manufactured wedge
@@ -1188,6 +1212,7 @@
     since = 0;
     job = null;
     pendingTools = 0;
+    managedWorkstream = false;
     staleDraftHints = [];
     autoCompactReady = false;
     resumeIdentityPending = false;
@@ -1444,7 +1469,7 @@
       return { outcome: 'completed' };
     }
     if (turnStartedAt > 0 && Date.now() - lastChangeAt > STALL_MS) {
-      return { outcome: 'stalled', detail: 'no visible output and no progress for ten minutes' };
+      return { outcome: 'stalled', detail: 'no visible output and no progress for five minutes' };
     }
     return { outcome: 'unknown' };
   }
@@ -1954,8 +1979,19 @@
    */
   async function restartStalledTurn() {
     const chat = CLF_DOM.conversationId();
+    // There is no turn to continue on ChatGPT's shared New Chat root. Typing the generic
+    // restart text there creates a server/shared draft that hydrates into every later fresh
+    // command tab and is then correctly treated as user writing by runCommand(). That poisoned
+    // the entire fresh-chat transport with an app-authored `Continue` draft.
+    if (!chat) return;
+    // A tab carrying an app command marker is not an ordinary abandoned chat. Its composer is
+    // exclusively owned by runCommand(): typing a generic "Continue" here manufactures a draft
+    // that the bootstrap correctly refuses to overwrite, permanently blocking the command.
+    // Likewise, once this document has a command attempt in flight, only that attempt may touch
+    // the composer until it succeeds or fails.
+    if (markerId() || commandAttempt) return;
     // Another part of the page is already mid-way through owning this composer. None of them
-    // leaves a turn wedged for ten minutes, so this is a collision rather than the stall case.
+    // leaves a turn wedged for five minutes, so this is a collision rather than the stall case.
     if (goalBusy || nativeBusy || compactCapture || (job && job.busy)) return;
     const box = CLF_DOM.composer();
     if (!box || (box.textContent || '').trim() !== '') return;
@@ -2012,15 +2048,10 @@
     };
     const found = CLF_DOM.errors ? CLF_DOM.errors() : [];
     if (found.some((entry) => matches(entry && entry.text))) return true;
-    // The rate limit is a modal dialog rather than an alert banner, and it is the case that
-    // matters most: while it stands the composer accepts nothing.
     return CLF_DOM.blockingDialogText ? matches(CLF_DOM.blockingDialogText()) : false;
   }
 
-    // Checked ahead of the generating branch and independently of it. A rate limit leaves the
-    // Stop control in place, so the page still reads as generating and a check that only ran on
-    // the idle side never fired; waiting for the ten-minute stall instead would leave the chat
-    // blocked behind a modal that already told us exactly what is wrong.
+    // Checked ahead of the generating branch and independently of it.
     if (recoverableError()) {
       if (Date.now() - errorRecoveryAt > ERROR_RECOVERY_RETRY_MS) {
         errorRecoveryAt = Date.now();
@@ -2038,12 +2069,12 @@
       if (Date.now() - lastChangeAt > STALL_MS) {
         if (!stallReported) {
           stallReported = true;
-          emit({ kind: 'chat_error', text: 'No visible progress for ten minutes. The turn is still marked as generating.', turnId });
+          emit({ kind: 'chat_error', text: 'No visible progress for five minutes. The turn is still marked as generating.', turnId });
         }
-        // Reported once, restarted until it works. A press ChatGPT ignores is the ordinary case
-        // for a genuinely wedged turn, and giving up after the first one left the chat
-        // unreachable — by the user and by the app alike — for as long as the tab stayed open.
-        if (Date.now() - stallRestartAt > STALL_RESTART_RETRY_MS) {
+        // Managed workstreams leave the page observer running but delegate the actual Stop +
+        // continuation to the controller, whose prompt explains the five-minute failure.
+        // Ordinary chats retain the local generic restart.
+        if (!managedWorkstream && Date.now() - stallRestartAt > STALL_RESTART_RETRY_MS) {
           stallRestartAt = Date.now();
           void restartStalledTurn();
         }
@@ -2939,7 +2970,9 @@
     // still both say A while the Fiber tree already belongs to B.
     if (askedConversation && CLF_DOM.conversationId() !== askedConversation) return;
     const concreteConversation = (value) =>
-      typeof value === 'string' && /^[0-9a-f-]{8,64}$/i.test(value) ? value : null;
+      typeof value === 'string' && /^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(value)
+        ? value
+        : null;
     // Capture the one page turn this document owns before filtering by Fiber's own conversation
     // field. Ownership can be live *or just settled*: a fresh chat may publish the request id,
     // finish, and only then receive its real /c/<id>. The local generation/settled tombstone is
@@ -5067,7 +5100,7 @@
   /**
    * Presses Stop because a local caller asked for it, ahead of the message it queued.
    *
-   * The stall recovery in observe() decides for itself, on a ten-minute clock, and is right
+   * The stall recovery in observe() decides for itself, on a five-minute clock, and is right
    * to be that cautious: it is guessing. This one is not guessing. A person or an agent looked at the
    * chat, decided the turn in it should end, and posted the send that carries this
    * instruction — so the only judgment left here is the page's own: is there a turn to stop
@@ -5278,10 +5311,29 @@
       if (Number.isFinite(nextSince) && nextSince > since) since = nextSince;
       job = data.job || null;
       pendingTools = Number.isFinite(Number(data.pendingTools)) ? Number(data.pendingTools) : 0;
+      managedWorkstream = data.managedWorkstream === true;
       if (Array.isArray(data.staleDrafts)) {
         const hints = data.staleDrafts.filter((draft) => typeof draft === 'string' && draft);
         const changed = hints.length !== staleDraftHints.length || hints.some((hint, at) => hint !== staleDraftHints[at]);
         staleDraftHints = hints;
+        // A content-script/extension reload can outlive the command attempt that typed a fresh
+        // bootstrap, leaving ChatGPT's shared New Chat composer holding our text with nobody
+        // left to roll it back. The bridge ledger is authorship proof. Clear only an id-less
+        // fresh composer, only when no live command attempt owns it, and only when its complete
+        // whitespace-normalized contents exactly match one stale app-authored draft. User text
+        // never matches this branch and is left untouched.
+        if (!CLF_DOM.conversationId() && !commandAttempt && staleDraftHints.length > 0) {
+          const draft = CLF_DOM.composer();
+          const held = (draft?.textContent || '').replace(/\s+/g, '');
+          if (
+            held &&
+            staleDraftHints.includes(held) &&
+            CLF_DOM.clearComposer &&
+            CLF_DOM.clearComposer()
+          ) {
+            notifyCommandReadiness();
+          }
+        }
         // A wedged draft mutates no DOM, so a revival waiter blocked on it re-evaluates only
         // when told. New ledger knowledge is exactly such a moment.
         if (changed) notifyCommandReadiness();
@@ -7333,7 +7385,7 @@
   /** How often a settling brief is re-read. */
   const BRIEF_POLL_MS = 1_000;
   /** The ceiling on watching one brief settle, after which it is given up on honestly. */
-  const BRIEF_WATCH_MS = 10 * 60_000;
+  const BRIEF_WATCH_MS = 5 * 60_000;
 
   /**
    * Everything this generation has written so far, re-read rather than remembered.
@@ -8065,15 +8117,15 @@
   /**
    * The conversation this document was opened at, read once before ChatGPT rewrites anything.
    *
-   * Null for the ordinary case — a chat with no id of its own yet — and set only when the app
-   * pointed the browser at one exact `/c/<id>`, which it does for exactly one reason: waking a
-   * sleeping worker in the chat it already has. Read at script start rather than at send time
-   * so that the SPA navigating this document afterwards cannot turn a stale marker into
-   * permission to type into whatever chat the user ended up on.
+   * Historically null for a fresh chat and set only for an existing-chat revival. ChatGPT can
+   * now preallocate an ordinary `/c/<uuid>` for an otherwise empty New Chat before any user
+   * message is sent, so a non-null value is no longer sufficient evidence that this document
+   * was opened onto an existing authored conversation. deliverCommand() combines this immutable
+   * opening route with the authored transcript before deciding revival-vs-fresh authority.
    */
   const OPENED_CONVERSATION = (() => {
     try {
-      const match = /^\/c\/([0-9a-f-]{8,64})/i.exec(location.pathname);
+      const match = /^\/c\/((?:WEB:)?[0-9a-f-]{8,64})/i.exec(location.pathname);
       return match ? match[1] : null;
     } catch {
       return null;
@@ -8106,20 +8158,14 @@
    * opened this page and nowhere else. Never over a composer the user has started typing
    * into, and never in a chat this command did not name.
    *
-   * One page, one marker, one attempt, and every exit reports its outcome. This used to be
-   * three in-page attempts driven off the one-second observation tick, with a periodic
-   * `working` ack renewing the app's lease in between; between them those turned one press
-   * into an open-ended background process that could still be typing into a tab minutes
-   * after the user had given up on it. The transaction is now flat: redeem the marker, wait
-   * for the composer, insert, send, report which conversation it became. Anything that goes
-   * wrong is reported as a failure straight away, and the app ends the worker slot or the
-   * continuation rather than arranging for it to happen again somewhere else — which is
-   * what the user can act on, and what nothing else in this file has to know about.
+   * One page, one marker, one attempt at a time. The service worker may re-offer the same
+   * inert command id after a startup-ordering miss; the bridge redeem/receipt is the durable
+   * single-owner authority, so a retry after an attempt returns is safe while concurrent
+   * duplicate delivery remains impossible.
    *
    * A message this tab actually sent is reported as sent even if the conversation id never
    * turns up, because the alternative would be typing the same instruction twice.
   */
-  const commandsHandled = new Set();
   /**
    * The current page-side command attempt, before or after the durable bridge ownership cut.
    *
@@ -8426,16 +8472,24 @@
       prior.cancelled = true;
       notifyCommandReadiness();
     }
-    if (!id || (commandAttempt && !maySupersede) || commandsHandled.has(id)) {
+    if (!id || (commandAttempt && !maySupersede)) {
       if (typeof onClaim === 'function') onClaim(false);
       return;
     }
-    commandsHandled.add(id);
     const attempt = {
       id,
       source,
       phase: 'waiting',
-      cancelled: false
+      step: 'starting',
+      cancelled: false,
+      // A command recovered from the service worker's numeric-tab custody is still a fresh
+      // app-opened command, but ChatGPT has already erased its ?clf/#clf marker while routing
+      // through /c/WEB:.... Requiring markerId() again after redeem makes that recovery path
+      // self-contradictory: registration successfully recovers the command and the next fence
+      // immediately rejects it. URL-origin commands keep the stricter marker fence; a custody-
+      // recovered command is fenced instead by this document's registered tab ownership plus
+      // the bridge's single-owner redeem and the fresh-chat conversation check below.
+      requireUrlMarker: fromUrl && options.requireUrlMarker !== false
     };
     commandAttempt = attempt;
     // Only a fresh worker/resume page needs the no-shadow-session journal gate: its first user
@@ -8443,7 +8497,10 @@
     // session, and its *previous* assistant turn may still be finishing while this command waits.
     // Gating that existing chat would suppress exactly the final /events we need to durably close
     // the turn before the new user message is allowed through.
-    const gateJournal = fromUrl && !OPENED_CONVERSATION;
+    const gateJournal =
+      fromUrl &&
+      (!OPENED_CONVERSATION ||
+        (CLF_DOM.messages && CLF_DOM.messages().length === 0));
     if (gateJournal) commandJournalGate = true;
     let claimReported = false;
     const reportClaim = (claimed) => {
@@ -8478,19 +8535,40 @@
     // has now. What fences that path instead is the pair of exact conversation checks around
     // it — the service worker only offers the job to a document already showing the chat the
     // command names, and the redeemed command's own `conversationId` is compared below.
-    const openedConversation = fromUrl ? OPENED_CONVERSATION : CLF_DOM.conversationId();
-    if (CLF_DOM.conversationId() && !openedConversation) return;
+    const openingRoute = fromUrl ? OPENED_CONVERSATION : CLF_DOM.conversationId();
+    const openingHasAuthoredConversation =
+      Boolean(openingRoute) &&
+      Boolean(CLF_DOM.messages && CLF_DOM.messages().length > 0);
+    // A marker-bearing fresh tab may already have a /c/<uuid> even though ChatGPT has not
+    // accepted any user message. That preallocated route is transport state, not evidence that
+    // the command was redirected into an existing chat. Existing authored chats remain revivals.
+    const openedConversation =
+      openingRoute && (!fromUrl || openingHasAuthoredConversation)
+        ? openingRoute
+        : null;
+    let preallocatedFreshConversation =
+      fromUrl && openingRoute && !openingHasAuthoredConversation
+        ? openingRoute
+        : null;
+    if (
+      CLF_DOM.conversationId() &&
+      !openedConversation &&
+      !preallocatedFreshConversation
+    )
+      return;
 
     // A same-chat command is a revival. Do not cross the per-document redeem boundary merely
     // because its composer exists: ChatGPT keeps that composer mounted while the worker's final
     // assistant answer is still streaming. Busy is a waiting state, not a failed revival, and
     // waiting must leave both the durable command and the user's composer untouched.
     if (openedConversation) {
+      if (attempt) attempt.step = 'revival-custody';
       // Persist only the inert marker/conversation correlation before waiting. If this document,
       // its MV3 service worker, or the whole browser disappears, the replacement browser process
       // can put the same marker back in front of this exact chat. The prime's text stays solely in
       // the app-side command until the later redeem succeeds.
       if (!(await waitForDeferredRevivalCustody(id, openedConversation, attempt))) return;
+      if (attempt) attempt.step = 'revival-submit-ready';
       if (!(await waitForRevivalSubmitReady(openedConversation, attempt))) return;
     }
     if (attempt?.cancelled) return;
@@ -8501,6 +8579,7 @@
     // From here onward a competing fresh wake must not supersede this attempt: the bridge may
     // persist this document as owner before the response gets back to us.
     if (attempt) attempt.phase = 'redeeming';
+    if (attempt) attempt.step = 'redeeming';
     const reply = await ask({
       type: 'redeem',
       id,
@@ -8521,6 +8600,29 @@
       reportClaim(false);
       return;
     }
+    if (attempt) attempt.step = 'redeemed';
+
+    // What this command is for, as the app states it. A revival names the conversation and
+    // will not be typed anywhere else; fresh worker/resume/send commands name none.
+    const target =
+      typeof boot.conversationId === 'string' && boot.conversationId
+        ? boot.conversationId
+        : null;
+
+    // Do not turn an account-wide ChatGPT throttle into a failed worker or a replacement
+    // storm. The bridge will interpret this exact terminal reason as transport backpressure
+    // and hold the logical replacement action for a bounded cooldown before trying once more.
+    // No model/user text has crossed the composer boundary yet.
+    if (rateLimitError()) {
+      return void (await ask({
+        type: 'ack',
+        id: boot.id,
+        status: 'failed',
+        error: 'chatgpt_rate_limited',
+        ...(target ? { conversationId: target } : {}),
+        client: RUN_ID
+      }));
+    }
 
     // `/commands/redeem` persists RUN_ID as the command owner before returning `boot`. This is
     // the exact boundary the service worker needs before it may close the app-opened fallback:
@@ -8528,13 +8630,18 @@
     // attempt was started. If the fallback got there first, `boot` is null and the false path
     // above leaves that winning tab alive.
     if (attempt) attempt.phase = 'claimed';
+    if (attempt) attempt.step = 'claimed';
     reportClaim(true);
 
-    const fail = (why) => ask({ type: 'ack', id: boot.id, status: 'failed', error: why, client: RUN_ID });
-    // What this command is for, as the app states it. A revival names the conversation and
-    // will not be typed anywhere else; the two chat-opening commands name none, and their
-    // precondition is the opposite one — that this page still has no conversation at all.
-    const target = typeof boot.conversationId === 'string' && boot.conversationId ? boot.conversationId : null;
+    const fail = (why) =>
+      ask({
+        type: 'ack',
+        id: boot.id,
+        status: 'failed',
+        error: why,
+        ...(target ? { conversationId: target } : {}),
+        client: RUN_ID
+      });
     if (fromUrl && openedConversation && !target) {
       // Current bridges reject this before leasing the command. Keep the page-side half too:
       // an older bridge (or a stale test fixture) must still never let a worker/resume marker
@@ -8548,19 +8655,49 @@
     if (target && openedConversation !== target) {
       return void (await fail('the page that was opened for it was showing a different conversation'));
     }
-    if (!target && CLF_DOM.conversationId()) {
-      return void (await fail('the marked fresh chat changed before bootstrap send; nothing was sent'));
+    const freshRouteStillOwned = () => {
+      const current = CLF_DOM.conversationId();
+      if (!current) return true;
+      if (
+        preallocatedFreshConversation &&
+        current === preallocatedFreshConversation
+      )
+        return true;
+      // ChatGPT may assign the empty fresh document its first concrete UUID after this function
+      // began. Adopt exactly that route while the conversation is still unauthored. Once a user
+      // or assistant message exists, a different route is somebody's existing chat and cannot
+      // be adopted by a fresh command.
+      if (
+        !preallocatedFreshConversation &&
+        CLF_DOM.messages &&
+        CLF_DOM.messages().length === 0
+      ) {
+        preallocatedFreshConversation = current;
+        return true;
+      }
+      return false;
+    };
+    if (!target && !freshRouteStillOwned()) {
+      return void (
+        await fail(
+          'the marked fresh chat changed to an authored conversation before bootstrap send; nothing was sent'
+        )
+      );
     }
-    const onTarget = () => (target ? CLF_DOM.conversationId() === target : !CLF_DOM.conversationId());
+    const onTarget = () =>
+      target
+        ? CLF_DOM.conversationId() === target
+        : freshRouteStillOwned();
     // Redeeming the command proves which *document* owns it, not which SPA route that
     // document will still be showing after the await. ChatGPT can navigate this same
     // document to an existing conversation while the worker/app answer is in flight. An
     // empty composer there looks exactly like the marked fresh one, so text checks cannot
     // fence the irreversible send. Keep proving both facts that made this page eligible:
-    // the marker still names this command, and ChatGPT still has not assigned/opened a chat.
+    // the marker still names this command, and ChatGPT still shows the same empty fresh route.
     // A command handed over by the service worker has no marker in this tab's URL to check;
     // the conversation fence above is the stronger half of the same proof and applies to it.
-    const stillOnTarget = () => alive && (!fromUrl || markerId() === id) && onTarget();
+    const stillOnTarget = () =>
+      alive && (!attempt?.requireUrlMarker || markerId() === id) && onTarget();
     const failIfRetargeted = async () => {
       if (stillOnTarget()) return false;
       await fail(
@@ -8577,7 +8714,9 @@
     // that then blocks every later push into this chat. Activate the tab before driving the
     // composer, every time. Best-effort — an unfocusable window still gets the attempt, and a
     // failed send below now rolls its own inserted text back instead of manufacturing a wedge.
+    if (attempt) attempt.step = 'activating-tab';
     await ask({ type: 'activate_tab' }).catch(() => undefined);
+    if (attempt) attempt.step = 'activated-tab';
     if (await failIfRetargeted()) return;
 
     // Compared with whitespace squeezed out of both sides. The composer is a rich-text
@@ -8612,13 +8751,54 @@
     // The composer is the readiness signal. Page-level `readyState` says whether every
     // resource finished loading, not whether this editing host is usable, and waiting on it
     // is what turned a fresh resume tab into a blank tab for a minute on a throttled page.
+    if (attempt) attempt.step = 'waiting-composer';
     const readyComposer = await waitForComposer();
-    if (!readyComposer) return void (await fail('ChatGPT never exposed a usable composer for bootstrap'));
-    if (await failIfRetargeted()) return;
-
-    if (!alreadyTyped && !CLF_DOM.insertPrompt(boot.text)) {
-      return void (await fail('ChatGPT refused the inserted text'));
+    if (!readyComposer) {
+      if (rateLimitError()) return void (await fail('chatgpt_rate_limited'));
+      return void (await fail('ChatGPT never exposed a usable composer for bootstrap'));
     }
+    if (await failIfRetargeted()) return;
+    if (attempt) attempt.step = 'composer-ready';
+
+    if (rateLimitError()) return void (await fail('chatgpt_rate_limited'));
+
+    if (attempt) attempt.step = 'inserting';
+    if (!alreadyTyped) {
+      let inserted = CLF_DOM.insertPrompt(boot.text);
+      if (!inserted) {
+        // ChatGPT's shared New Chat draft can hydrate *after* the initial draft check while
+        // waitForComposer() is settling. Re-prove authorship at the irreversible insertion
+        // boundary rather than treating a late app-authored draft as a mysterious editor
+        // refusal. The command's own exact text is already inserted; an older ledger-proven
+        // app draft may be cleared and retried once. Anything else is user writing and is
+        // preserved.
+        const current = CLF_DOM.composer();
+        const currentHeld = squeeze(current ? current.textContent : '');
+        if (currentHeld === expectedText) {
+          inserted = true;
+          alreadyTyped = true;
+        } else if (
+          currentHeld &&
+          staleDrafts.includes(currentHeld) &&
+          CLF_DOM.clearComposer &&
+          CLF_DOM.clearComposer()
+        ) {
+          inserted = CLF_DOM.insertPrompt(boot.text);
+        }
+      }
+      if (!inserted) {
+        if (rateLimitError()) return void (await fail('chatgpt_rate_limited'));
+        const detail =
+          CLF_DOM.insertPromptDebug && typeof CLF_DOM.insertPromptDebug === 'function'
+            ? CLF_DOM.insertPromptDebug()
+            : null;
+        const diagnostic = detail
+          ? JSON.stringify(detail).slice(0, 320)
+          : 'no editor diagnostic';
+        return void (await fail(`ChatGPT refused the inserted text: ${diagnostic}`));
+      }
+    }
+    if (attempt) attempt.step = alreadyTyped ? 'draft-reused' : 'inserted';
     // Give synchronous React/input work one microtask turn to replace the editing host, then
     // re-prove the exact draft before the irreversible send. This used to sleep for 100 ms.
     // Long-hidden Chrome tabs throttle wall-clock timers, so that tiny "stability" delay became
@@ -8649,6 +8829,7 @@
     }
     if (await failIfRetargeted()) return;
     if (boot.workstreamActionId) {
+      if (attempt) attempt.step = 'action-fence';
       const current = await ask({ type: 'redeem', id: boot.id, client: RUN_ID,
         ...(target ? { conversationId: target } : {}) });
       if (!current?.ok || current.command?.workstreamActionId !== boot.workstreamActionId) {
@@ -8656,8 +8837,10 @@
         if (draft && squeeze(draft.textContent) === expectedText) CLF_DOM.clearComposer();
         return;
       }
+      if (attempt) attempt.step = 'action-fence-ok';
       if (await failIfRetargeted()) return;
     }
+    if (attempt) attempt.step = 'sending';
     if (!(await CLF_DOM.send())) {
       // The click ran and nothing on the page accepted it — the background-tab silent no-op
       // shape. The composer's text was proven to be exactly this command's own just above, so
@@ -8665,8 +8848,16 @@
       // exact text is ever cleared: if the composer changed meanwhile it is left alone.
       const wedged = CLF_DOM.composer();
       if (wedged && squeeze(wedged.textContent) === expectedText && CLF_DOM.clearComposer) CLF_DOM.clearComposer();
-      return void (await fail('ChatGPT did not accept the bootstrap send'));
+      const detail =
+        CLF_DOM.sendDebug && typeof CLF_DOM.sendDebug === 'function'
+          ? CLF_DOM.sendDebug()
+          : null;
+      const diagnostic = detail
+        ? JSON.stringify(detail).slice(0, 320)
+        : 'no send diagnostic';
+      return void (await fail(`ChatGPT did not accept the bootstrap send: ${diagnostic}`));
     }
+    if (attempt) attempt.step = 'sent';
     agent = boot.agent || null;
     agentCommandId = agent && typeof boot.id === 'string' ? boot.id : null;
 
@@ -8679,6 +8870,27 @@
     // the loop below because ChatGPT has not assigned their new conversation id yet.
     if (target) {
       await ask({ type: 'ack', id: boot.id, status: 'sent', conversationId: target, agent, client: RUN_ID });
+      return;
+    }
+
+    // A managed workstream replacement is a plain send that opened a fresh chat. Once
+    // ChatGPT accepts the message, delivery is irreversible and the page must not keep the
+    // bridge lease hostage while waiting for the SPA to publish the conversation id. ack is
+    // durable in the extension before it talks to the bridge; without an id it is stored
+    // provisionally under this tab. The ordinary bind/events path fills the id and drains that
+    // same ACK as soon as ChatGPT names the conversation.
+    if (boot.type === 'send' && boot.workstreamActionId) {
+      const found = CLF_DOM.conversationId();
+      if (attempt) attempt.step = found ? 'acking-bound-send' : 'acking-provisional-send';
+      await ask({
+        type: 'ack',
+        id: boot.id,
+        status: 'sent',
+        ...(found ? { conversationId: found } : {}),
+        agent,
+        client: RUN_ID
+      });
+      if (attempt) attempt.step = 'ack-queued';
       return;
     }
 
@@ -8877,6 +9089,45 @@
         }, { deferredRecovery: message.deferredRecovery === true });
         return true;
       }
+      // Fresh-chat counterpart to the existing revival handoff. The service worker sends this
+      // only to the numeric tab for which it captured the app-opened command marker. This closes
+      // the startup ordering race where the document registered just before that custody became
+      // visible and therefore cached commandId=null. The bridge redeem remains the single-owner
+      // authority, and runCommand() deduplicates a simultaneous ordinary startup attempt.
+      if (message.type === 'clf-run-fresh-command') {
+        const wanted = typeof message.id === 'string' ? message.id : '';
+        if (!wanted || CLF_DOM.conversationId()) {
+          sendResponse({ ok: false, error: 'not_fresh_chat' });
+          return false;
+        }
+        sendResponse({ ok: true, accepted: true });
+        void runCommand(wanted, true, null, { requireUrlMarker: false });
+        return false;
+      }
+      if (message.type === 'clf-command-debug') {
+        sendResponse({
+          ok: true,
+          attempt: commandAttempt
+            ? {
+                id: commandAttempt.id,
+                source: commandAttempt.source,
+                phase: commandAttempt.phase,
+                step: commandAttempt.step,
+                cancelled: commandAttempt.cancelled === true
+              }
+            : null,
+          marker: markerId(),
+          openedConversation: OPENED_CONVERSATION,
+          conversation: CLF_DOM.conversationId(),
+          composerReady: Boolean(
+            CLF_DOM.composerSubmitReady && CLF_DOM.composerSubmitReady(true)
+          ),
+          pendingTools,
+          managedWorkstream,
+          rateLimited: rateLimitError()
+        });
+        return false;
+      }
       if (message.type === 'clf-overwrite-now') {
         if (!renderStreamAllowed()) {
           sendResponse({ ok: false, error: 'overwrite_disabled' });
@@ -8909,19 +9160,41 @@
   // On an ordinary existing chat there is no marker and this resolves immediately, after
   // which the established reload handshake remains unchanged: resumeOpenTurn() is still
   // awaited before the first observe() so a reloaded live turn cannot be duplicated.
-  const startupCommandId = markerId();
-  // Fresh worker/resume pages still deliver before status restoration: they own an empty New
-  // Chat and need no prior conversation lifecycle. A revival is the opposite. Let the recorder
-  // restore this existing chat's durable open turn first, otherwise a reload during a Stop-button
-  // flicker could call the page idle before it has learned that the previous turn is still open.
-  const commandStartup = startupCommandId && !OPENED_CONVERSATION ? runCommand(startupCommandId) : Promise.resolve();
-  void commandStartup
-    .catch(() => undefined)
-    .then(loadRenderPreference)
-    .then(checkStatus)
-    .then(() => resumeOpenTurn().catch(() => undefined))
-    .then(() => restoreCapture().catch(() => undefined))
-    .then(() => {
+  // Prefer the marker still present in the URL, but do not require the router to preserve it.
+  // A fresh ChatGPT tab currently passes through `/c/WEB:...` before a stable conversation id
+  // exists and that SPA rewrite can erase both `?clf=` and `#clf=` before this content script
+  // starts. The service worker captured the exact marker against this numeric tab at creation
+  // time; document registration returns that durable tab-owned copy. No text is carried here,
+  // and redeem remains the single-owner authority, so this recovery cannot duplicate a send.
+  const startupCommand = (async () => {
+    let id = markerId();
+    let requireUrlMarker = Boolean(id);
+    if (!id) {
+      if (!documentReady) documentReady = sendToWorker({ type: 'register_document', navigationEpoch: epoch });
+      const registered = await documentReady;
+      if (!registered || registered.ok !== true) {
+        documentReady = null;
+        return null;
+      }
+      id = typeof registered.commandId === 'string' && registered.commandId ? registered.commandId : null;
+      requireUrlMarker = false;
+    }
+    // Fresh worker/resume pages still deliver before status restoration: they own an empty New
+    // Chat and need no prior conversation lifecycle. A revival is the opposite. Let the recorder
+    // restore this existing chat's durable open turn first, otherwise a reload during a Stop-button
+    // flicker could call the page idle before it has learned that the previous turn is still open.
+    if (id && !OPENED_CONVERSATION) {
+      await runCommand(id, true, null, { requireUrlMarker });
+    }
+    return id;
+  })();
+  void startupCommand
+    .catch(() => null)
+    .then(async (startupCommandId) => {
+      await loadRenderPreference();
+      await checkStatus();
+      await resumeOpenTurn().catch(() => undefined);
+      await restoreCapture().catch(() => undefined);
       observe();
       commandReadinessInitialized = true;
       notifyCommandReadiness();

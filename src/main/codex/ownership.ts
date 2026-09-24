@@ -1,39 +1,32 @@
 /**
- * Which ChatGPT conversation owns a live `exec_command` session.
+ * Workstream ownership of live `exec_command` sessions.
  *
- * Codex never needs this. It hangs `UnifiedExecProcessManager` off `session.services`, so a
- * conversation cannot even name another conversation's process: the manager it reaches is a
- * different object. This connector is one long-lived main process serving every chat through
- * one manager, so the same session ids are in scope everywhere, and `write_stdin(session_id)`
- * on a numeric id from another chat would otherwise reach that chat's shell.
- *
- * This is an authorization boundary. A proven owner can only be continued by that same proven
- * conversation. Legacy/single-chat calls that carry no request identity are kept in a separate
- * anonymous bucket so existing terminal semantics still work, but a later proven chat cannot
- * adopt such a session and an anonymous call cannot touch a proven-owned session.
+ * Ordinary connector calls already crossed the authoritative identity boundary before they
+ * reach this module: the model supplied the opaque workstream claim id and the kernel admitted
+ * it against one logical workstream. Browser conversation ids/request correlation are therefore
+ * irrelevant to process authority. The stable logical workstream groups the work; the rotating
+ * claim id fences a superseded owner of that same logical workstream.
  */
 
-import { requestCorrelation } from '../session/correlation.js';
-
-/** Owners, keyed by the process id `exec_command` handed back as `session_id`. */
-const owners = new Map<number, string | null>();
-
-/**
- * The conversation behind an in-flight MCP request, when it is already proven.
- *
- * Never waits. The correlation registry resolves a request id the moment the page reports the
- * matching connector request, and everything here degrades to "unknown" rather than blocking a
- * command on browser evidence.
- */
-export function provenConversation(requestId: string | null, conversationId: string | null): string | null {
-  if (conversationId) return conversationId;
-  return requestCorrelation(requestId)?.conversationId ?? null;
+export interface ExecOwner {
+  workstreamId: string;
+  claimId: string;
 }
 
-/** Records the conversation that opened a still-running exec session. */
-export function noteExecOwner(processId: number | null, conversationId: string | null): void {
+/** Owners, keyed by the process id `exec_command` handed back as `session_id`. */
+const owners = new Map<number, ExecOwner | null>();
+
+/** Records the workstream claim that opened a still-running exec session. */
+export function noteExecOwner(
+  processId: number | null,
+  workstreamId: string | null,
+  claimId: string | null,
+): void {
   if (processId === null) return;
-  owners.set(processId, conversationId);
+  owners.set(
+    processId,
+    workstreamId && claimId ? { workstreamId, claimId } : null,
+  );
 }
 
 /** Drops a session's owner once it can no longer be written to. */
@@ -42,42 +35,24 @@ export function forgetExecOwner(processId: number | null): void {
   owners.delete(processId);
 }
 
-/** The conversation that opened this session, or null when it was never proven. */
-export function execOwner(processId: number): string | null {
+/** The admitted workstream claim that opened this session, or null for an unscoped path. */
+export function execOwner(processId: number): ExecOwner | null {
   return owners.get(processId) ?? null;
 }
 
 /**
- * Whether `conversationId` may write to `processId`.
- *
- * Proven sessions require the same proven caller. Anonymous sessions can only be continued by
- * anonymous callers; they are never adoptable by a later identified conversation. A process
- * with no registry entry at all is refused.
+ * Whether this admitted workstream claim may write to `processId`.
  */
-export function execOwnershipDenied(processId: number, conversationId: string | null): boolean {
+export function execOwnershipDenied(
+  processId: number,
+  workstreamId: string | null,
+  claimId: string | null,
+): boolean {
   if (!owners.has(processId)) return true;
-  const owner = owners.get(processId);
-  if (owner === null) return conversationId !== null;
-  if (!conversationId) return true;
-  return owner !== conversationId;
-}
-
-/**
- * Moves live process authority with a proven Compact & Resume chat A→B transition.
- *
- * Conversation ownership is the current representation used by the shared process manager.
- * Until it can be keyed directly by durable session principal, continuation publication must
- * move the processes opened by the old chat along with the session. This hook changes exactly
- * owners equal to `fromConversationId`: anonymous legacy sessions and processes belonging to
- * every other chat are untouched. It is app-internal and carries no discovery/wire surface.
- */
-export function moveExecConversationOwners(fromConversationId: string, toConversationId: string): number {
-  if (!fromConversationId || !toConversationId || fromConversationId === toConversationId) return 0;
-  let moved = 0;
-  for (const [processId, owner] of owners) {
-    if (owner !== fromConversationId) continue;
-    owners.set(processId, toConversationId);
-    moved += 1;
-  }
-  return moved;
+  const owner = owners.get(processId) ?? null;
+  if (owner === null) return workstreamId !== null || claimId !== null;
+  return (
+    owner.workstreamId !== workstreamId ||
+    owner.claimId !== claimId
+  );
 }

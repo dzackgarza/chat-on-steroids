@@ -260,7 +260,10 @@ var CLF_DOM = (() => {
   /** The conversation this tab is on, or null for a chat that has not been sent yet. */
   function conversationId() {
     return safe(() => {
-      const match = /^\/c\/([0-9a-f-]{8,64})/i.exec(location.pathname);
+      // ChatGPT now uses both legacy UUID routes and WEB:<uuid> routes for real authored
+      // conversations. The WEB prefix is part of the conversation id and must survive intact
+      // through recording/controller routing.
+      const match = /^\/c\/((?:WEB:)?[0-9a-f-]{8,64})/i.exec(location.pathname);
       return match ? match[1] : null;
     }, null);
   }
@@ -1401,28 +1404,100 @@ var CLF_DOM = (() => {
     }, false);
   }
 
+  let lastInsertPromptDebug = null;
+  let lastSendDebug = null;
+
   /** Types into the composer. Refuses if the user already has a draft there. */
   function insertPrompt(value) {
     return safe(() => {
-      const box = composer();
-      if (!box) return false;
-      if ((box.textContent || '').trim() !== '') return false;
-      box.focus();
-      // execCommand still produces the native editing path ChatGPT listens for. Newer
-      // composer builds occasionally ignore its return value, so verify the DOM and
-      // also emit input so React cannot miss the mutation.
-      document.execCommand('insertText', false, value);
-      box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
-      return (box.textContent || '').trim().length > 0;
+      lastInsertPromptDebug = null;
+      const typeInto = (box) => {
+        if (!box || !box.isConnected) {
+          lastInsertPromptDebug = { stage: 'host-missing-or-disconnected' };
+          return false;
+        }
+        if ((box.textContent || '').trim() !== '') {
+          lastInsertPromptDebug = {
+            stage: 'host-not-empty',
+            chars: (box.textContent || '').length
+          };
+          return false;
+        }
+        box.focus();
+        // An empty ProseMirror host does not reliably receive a caret merely because focus()
+        // returned, especially while hydration is replacing the editor node. Put the selection
+        // inside the exact host before using the native editing path.
+        const selection = window.getSelection();
+        if (selection) {
+          const range = document.createRange();
+          range.selectNodeContents(box);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        const execResult = document.execCommand('insertText', false, value);
+        box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+        const chars = (box.textContent || '').trim().length;
+        const selectionAfter = window.getSelection();
+        const success = box.isConnected && chars > 0;
+        lastInsertPromptDebug = {
+          stage: success ? 'inserted' : 'native-insert-no-text',
+          execResult,
+          connected: box.isConnected,
+          chars,
+          active: document.activeElement === box,
+          selectionInside:
+            Boolean(
+              selectionAfter?.anchorNode &&
+              (selectionAfter.anchorNode === box || box.contains(selectionAfter.anchorNode))
+            ),
+          contentEditable: box.getAttribute('contenteditable')
+        };
+        return success;
+      };
+
+      const first = composer();
+      if (!first || (first.textContent || '').trim() !== '') {
+        lastInsertPromptDebug = {
+          stage: !first ? 'initial-host-missing' : 'initial-host-not-empty',
+          chars: first ? (first.textContent || '').length : 0
+        };
+        return false;
+      }
+      if (typeInto(first)) return true;
+
+      // focus()/selection can synchronously cause ChatGPT to replace the ProseMirror host.
+      // Retry once only when a different, still-empty editor has taken its place. Never retry
+      // over text: that could be a user draft created during the replacement.
+      const replacement = composer();
+      if (!replacement || replacement === first) {
+        lastInsertPromptDebug = {
+          ...(lastInsertPromptDebug || {}),
+          replacement: !replacement ? 'missing' : 'same'
+        };
+        return false;
+      }
+      return typeInto(replacement);
     }, false);
+  }
+
+  function insertPromptDebug() {
+    return lastInsertPromptDebug ? { ...lastInsertPromptDebug } : null;
   }
 
   async function send() {
     try {
+      lastSendDebug = null;
       const box = composer();
-      if (!box) return false;
+      if (!box) {
+        lastSendDebug = { stage: 'composer-missing' };
+        return false;
+      }
       const submitted = (box.textContent || '').trim();
-      if (!submitted) return false;
+      if (!submitted) {
+        lastSendDebug = { stage: 'composer-empty' };
+        return false;
+      }
       const compact = (value) => String(value || '').replace(/\s+/g, '');
       const expected = compact(submitted);
       const beforeConversation = conversationId();
@@ -1464,6 +1539,21 @@ var CLF_DOM = (() => {
           done = true;
           if (observer) observer.disconnect();
           if (timer !== null) clearTimeout(timer);
+          const current = composer();
+          const currentConversation = conversationId();
+          const button = document.querySelector(SEND);
+          lastSendDebug = {
+            stage: value ? 'accepted' : 'not-accepted',
+            submittedChars: submitted.length,
+            composerChars: (current?.textContent || '').trim().length,
+            conversationChanged:
+              Boolean(currentConversation && currentConversation !== beforeConversation),
+            generatingChanged: !beforeGenerating && generating(),
+            stopAppeared: !beforeStop && Boolean(stopButton()),
+            sendButtonPresent: Boolean(button),
+            sendButtonDisabled: button ? Boolean(button.disabled) : null,
+            activeComposer: document.activeElement === current
+          };
           resolve(value);
         };
         const check = () => {
@@ -1496,8 +1586,13 @@ var CLF_DOM = (() => {
         }
       });
     } catch {
+      lastSendDebug = { stage: 'exception' };
       return false;
     }
+  }
+
+  function sendDebug() {
+    return lastSendDebug ? { ...lastSendDebug } : null;
   }
 
   return {
@@ -1537,7 +1632,9 @@ var CLF_DOM = (() => {
     hideProgress,
     replaceTurn,
     insertPrompt,
+    insertPromptDebug,
     clearComposer,
-    send
+    send,
+    sendDebug
   };
 })();

@@ -623,6 +623,7 @@ export interface BackgroundTerminalInfo {
   cwd: string;
   pid: number;
   tty: boolean;
+  startedAt: number;
 }
 
 interface ProcessEntry {
@@ -632,6 +633,7 @@ interface ProcessEntry {
   hookCommand: string;
   tty: boolean;
   initialExecCommandActive: boolean;
+  startedAt: number;
   lastUsed: number;
   /** Declared long-lived: the orphan reaper must leave this session alone. */
   persistent: boolean;
@@ -805,6 +807,7 @@ export class UnifiedExecProcessManager {
         hookCommand: request.hookCommand,
         tty: request.tty,
         initialExecCommandActive: true,
+        startedAt: start,
         lastUsed: start,
         persistent: false
       });
@@ -975,7 +978,8 @@ export class UnifiedExecProcessManager {
         command: entry.hookCommand,
         cwd: entry.cwd,
         pid: entry.process.pid,
-        tty: entry.tty
+        tty: entry.tty,
+        startedAt: entry.startedAt
       }));
   }
 

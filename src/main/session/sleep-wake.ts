@@ -59,7 +59,10 @@ import {
 
 export interface SleepWakeDriver {
   /** Remounts the conversation's chat page (PUT /json/new on the CDP endpoint, or equivalent). */
-  openConversationTab(conversationId: string): Promise<void>;
+  openConversationTab(
+    conversationId: string,
+    options?: { remountExisting?: boolean },
+  ): Promise<void>;
   /** Discards the tab currently showing the conversation (Target.closeTarget / /json/close). */
   closeConversationTab(conversationId: string): Promise<void>;
 }
@@ -217,6 +220,42 @@ export function pendingSendMatches(conversationId: string, at: number): boolean 
 /** The sleep state this module holds for a conversation, for the send-origin classifier. */
 export function sleepStateFor(conversationId: string): SleepState | null {
   return records.get(conversationId)?.state ?? null;
+}
+
+/**
+ * Keeps a controller-driven conversation page-mounted so its observed turn boundary can
+ * drive the next managed turn immediately. Future sends are excluded before notePushTyped;
+ * unlike an ordinary sleep cancellation, this also repairs a page that disappeared without
+ * ever entering sleep management.
+ */
+export async function keepConversationAwake(
+  conversationId: string,
+  reason: string,
+  remountExisting = false,
+): Promise<boolean> {
+  pendingTypedSends.delete(conversationId);
+  if (pushWindow?.conversationId === conversationId) pushWindow = null;
+  const record = records.get(conversationId);
+  if (!driver) return false;
+  try {
+    // The driver is required to make this idempotent: callers use this both for a slept
+    // conversation and for an auto-advancing page whose observer vanished while the model
+    // continued server-side. Reopening the latter is what restores turn-boundary evidence.
+    await driver.openConversationTab(conversationId, { remountExisting });
+  } catch (err) {
+    emit({
+      kind: 'wake_failed',
+      conversationId,
+      at: Date.now(),
+      reason: `could not keep managed workstream awake: ${err instanceof Error ? err.message : String(err)}`
+    });
+    return false;
+  }
+
+  if (!record) return true;
+  emit({ kind: 'sleep_cancelled', conversationId, at: Date.now(), reason });
+  drop(record);
+  return true;
 }
 
 /**

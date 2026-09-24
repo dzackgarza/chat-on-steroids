@@ -36,7 +36,9 @@ const MAX_JOURNAL_BYTES = 4 * 1024 * 1024;
 const BATCH = 100;
 const RETRY_ALARM = 'clf-bridge-drain';
 const WORKSTREAM_ALARM = 'clf-workstream-recovery';
+const WORKSTREAM_ROUTE_RECONCILE_MS = 30 * 60 * 1000;
 let archivingWorkstreams = false;
+let workstreamRouteReconcileWork = null;
 let retryAlarmScheduled = false;
 
 let port = null;
@@ -269,6 +271,17 @@ async function loadOnce() {
       commandTabs.set(tabId, { commandId, openedAt });
     }
   }
+  // Tab lifecycle events can wake this worker and deliver the app-opened marker while the
+  // storage read above is still in flight. Those events cannot mutate commandTabs directly —
+  // the restored snapshot would overwrite them — but register_document is waiting on this same
+  // load barrier and needs the marker *before* its continuation runs. Merge the synchronous
+  // pre-load inbox here, inside the barrier, instead of scheduling another .then() behind every
+  // other waiter. This makes "load complete" mean the exact tab custody observed during load is
+  // already visible to registerDocument().
+  for (const [tabId, entry] of pendingCommandTabs) {
+    if (!commandTabs.has(tabId)) commandTabs.set(tabId, entry);
+  }
+  pendingCommandTabs.clear();
   loaded = true;
 }
 
@@ -1118,6 +1131,38 @@ async function drainCommandAcks(targetId = null) {
       if (entry.id === targetId) targetResult = result;
 
       if (result.ok || result.status === 404 || result.status === 409) {
+        if (
+          result.ok &&
+          payload.status === 'sent' &&
+          payload.conversationId &&
+          Number.isInteger(entry.tabId)
+        ) {
+          let currentConversation =
+            cleanConversationId(tabConversations[String(entry.tabId)]) ?? null;
+          try {
+            const tab = await chrome.tabs.get(entry.tabId);
+            currentConversation =
+              conversationForTab(tab) ?? currentConversation;
+          } catch {
+            // The ACK remains valid if its tab closed immediately after submission.
+          }
+          if (
+            currentConversation &&
+            currentConversation !== payload.conversationId
+          ) {
+            await call('/workstreams/routes', {
+              method: 'POST',
+              body: JSON.stringify({
+                promotions: [
+                  {
+                    from: payload.conversationId,
+                    to: currentConversation,
+                  },
+                ],
+              }),
+            }).catch(() => undefined);
+          }
+        }
         commandAckOutbox = commandAckOutbox.filter((candidate) => candidate !== entry);
         changed = true;
         if (result.ok && result.data?.committed !== false && payload.status === 'sent' && !payload.agent) {
@@ -1155,6 +1200,7 @@ async function ackCommand(id, status, error, conversationId, agent, client, sour
   const payload = commandAckPayload(id, status, error, conversationId, agent, client);
   const queued = {
     ...payload,
+    tabId: source && Number.isInteger(source.tab) ? source.tab : null,
     provisional: payload.conversationId ? null : tabKey(source),
     queuedAt: Date.now()
   };
@@ -1517,7 +1563,23 @@ async function registerDocument(sender, message) {
   tabEpochs[key] = requestedEpoch;
   delete terminalDocuments[key];
   await persistLive();
-  return { ok: true, tab: id, documentId, navigationEpoch: requestedEpoch };
+  // If the marker is still present on this document, use it directly. This closes the MV3
+  // startup race where the tab lifecycle event arrived before loadOnce() finished restoring
+  // commandTabs and the page reached register_document before deferred custody was installed.
+  // The lifecycle-owned copy remains necessary for ChatGPT's transient `/c/WEB:...` rewrite,
+  // which can erase both query and fragment before content.js starts.
+  const visibleCommandId =
+    markerFromUrl(sender?.tab?.url) || markerFromUrl(sender?.tab?.pendingUrl);
+  if (visibleCommandId && !commandTabs.has(id)) noteCommandTab(id, visibleCommandId);
+  // The app-opened command marker can disappear before this content document starts.
+  // ChatGPT now rewrites a fresh `/?clf=...` tab through a transient `/c/WEB:...` route,
+  // dropping both query and fragment. onCreated/onUpdated already captured the marker in
+  // commandTabs; return that exact tab-owned command here so the replacement document can
+  // redeem it even when the router erased the URL copy. The bridge lease remains the final
+  // single-owner fence, so a stale commandTabs entry can at worst redeem to 404/409 and type
+  // nothing.
+  const commandId = commandTabs.get(id)?.commandId || visibleCommandId || null;
+  return { ok: true, tab: id, documentId, navigationEpoch: requestedEpoch, commandId };
 }
 
 function ownsDocument(source) {
@@ -1546,7 +1608,7 @@ async function markTerminal(id) {
 
 function cleanConversationId(value) {
   const id = typeof value === 'string' ? value.trim() : '';
-  return /^[0-9a-f-]{8,64}$/i.test(id) ? id : null;
+  return /^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(id) ? id : null;
 }
 
 /** Records a tab's current conversation without writing storage on every poll. */
@@ -1561,10 +1623,33 @@ async function noteTabConversation(source, value) {
   tabConversations[key] = conversationId;
   await persistLive();
   if (!ownsDocument(source)) return false;
+  let promoted = false;
+  if (previous && previous !== conversationId) {
+    try {
+      const result = await call('/workstreams/routes', {
+        method: 'POST',
+        body: JSON.stringify({
+          promotions: [{ from: previous, to: conversationId }],
+        }),
+      });
+      promoted =
+        result.ok &&
+        Number.isFinite(Number(result.data?.promoted)) &&
+        Number(result.data.promoted) > 0;
+    } catch {
+      // Browser route promotion is controller metadata. Normal close handling below remains
+      // the fail-closed fallback if the bridge cannot accept it.
+    }
+  }
   // A same-tab full navigation is not a close until the replacement document proves it is
   // a different conversation. This keeps ordinary reloads alive while still retiring A
   // when the new document eventually binds B.
-  if (previous && previous !== conversationId && !conversationStillOpen(previous)) {
+  if (
+    previous &&
+    previous !== conversationId &&
+    !promoted &&
+    !conversationStillOpen(previous)
+  ) {
     await drain();
     await enqueueClose(previous);
     await drainCloses();
@@ -1671,7 +1756,7 @@ function conversationFromUrl(value) {
   try {
     const url = new URL(String(value || ''));
     if (url.protocol !== 'https:' || (url.hostname !== 'chatgpt.com' && url.hostname !== 'chat.openai.com')) return null;
-    const match = /^\/c\/([0-9a-f-]{8,64})/i.exec(url.pathname);
+    const match = /^\/c\/((?:WEB:)?[0-9a-f-]{8,64})/i.exec(url.pathname);
     return match ? match[1] : null;
   } catch {
     return null;
@@ -2266,9 +2351,24 @@ const HANDLERS = {
     }
     return ownsDocument(source) ? { ok: true, focused: true } : { ok: false, error: 'stale_document' };
   },
-  async ack(message, _sender, source) {
+  async ack(message, sender, source) {
+    const id = String(message.id || '');
+    const senderTabId =
+      sender?.tab && typeof sender.tab.id === 'number' ? sender.tab.id : null;
+    // Capture custody before ack cleanup. ChatGPT commonly rewrites `/?clf=<id>` through
+    // `/c/WEB:...`, erasing the URL marker before the content script reports a failure.
+    // The numeric-tab custody map is the durable proof that this tab was opened by this
+    // command; deleting it first made failed fresh tabs impossible to recognise and leaked
+    // one ordinary ChatGPT tab per failed attempt.
+    const custody =
+      senderTabId === null
+        ? null
+        : commandTabs.get(senderTabId) ?? pendingCommandTabs.get(senderTabId) ?? null;
+    const appOpenedForThisCommand = custody?.commandId === id;
+    const targetsExistingConversation =
+      cleanConversationId(message.conversationId) !== null;
     const result = await ackCommand(
-      String(message.id || ''),
+      id,
       message.status === 'failed' ? 'failed' : 'sent',
       message.error,
       message.conversationId,
@@ -2279,8 +2379,24 @@ const HANDLERS = {
     // ackCommand first made this irreversible page result durable in the browser-owned outbox.
     // From that point recovery must never reopen the pre-send marker, even if the bridge HTTP
     // response itself was lost; the outbox is now the sole retry path.
-    forgetCommandTab(message.id);
-    await forgetDeferredRevival(message.id);
+    forgetCommandTab(id);
+    await forgetDeferredRevival(id);
+    // Failed fresh bootstrap pages have no user conversation to preserve. Leaving them open
+    // leaks one tab per transport failure (especially under an account-wide rate limit), which
+    // then degrades Chrome and makes later delivery failures more likely. Existing-chat
+    // revivals carry their target conversation id and are never closed here.
+    if (
+      message.status === 'failed' &&
+      senderTabId !== null &&
+      appOpenedForThisCommand &&
+      !targetsExistingConversation
+    ) {
+      try {
+        await chrome.tabs.remove(senderTabId);
+      } catch {
+        // onRemoved/sweep custody will handle an already-gone tab.
+      }
+    }
     return result;
   }
 };
@@ -2483,6 +2599,55 @@ async function pingTab(tabId) {
 }
 
 /**
+ * Makes one exact app-owned ChatGPT tab capable of receiving managed commands.
+ *
+ * Extension reloads invalidate the isolated worlds of already-open tabs. Chromium can then
+ * reject programmatic reinjection with a misleading host-permission error even though the
+ * loaded manifest and granted origins both include chatgpt.com. A normal navigation restores
+ * the manifest content scripts. Reload only the exact tab already selected by a durable
+ * managed action; never sweep/reload unrelated ChatGPT tabs.
+ */
+async function ensureManagedTabScripts(tabId) {
+  if (typeof tabId !== 'number') return false;
+  if (await pingTab(tabId)) return true;
+
+  // A fresh command tab can be visible to chrome.tabs immediately while its first navigation
+  // exists only as pendingUrl. There is no document to inject into yet, and reloading at that
+  // point restarts/cancels the very navigation that must create one. onUpdated(status=complete)
+  // already re-offers durable command custody, so leave loading tabs entirely alone here.
+  try {
+    const initial = await chrome.tabs.get(tabId);
+    if (initial.status !== 'complete') return false;
+  } catch {
+    return false;
+  }
+
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['chatgpt-dom.js'] });
+    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['fiber.js'] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] });
+    if (await pingTab(tabId)) return true;
+  } catch {
+    // A restored pre-extension document can reject scripting despite the origin permission.
+    // Reloading this already-authorised managed target lets manifest injection happen normally.
+  }
+
+  try {
+    await chrome.tabs.reload(tabId);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === 'complete' && (await pingTab(tabId))) return true;
+      await sleep(250);
+    }
+  } catch {
+    // Tab closed/navigated while being recovered.
+  }
+  return false;
+}
+
+/**
  * Closes duplicate tabs of one conversation that failed the liveness probe, once a live tab
  * for that conversation is known to exist.
  *
@@ -2544,6 +2709,10 @@ const revivalReuseAttempted = new Map();
  * justified opening it can no longer be alive.
  */
 const commandTabs = new Map();
+// Synchronous lifecycle custody received before loadOnce() finishes. See the merge in
+// loadOnce(): keeping this separate is what prevents the restored storage snapshot from erasing
+// a marker while also preventing register_document from racing ahead of a deferred .then().
+const pendingCommandTabs = new Map();
 /**
  * How long a command tab may live unacknowledged.
  *
@@ -2598,10 +2767,58 @@ function persistCommandTabs() {
 
 function noteCommandTab(tabId, commandId) {
   if (typeof tabId !== 'number' || !commandId) return;
+  // Browser tab events can fire immediately when this MV3 worker wakes, before loadOnce()
+  // has restored storage.session. Record custody synchronously in a side inbox so loadOnce()
+  // merges it before releasing any waiter, especially register_document. Deferring only the
+  // mutation with load().then(...) leaves a race between that callback and registerDocument's
+  // own continuation, which is exactly how a /c/WEB:... page registered with commandId=null.
+  if (!loaded) {
+    if (!pendingCommandTabs.has(tabId)) {
+      pendingCommandTabs.set(tabId, { commandId, openedAt: Date.now() });
+    }
+    void load().then(() => {
+      // loadOnce normally consumed this entry. If initialization completed without doing so
+      // (for example a future alternate load path), finish the same custody transfer here.
+      const pending = pendingCommandTabs.get(tabId);
+      if (pending?.commandId === commandId) pendingCommandTabs.delete(tabId);
+      if (!commandTabs.has(tabId)) {
+        commandTabs.set(tabId, pending ?? { commandId, openedAt: Date.now() });
+        void persistCommandTabs();
+        scheduleRetry();
+      }
+      // If the content document won the startup race and registered before custody became
+      // visible, its one-shot startup lookup may already have returned commandId=null. Present
+      // the now-authoritative tab-owned marker directly to that live document. A document that
+      // has not mounted yet simply rejects this message and will take the ordinary startup path;
+      // a document that already started the same command ignores the duplicate in runCommand().
+      void offerFreshCommandToTab(tabId, commandId);
+    }).catch(() => undefined);
+    return;
+  }
   if (commandTabs.has(tabId)) return;
   commandTabs.set(tabId, { commandId, openedAt: Date.now() });
   void persistCommandTabs();
   scheduleRetry();
+  void offerFreshCommandToTab(tabId, commandId);
+}
+
+async function offerFreshCommandToTab(tabId, commandId) {
+  if (typeof tabId !== 'number' || !commandId || !chrome.tabs?.sendMessage) return false;
+  if (!(await ensureManagedTabScripts(tabId))) return false;
+  try {
+    const reply = await Promise.race([
+      chrome.tabs.sendMessage(tabId, {
+        type: 'clf-run-fresh-command',
+        id: commandId
+      }),
+      new Promise((resolve) => setTimeout(() => resolve(null), PING_TIMEOUT_MS))
+    ]);
+    return reply?.ok === true;
+  } catch {
+    // The tab can navigate between the repair/probe and the offer. Custody remains durable
+    // and the next sweep retries the same command id.
+    return false;
+  }
 }
 
 function forgetCommandTab(commandId) {
@@ -2615,18 +2832,99 @@ function forgetCommandTab(commandId) {
   if (changed) void persistCommandTabs();
 }
 
+/**
+ * Reconciles app-opened marker tabs with the bridge's durable command set.
+ *
+ * commandTabs is custody, not authority. Earlier custody-loss bugs left root clf tabs
+ * alive after their command had already expired, and those invisible orphans eventually
+ * saturated Chrome. Browser truth can recover that map: a live marker regains custody; a
+ * root fresh-chat marker absent from the bridge's live set is app-owned debris and can close.
+ * Concrete conversation tabs are never closed here because they may now be real chats.
+ */
+async function reconcileMarkedCommandTabs(now = Date.now()) {
+  const liveReply = await call('/commands/live');
+  if (!liveReply.ok || !Array.isArray(liveReply.data?.ids)) return;
+  const live = new Set(
+    liveReply.data.ids.filter((id) => typeof id === 'string' && id)
+  );
+  let tabs = [];
+  try {
+    // Chrome's url filter ignores a tab whose navigation has not committed yet, even though
+    // pendingUrl already contains our fresh-chat clf marker. Those are exactly the tabs left
+    // behind when a browser-open attempt dies while ChatGPT is still loading. Query everything
+    // and apply the ChatGPT/current-or-pending test below so dead pending navigations are
+    // reconciled immediately instead of surviving until the coarse custody TTL.
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  let changed = false;
+  for (const tab of tabs) {
+    if (!tab || typeof tab.id !== 'number') continue;
+    const marker = markerFromUrl(tab.url) || markerFromUrl(tab.pendingUrl);
+    if (!marker) continue;
+    if (live.has(marker)) {
+      if (!commandTabs.has(tab.id)) {
+        commandTabs.set(tab.id, { commandId: marker, openedAt: now });
+        changed = true;
+      }
+      continue;
+    }
+    let freshRoot = false;
+    try {
+      const url = new URL(String(tab.url || tab.pendingUrl || ''));
+      freshRoot =
+        isChatGptUrl(url.href) &&
+        (url.pathname === '/' || url.pathname === '') &&
+        !conversationFromUrl(url.href);
+    } catch {
+      freshRoot = false;
+    }
+    if (!freshRoot) continue;
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch {
+      // The tab may already be gone; custody cleanup below is still correct.
+    }
+    if (commandTabs.delete(tab.id)) changed = true;
+  }
+  if (changed) await persistCommandTabs();
+}
+
 /** Closes the tabs of commands that can no longer complete. */
 async function sweepCommandTabs(now = Date.now()) {
+  await reconcileMarkedCommandTabs(now);
   let changed = false;
   for (const [tabId, entry] of [...commandTabs]) {
+    // Custody is durable, but one offer at tab creation is not enough: the content script can
+    // mount a fraction later, or an extension/browser restart can leave the numeric tab alive
+    // after its isolated world was replaced. Re-offer the same inert command id on every
+    // browser retry sweep until the page ACK removes custody. content.js/runCommand() is
+    // idempotent for a command id and the bridge redeem is the single-owner authority, so a
+    // repeated offer cannot duplicate a send; it only closes the startup-ordering gap.
+    if (now - entry.openedAt < COMMAND_TAB_TTL_MS) {
+      await offerFreshCommandToTab(tabId, entry.commandId);
+      continue;
+    }
     if (now - entry.openedAt < COMMAND_TAB_TTL_MS) continue;
-    commandTabs.delete(tabId);
-    changed = true;
     if (!chrome.tabs || typeof chrome.tabs.remove !== 'function') continue;
     try {
       await chrome.tabs.remove(tabId);
+      // onRemoved normally clears the custody row synchronously with the browser close, but
+      // do not depend on that listener having run before this await resumes. A successful
+      // remove proves this tab no longer needs custody.
+      if (commandTabs.delete(tabId)) changed = true;
     } catch {
-      // Already gone, which is the same outcome.
+      // A saturated browser can reject/remove-timeout while the tab is still present. The old
+      // code deleted custody *before* attempting the close, so one transient failure made the
+      // tab permanently untracked and leaked it forever. Distinguish "already gone" from
+      // "still there": only the former may forget custody; the latter stays eligible for the
+      // next alarm sweep.
+      try {
+        await chrome.tabs.get(tabId);
+      } catch {
+        if (commandTabs.delete(tabId)) changed = true;
+      }
     }
   }
   if (changed) await persistCommandTabs();
@@ -2742,6 +3040,14 @@ chrome.tabs.onRemoved.addListener((id) => {
 chrome.tabs.onUpdated.addListener((id, changeInfo) => {
   if (!changeInfo) return;
   if (typeof changeInfo.url === 'string') maybeReuseRevivalTab(id, changeInfo.url);
+  // Fresh command custody can arrive before the document is injectable. The first offer then
+  // correctly fails, but a one-minute retry alarm is longer than the workstream command's
+  // acknowledgement deadline. Re-offer immediately when Chrome says this same tab finished
+  // loading; redeem remains the single-owner fence and runCommand is idempotent for the id.
+  if (changeInfo.status === 'complete') {
+    const entry = commandTabs.get(id) || pendingCommandTabs.get(id);
+    if (entry?.commandId) void offerFreshCommandToTab(id, entry.commandId);
+  }
   const fullNavigation = changeInfo.status === 'loading';
   const leftChatGpt = typeof changeInfo.url === 'string' && !isChatGptUrl(changeInfo.url);
   if (!fullNavigation && !leftChatGpt) return;
@@ -2776,6 +3082,20 @@ chrome.tabs.onUpdated.addListener((id, changeInfo) => {
       }
       const documentId = typeof tabDocuments[key] === 'string' ? tabDocuments[key] : null;
       const targetConversation = conversationFromUrl(targetUrl);
+      const provisional =
+        documentId ? `tab-${id}:${documentId}` : null;
+      const pendingFreshCommandAck = Boolean(
+        provisional &&
+          commandAckOutbox.some(
+            (entry) =>
+              entry &&
+              !entry.conversationId &&
+              entry.provisional === provisional
+          )
+      );
+      const freshCommandCustody = Boolean(
+        (commandTabs.get(id) || pendingCommandTabs.get(id))?.commandId
+      );
       if (targetConversation) {
         let preferenceChanged = false;
         for (const [commandId, raw] of Object.entries(revivalPreferences)) {
@@ -2795,7 +3115,22 @@ chrome.tabs.onUpdated.addListener((id, changeInfo) => {
         // chat B. Anything still provisional in A's dying document is too old/unbound to be
         // adopted by B and must be discarded before the replacement document can register.
         await dropDocumentProvisional(id, documentId);
-      } else if (!knownConversation && rootReload && documentId) {
+      } else if (
+        !knownConversation &&
+        documentId &&
+        (
+          rootReload ||
+          (targetConversation && (pendingFreshCommandAck || freshCommandCustody))
+        )
+      ) {
+        // A fresh root chat can become its first concrete /c/<id> through a real document
+        // navigation rather than pushState. The old document already owns the durable
+        // provisional ACK for the irreversible bootstrap send, but the replacement document
+        // will register under a new documentId. Park that provisional state under the
+        // tab-scoped reload key so registerDocument() can adopt it and bind the ACK when the
+        // new document reports the concrete conversation. Require the pending fresh-command
+        // ACK for the concrete-chat case: an unrelated manual navigation from an id-less root
+        // must never drag stale provisional observations into the destination conversation.
         await carryFreshReloadProvisional(id, documentId);
       }
     }
@@ -2826,7 +3161,7 @@ chrome.tabs.onUpdated.addListener((id, changeInfo) => {
  * receive both its static manifest injection and this recovery injection.
  */
 const CHATGPT_TAB_URLS = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
-const PAGE_RECORDER_VERSION = 10;
+const PAGE_RECORDER_VERSION = 12;
 
 let deferredRecoveryWork = null;
 
@@ -3049,7 +3384,11 @@ async function restoreOpenChatgptTabs() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  void restoreOpenChatgptTabs().then(() => recoverDeferredRevivals()).catch(() => undefined);
+  void load()
+    .then(() => reconcileRetiredWorkstreamTabs())
+    .then(() => restoreOpenChatgptTabs())
+    .then(() => recoverDeferredRevivals())
+    .catch(() => undefined);
   void load().then(() => {
     if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0 || commandTabs.size > 0) scheduleRetry();
   });
@@ -3061,6 +3400,8 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
       .then(() => drainCommandAcks())
       .then(() => drain())
       .then(() => drainCloses())
+      .then(() => reconcileRetiredWorkstreamTabs())
+      .then(() => restoreOpenChatgptTabs())
       .then(() => recoverDeferredRevivals())
       .catch(() => undefined);
   });
@@ -3069,7 +3410,9 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
 if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addListener === 'function') {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm?.name === WORKSTREAM_ALARM) {
-      void drainWorkstreamArchives();
+      void reconcileRetiredWorkstreamTabs()
+        .then(() => drainWorkstreamArchives())
+        .catch(() => undefined);
       return;
     }
     if (!alarm || alarm.name !== RETRY_ALARM) return;
@@ -3082,20 +3425,24 @@ if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addLi
 }
 
 // `chrome://extensions` Reload does not provide a dependable install/update event across
-// development/reload paths. The service worker itself *must* start, though. Ping first, so
-// ordinary worker wake-ups are one cheap message per ChatGPT tab and inject nothing; only a
-// dead or stale recorder pays the scripting cost.
-void restoreOpenChatgptTabs().then(() => recoverDeferredRevivals()).catch(() => undefined);
+// development/reload paths. The service worker itself *must* start, though. Reconcile retired
+// workstream frontends before touching every open ChatGPT tab: otherwise a leaked retired-tab
+// backlog can exhaust Chrome while restoreOpenChatgptTabs() is trying to repair it.
+void load()
+  .then(() => reconcileRetiredWorkstreamTabs())
+  .then(() => restoreOpenChatgptTabs())
+  .then(() => recoverDeferredRevivals())
+  .catch(() => undefined);
 void load().then(() => {
   if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0 || commandTabs.size > 0) scheduleRetry();
+  void reconcileWorkstreamRoutes().catch(() => undefined);
 });
 
 /** The app fences the old lease before asking the browser to stop and archive it. */
 async function archiveWorkstreamChat(action) {
-  const conversationId = action.conversationId;
-  if (typeof conversationId !== 'string' || !/^[a-zA-Z0-9-]{1,200}$/.test(conversationId)) {
-    throw new Error('workstream_has_no_browser_conversation');
-  }
+  // Same route grammar as every other controller surface: legacy UUIDs and WEB:<uuid>.
+  const conversationId = cleanConversationId(action.conversationId);
+  if (!conversationId) throw new Error('workstream_has_no_browser_conversation');
   const matches = (tab) => {
     if (!tab.url) return false;
     const url = new URL(tab.url);
@@ -3107,55 +3454,150 @@ async function archiveWorkstreamChat(action) {
     return;
   }
   const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
-  const target = tabs.find(matches) ?? await chrome.tabs.create({ url: `https://chatgpt.com/c/${conversationId}`, active: false });
-  if (typeof target.id !== 'number') throw new Error('archive_tab_missing');
-  const until = Date.now() + 30_000;
-  let tab = await chrome.tabs.get(target.id);
-  while (tab.status !== 'complete' && Date.now() < until) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    tab = await chrome.tabs.get(target.id);
-  }
-  if (!matches(tab) || tab.status !== 'complete') throw new Error('archive_target_not_ready');
-  await chrome.scripting.executeScript({ target: { tabId: target.id }, files: ['chatgpt-dom.js'] });
-  const stopped = await chrome.scripting.executeScript({
-    target: { tabId: target.id },
-    args: [conversationId],
-    func: async (id) => {
-      if (CLF_DOM.conversationId() !== id) return false;
-      const stop = CLF_DOM.stopButton();
-      if (stop) stop.click();
-      const deadline = Date.now() + 20_000;
-      while (CLF_DOM.conversationId() === id && CLF_DOM.generating() && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
+  const exact = tabs.find(matches) ?? null;
+  let exactIsLive = false;
+  // Stopping visible generation is best-effort browser hygiene, not archive authority. A dead
+  // or already-archived route can no longer mount the old conversation DOM at all; requiring
+  // that page to load/inject is precisely what made stale routes impossible to retire.
+  if (typeof exact?.id === 'number') {
+    try {
+      exactIsLive = (await probeTab(exact.id)) === 'live';
+      if (exactIsLive) {
+        // Chromium may leave scripting calls to a renderer pending indefinitely after the
+        // liveness probe succeeds but the renderer freezes. Hygiene gets one ping-sized budget;
+        // backend retirement below is the authority and must never wait on the old renderer.
+        await Promise.race([
+          chrome.scripting.executeScript({
+            target: { tabId: exact.id },
+            args: [conversationId],
+            func: (id) => {
+              if (CLF_DOM.conversationId() !== id) return false;
+              const stop = CLF_DOM.stopButton();
+              if (stop) stop.click();
+              return true;
+            }
+          }),
+          sleep(PING_TIMEOUT_MS)
+        ]);
       }
-      return CLF_DOM.conversationId() === id && !CLF_DOM.generating();
+    } catch {
+      // Backend retirement below is authoritative.
     }
-  });
-  if (stopped[0]?.result !== true) throw new Error('archive_generation_did_not_stop');
+  }
+  // `archiving` already fences the old workstream token before this browser operation starts.
+  // A wedged ChatGPT turn may keep rendering the Stop control indefinitely even after a click;
+  // requiring that visual state to clear makes the exact chat that most needs replacement
+  // unrecoverable. Stop is therefore best-effort. The action-fence recheck below is the
+  // authority that prevents archiving a conversation after a takeover.
   // Recheck policy after the async stop. A takeover cancels this action, never archives
   // its new owner, and never opens a second replacement.
   const current = await call('/workstreams/archive');
   if (!current.ok || !current.data?.actions?.some((item) => item.id === action.id && item.actionId === action.actionId)) return;
-  const archived = await chrome.scripting.executeScript({
-    target: { tabId: target.id }, world: 'MAIN', args: [conversationId],
-    func: async (id) => {
-      if (location.pathname !== `/c/${id}`) return { error: 'archive_navigation_changed' };
-      const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
-      if (!session.ok) return { error: `archive_session_http_${session.status}` };
-      const auth = await session.json();
-      if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
-      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
-      const response = await fetch(`/backend-api/conversation/${id}`, {
-        method: 'PATCH', headers, credentials: 'include', signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
-      });
-      if (!response.ok) return { error: `archive_http_${response.status}` };
-      const check = await fetch(`/backend-api/conversation/${id}`, { headers, credentials: 'include', signal: AbortSignal.timeout(15_000) });
-      if (!check.ok) return { error: `archive_check_http_${check.status}` };
-      const saved = await check.json();
-      return saved.is_archived === true ? { archived: true } : { error: 'archive_not_confirmed' };
+  // The archive mutation needs authenticated ChatGPT origin, not the old conversation's page.
+  // Prefer the exact tab when live, then another current controller frontend. The fetch below
+  // does not read or mutate the host tab's conversation, so there is no reason to manufacture
+  // a fresh root tab merely because the conversation being archived has a dead renderer. That
+  // old policy leaked one root tab per archive whenever Chrome was too saturated to close the
+  // temporary host.
+  let temporaryHost = null;
+  const candidates = [];
+  if (exactIsLive && typeof exact?.id === 'number') candidates.push(exact);
+  const routes = await call('/workstreams/routes');
+  const currentRouteIds = new Set(
+    (routes.ok && Array.isArray(routes.data?.routes) ? routes.data.routes : [])
+      .map((route) => cleanConversationId(route?.conversationId))
+      .filter(Boolean),
+  );
+  for (const tab of tabs) {
+    if (candidates.length >= 8) break;
+    if (typeof tab?.id !== 'number' || tab.id === exact?.id) continue;
+    const route = conversationForTab(tab);
+    if (!route || !currentRouteIds.has(route)) continue;
+    candidates.push(tab);
+  }
+  // If there is no current controller frontend, reuse an already-open ChatGPT tab as the
+  // authenticated fetch context before creating anything new. This is invisible page-wise:
+  // executeScript only performs the authenticated backend archive request.
+  if (candidates.length === 0) {
+    for (const tab of tabs) {
+      if (candidates.length >= 4) break;
+      if (typeof tab?.id !== 'number' || tab.id === exact?.id) continue;
+      candidates.push(tab);
     }
-  });
-  if (archived[0]?.result?.archived !== true) throw new Error(archived[0]?.result?.error ?? 'archive_no_result');
+  }
+  const ensureTemporaryHost = async () => {
+    if (temporaryHost) return temporaryHost;
+    temporaryHost = await chrome.tabs.create({ url: 'https://chatgpt.com/', active: false });
+    if (typeof temporaryHost.id !== 'number') throw new Error('archive_host_tab_missing');
+    const until = Date.now() + 30_000;
+    let host = await chrome.tabs.get(temporaryHost.id);
+    while (host.status !== 'complete' && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      host = await chrome.tabs.get(temporaryHost.id);
+    }
+    if (host.status !== 'complete') throw new Error('archive_host_not_ready');
+    return host;
+  };
+  let archivedResult = null;
+  let lastError = 'archive_host_unavailable';
+  const archiveThroughHost = async (host) => {
+    if (typeof host?.id !== 'number') return false;
+    try {
+      const archiveExecution = chrome.scripting.executeScript({
+        target: { tabId: host.id }, world: 'MAIN', args: [conversationId],
+        func: async (id) => {
+          const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
+          if (!session.ok) return { error: `archive_session_http_${session.status}` };
+          const auth = await session.json();
+          if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
+          const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
+          const response = await fetch(`/backend-api/conversation/${id}`, {
+            method: 'PATCH', headers, credentials: 'include', signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
+          });
+          // Idempotent retirement: a route ChatGPT no longer has is already unavailable for
+          // reinjection, which is exactly the state archiving is meant to establish.
+          if (response.status === 404) return { archived: true, alreadyGone: true };
+          if (!response.ok) return { error: `archive_http_${response.status}` };
+          return { archived: true };
+        }
+      });
+      // executeScript itself can stay pending after the page-side fetch has timed out if the
+      // renderer freezes. Bound the browser RPC separately so one dead tab cannot hold the
+      // global archive drain latch forever.
+      const archived = await Promise.race([
+        archiveExecution,
+        new Promise((resolve) => setTimeout(() => resolve(null), 20_000))
+      ]);
+      if (!archived) {
+        lastError = 'archive_host_timeout';
+        return false;
+      }
+      const result = archived[0]?.result ?? null;
+      if (result?.archived === true) {
+        archivedResult = result;
+        return true;
+      }
+      lastError = result?.error ?? 'archive_no_result';
+      return false;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+  };
+  try {
+    for (const host of candidates) {
+      if (await archiveThroughHost(host)) break;
+    }
+    if (!archivedResult) {
+      const host = await ensureTemporaryHost();
+      await archiveThroughHost(host);
+    }
+  } finally {
+    if (typeof temporaryHost?.id === 'number') {
+      await chrome.tabs.remove(temporaryHost.id).catch(() => undefined);
+    }
+  }
+  if (archivedResult?.archived !== true) throw new Error(lastError);
   await chrome.storage.local.set({ workstreamArchiveReceipt: { id: action.id, actionId: action.actionId, conversationId } });
   await acknowledgeWorkstreamArchive(action, matches);
 }
@@ -3164,13 +3606,183 @@ async function acknowledgeWorkstreamArchive(action, matches) {
   const acknowledged = await call('/workstreams/archive', {
     method: 'POST', body: JSON.stringify({ id: action.id, actionId: action.actionId, error: null })
   });
-  // A lost response is retried from the durable confirmed receipt, never by opening
+  // A lost response is retried from the durable accepted receipt, never by opening
   // an already archived conversation and trying to click Stop on its error page.
   if (!acknowledged.ok && acknowledged.status !== 409) return;
   for (const open of await chrome.tabs.query({ url: 'https://chatgpt.com/*' })) {
     if (matches(open) && typeof open.id === 'number') await chrome.tabs.remove(open.id);
   }
   await chrome.storage.local.remove('workstreamArchiveReceipt');
+}
+
+/**
+ * Closes only ChatGPT tabs whose conversation ids the controller has durably retired.
+ *
+ * Successful archive/replacement used to rely on one best-effort tabs.remove() call and then
+ * discard its only cleanup state. Under browser saturation that close can fail, leaving an
+ * unmarked normal ChatGPT tab forever. The controller already owns the authoritative durable
+ * retired-conversation ledger, so use that directly instead of inventing another browser-side
+ * ownership database. A failed close remains in that ledger and is retried on the next sweep.
+ */
+async function reconcileRetiredWorkstreamTabs() {
+  const current = await call('/workstreams/routes');
+  if (!current.ok) return { closed: 0, remaining: null };
+  const currentIds = new Set(
+    (Array.isArray(current.data?.routes) ? current.data.routes : [])
+      .map((route) => cleanConversationId(route?.conversationId))
+      .filter(Boolean),
+  );
+  const retired = new Set(
+    (Array.isArray(current.data?.retired) ? current.data.retired : [])
+      .map((id) => cleanConversationId(id))
+      .filter((id) => id && !currentIds.has(id)),
+  );
+  if (retired.size === 0) return { closed: 0, remaining: 0 };
+
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: CHATGPT_TAB_URLS });
+  } catch {
+    return { closed: 0, remaining: null };
+  }
+  const stale = tabs
+    .filter((tab) => typeof tab?.id === 'number')
+    .filter((tab) => {
+      const conversationId = conversationForTab(tab);
+      return Boolean(
+        conversationId &&
+        retired.has(conversationId) &&
+        !currentIds.has(conversationId),
+      );
+    })
+    .map((tab) => tab.id);
+
+  let closed = 0;
+  // Batch removals release renderer/file-descriptor pressure much faster than hundreds of
+  // sequential RPCs. If one batch is refused, leave every id authoritative in the controller
+  // ledger and retry later; never erase ownership merely because Chrome is overloaded.
+  for (let index = 0; index < stale.length; index += 32) {
+    const batch = stale.slice(index, index + 32);
+    try {
+      await chrome.tabs.remove(batch);
+      closed += batch.length;
+    } catch {
+      // Chrome can reject a whole batch because one member closed/navigated between query and
+      // removal, or because an overloaded renderer makes that member temporarily inaccessible.
+      // Do not turn one bad id into 31 retained retired tabs. Fall back to independent closes;
+      // failures remain authoritative in the controller ledger and retry on the next sweep.
+      for (const tabId of batch) {
+        try {
+          await chrome.tabs.remove(tabId);
+          closed += 1;
+        } catch {
+          // Retried by the next one-minute sweep/startup reconciliation.
+        }
+      }
+    }
+  }
+  return { closed, remaining: Math.max(0, stale.length - closed) };
+}
+
+/**
+ * Reconciles only browser reinjection routes, never tool provenance.
+ *
+ * Workstream calls deliberately carry no ChatGPT conversation identity. The controller keeps
+ * a separate current frontend route solely so it can push continuation/recovery messages. A
+ * route ChatGPT now answers 404 for is no longer usable for that purpose, so clear exactly that
+ * stored route. Run infrequently to avoid turning route hygiene into backend polling pressure.
+ */
+async function reconcileWorkstreamRoutes() {
+  if (workstreamRouteReconcileWork) return workstreamRouteReconcileWork;
+  const work = (async () => {
+    const state = await chrome.storage.local.get('workstreamRouteCheckAt');
+    const last = Number(state.workstreamRouteCheckAt);
+    if (Number.isFinite(last) && Date.now() - last < WORKSTREAM_ROUTE_RECONCILE_MS) return;
+
+    const current = await call('/workstreams/routes');
+    const routes = current.ok && Array.isArray(current.data?.routes)
+      ? current.data.routes
+      : [];
+    if (routes.length === 0) return;
+
+    const tabs = (await chrome.tabs.query({ url: 'https://chatgpt.com/*' }))
+      .filter((tab) => typeof tab.id === 'number');
+    if (tabs.length === 0) return;
+
+    const validRoutes = routes
+      .filter(
+        (route) =>
+          typeof route?.id === 'string' &&
+          typeof route?.conversationId === 'string' &&
+          /^[a-zA-Z0-9-]{1,200}$/.test(route.conversationId),
+      )
+      .map((route) => ({ id: route.id, conversationId: route.conversationId }));
+    if (validRoutes.length === 0) return;
+
+    let probe = null;
+    for (const tab of tabs) {
+      try {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: 'MAIN',
+          args: [validRoutes],
+          func: async (items) => {
+            const session = await fetch('/api/auth/session', {
+              credentials: 'include',
+              signal: AbortSignal.timeout(15_000),
+            });
+            if (!session.ok) return { authStatus: session.status, results: [] };
+            const auth = await session.json();
+            if (typeof auth.accessToken !== 'string')
+              return { authStatus: null, results: [] };
+            const headers = { Authorization: `Bearer ${auth.accessToken}` };
+            const results = await Promise.all(
+              items.map(async (item) => {
+                try {
+                  const response = await fetch(
+                    `/backend-api/conversation/${item.conversationId}`,
+                    {
+                      headers,
+                      credentials: 'include',
+                      signal: AbortSignal.timeout(15_000),
+                    },
+                  );
+                  return { ...item, status: response.status };
+                } catch {
+                  return { ...item, status: null };
+                }
+              }),
+            );
+            return { authStatus: 200, results };
+          },
+        });
+        probe = result[0]?.result ?? null;
+        if (probe) break;
+      } catch {
+        // Try another already-open ChatGPT tab; do not create tabs merely for hygiene.
+      }
+    }
+    if (!probe || probe.authStatus !== 200) return;
+    const invalid = Array.isArray(probe.results)
+      ? probe.results
+          .filter((item) => item?.status === 404)
+          .map((item) => ({ id: item.id, conversationId: item.conversationId }))
+      : [];
+    if (invalid.length > 0) {
+      await call('/workstreams/routes', {
+        method: 'POST',
+        body: JSON.stringify({ invalid }),
+      });
+    }
+    // Stamp only after a successful authenticated batch. A rate-limited or inaccessible
+    // browser attempt remains eligible on the next service-worker start instead of suppressing
+    // reconciliation for half an hour.
+    await chrome.storage.local.set({ workstreamRouteCheckAt: Date.now() });
+  })();
+  workstreamRouteReconcileWork = work.finally(() => {
+    if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null;
+  });
+  return workstreamRouteReconcileWork;
 }
 
 async function drainWorkstreamArchives() {

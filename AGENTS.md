@@ -97,13 +97,13 @@ found the real boundary yet.
 | Plane | The identity that must survive |
 | --- | --- |
 | filesystem | approved root + canonical real path |
-| MCP call | required app-issued conversation key; optional request id for diagnostics |
-| tool ownership | conversation key -> conversation id |
+| MCP call | required admitted workstream id; optional request id for diagnostics |
+| tool ownership | logical workstream + current opaque claim |
 | browser observation | conversation id + navigation epoch + message/turn identity |
 | agent | conversation id -> prime or worker slot |
-| workspace | conversation/agent key -> cwd |
-| terminal | proven owner -> exec session id |
-| session | local session id + conversation lineage |
+| workspace | logical workstream/agent key -> cwd |
+| terminal | logical workstream + opaque claim -> exec session id |
+| session | logical workstream -> durable recorder session; browser conversation is optional routing metadata |
 | compaction | continuation token + from/to conversation |
 | renderer load | selected session id + load generation |
 | connection | tunnel/endpoint generation |
@@ -341,12 +341,12 @@ tunnel request
                 x-openai-session read as an opaque connector session key
  → tools.ts     build only the requested surface
  → kernel.ts    AsyncLocalStorage call context
-                validate required conversation_key before execution
-                resolve agent identity from its bound conversation
+                validate required workstream_id before execution
+                resolve agent identity from the admitted logical workstream
                 enforce the live capability / read-only guard
  → tool handler sandbox any model path, execute, attach structured evidence
                 (changes, counts, exit code, session id, assets)
- → recorder.ts  exact args/result/outcome; attach ONLY on proven ownership
+ → recorder.ts  exact args/result/outcome; file under the workstream-owned recorder session
  → kernel       agent inbox offer/ack bookkeeping
  → response
 ```
@@ -449,42 +449,67 @@ over optimistic decoding.**
 
 ## 11. Identity — the spine of the whole project
 
-Every model-facing tool requires `conversation_key` and `workstream_lock`. `kernel.ts` validates them before
-execution; `session/conversation-key.ts` owns issuance, durable storage and resolution.
-The model retains one key for its conversation and supplies it on every Core/Desktop call.
-Unknown or missing keys refuse execution. The literal `"new"` issues a key without running
-the requested operation; the model announces the issued key in an assistant message so
-the paired observer binds the actual browser conversation, then claims a lease with
-`workstream_lock="claim"` or `"claim:ID"`. The claim returns a lease without executing the
-requested operation. Both tokens are stripped from
-recorded tool arguments.
+Every ordinary Core/Desktop tool requires a `workstream_id`. The unscoped `workstream`
+setup tool is the chat's identity-registration step: `action=start` with a new logical
+workstream name registers and claims that repository/task identity, while `action=continue`
+with an already-registered name claims it. Either action issues the `workstream_id`; `kernel.ts` validates it against
+`workstreams.ts` before execution, and the model retains one id per attached workstream and
+supplies it on every ordinary call. Unknown or superseded ids refuse execution with
+`WORKSTREAM_SETUP_REQUIRED`. The setup tool itself is completely unscoped: it needs no
+conversation key, lock, browser identity or prior claim, and never returns
+`BROWSER_IDENTITY_REQUIRED`. The opaque id is the only model-carried identity for
+steady-state calls; it is stripped from recorded tool arguments.
 
-Browser commands supply a key in their opening message. The command ACK binds it to the
-actual ChatGPT conversation before tools can execute. Revival reuses that conversation's
-key; Compact & Resume supplies a key for the replacement conversation. A standalone `"new"`
-requires the explicit assistant announcement before tool execution; an unobserved key
-cannot acquire execution authority. App-issued keys provide cooperative routing, not independent authentication
-of a ChatGPT account: a model copying another chat's key would select its identity.
+Setup has no browser-provenance dependency. `continue` rotates the opaque claim token for the
+logical workstream directly. The previous token becomes retired ownership; already-admitted
+calls/processes under that token must settle or be terminated before the successor executes.
+The workstream's stored browser conversation is not part of that authority calculation. It is
+only the current route the controller may later use for continuation/archive/replacement.
+`WORKSTREAM_BUSY` therefore means an already-admitted call from a retired opaque claim is still
+settling; retry the same ordinary call with the same current token rather than calling setup again.
 
-The key determines recording, workspace, terminal ownership and agent routing. Headers and
-browser timing cannot override it. Recordings label this method `conversation_key`.
-For a current identity failure, inspect key issuance, durable restoration, browser-command
-ACK binding, and then kernel dispatch. A stale connector schema must be refreshed.
+Browser commands reserve a logical workstream in `opening` and send bootstrap prose that
+directs the model to call `workstream action=continue` first; the model's own continue is
+what activates the row and issues the fresh id. The browser ACK records which concrete
+ChatGPT conversation the controller opened — observation/orchestration state for later
+continuation/archive, never a prerequisite for admission and never a model attachment. A
+superseded id cannot execute tools; already admitted calls must settle and retained
+terminal processes are stopped before the successor executes.
+
+The admitted logical workstream determines recording, workspace grouping, terminal ownership
+and ordinary-tool provenance. Its opaque claim token fences superseded owners. Headers,
+request-id correlation, extension observations, browser timing and ChatGPT conversation ids
+cannot override that ownership. The recorder session is owned by the logical workstream; the
+controller may separately retain a current conversation id solely so page observations and
+continuation/recovery sends can be routed to the present frontend. Recordings label this
+method `workstream` and persist the logical workstream id explicitly.
+For a current identity failure, inspect id issuance, durable restoration, browser-command
+reservation, and then kernel dispatch. A stale connector schema must be refreshed.
 
 ### Workstream leases and automatic recovery
 
-`workstreams.ts` owns durable exclusive leases for every connector conversation. Ten
-minutes without new tool/chat activity permits immediate takeover. A new owner invalidates
-the old lock and cancels pending recovery; retained old terminals are stopped and admitted
-old calls must settle before successor execution. Browser polls and replayed observations
-are not activity. The app's own continuation prompts cannot renew their own lease.
+`workstreams.ts` owns durable exclusive claims for every logical workstream. Five minutes
+without new substantive tool/chat activity permits immediate recovery/takeover. A new claim
+invalidates the old opaque token and cancels pending recovery; retained terminals owned by
+the old claim are stopped and already-admitted old calls must settle before successor
+execution. Browser polls and replayed observations are not activity. The app's own
+continuation prompts cannot renew their own lease.
 
-The bridge maintenance sweep owns bounded recovery: at most three continuation pushes,
-with 1/2/4-minute checks. Renewed activity ends the episode. Otherwise the old lock is
+The bridge maintenance sweep owns bounded recovery: one same-chat continuation push gets a
+30-second recovery window. Renewed activity ends the episode; otherwise the old lock is
 fenced, the extension stops and archives the actual ChatGPT thread and verifies the stored
-archive flag, and the bridge opens a replacement with the saved project context and generic
-steward instructions. Action identities and attempt counts survive restart. A takeover
+successful archive mutation response, and the bridge opens a replacement frontend with the saved project
+context and generic steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
+
+Controller-started managed workstreams are also **turn-driven**, not only timeout-driven.
+Their fresh observed `turn_end(completed)` schedules the next workstream prompt immediately;
+fresh failed/stopped/interrupted endings enter bounded recovery immediately. The five-minute
+lease is therefore the silent/wedged fallback, not the normal mechanism for moving from one
+finished unit to the next. Model-created workstream identities are non-driving unless a local
+controller explicitly enables auto-advance. Auto-advancing managed conversations stay
+page-mounted instead of entering tabless sleep: the observed turn boundary is their scheduler
+signal, so hiding it behind quiescence/fallback wake would defeat immediate advancement.
 
 Local scripts use `/workstreams/start`, `/workstreams`, `/workstreams/pause`,
 `/workstreams/resume` and `/workstreams/replace` with the local sender credential. The paired extension alone services
@@ -510,14 +535,15 @@ HTTP x-request-id                       (inbound.ts, normalized before '/')
   → background.js journals it durably
   → bridge.ts     accepts it for that conversation
   → correlation.ts  proves requestId → conversationId
-  → consumed by: kernel · recorder · agents · workspace · terminal ownership
+  → consumed only by browser/session diagnostics and historical recording repair
 ```
 
-**Never substitute** active tab, timing, tool name, most-recent chat, only-generating chat,
-worker payload, or arrival order **as identity**. If proof is missing the safe state is
-**Unattributed**, no workspace, or refusal for identity-sensitive work. Guessing is worse
-than losing attribution: it routes commands, files, messages and history into the *wrong*
-chat.
+This chain is no longer an authority path for current ordinary tool calls. Current ownership
+is already known from the required claimed workstream: logical workstream owns provenance,
+workspace and recording; the current opaque claim fences execution/terminal control. Browser
+and request evidence may explain which frontend displayed a call, repair historical records,
+or support page diagnostics, but it cannot grant or override tool/agent/workspace/terminal
+authority.
 
 **The 2026-09 connector platform broke the exact chain at its first link.** Measured live
 on 2026-09-09 (loopback capture of real traffic): tools/call arrives with **no
@@ -535,9 +561,9 @@ and charge-scoping evidence only:
   temporally unique moment; contradictory temporal evidence permanently kills a key.
 
 Both are honestly labeled in `attribution`/`attributionMethod` and never masquerade as
-`request_id`. They never grant agent identity, inbox delivery, or workspace authority —
-current tool calls instead require the app-issued key above. Historical ambiguous calls stay
-Unattributed and are charged against every conversation
+`request_id`. They never grant agent identity, inbox delivery, workspace authority or
+terminal ownership — current tool calls already carry the admitted logical workstream.
+Historical ambiguous calls stay Unattributed and are charged against every conversation
 the app cannot *observe* to have been quiescent when the call arrived
 (`recorder.ts::mayOwnUnattributedCall`). ChatGPT issues connector calls only from inside a
 turn, so a chat whose turn was watched to end before the call arrived cannot be its origin;
@@ -560,10 +586,10 @@ permanently. Only the app may append `observer_lost` (the bridge refuses it from
 — an observer cannot report its own absence), and a page-observed boundary that arrives
 later supersedes the staleness closure and ends the uncertainty.
 
-This one chain explains symptoms that look unrelated — worker `WORKER_IDENTITY_LOST`, calls
-piling into Unattributed, false worker stalls, wrong or absent project cwd, terminal
-polling crossing chats, agent messages stopping, Overwrite having no local activity to
-render. When several appear together, **debug the chain, not the symptoms**, in this order:
+This chain now explains recording/browser-attribution symptoms only — calls piling into
+Unattributed, wrong page tool placement, missing visible activity, or failed historical repair.
+It must not be used to diagnose current tool ownership, worker identity, project cwd or
+terminal authority; those start at workstream admission/claim state.
 
 ```text
 server.ts/inbound.ts  did x-request-id arrive and normalize?
@@ -572,19 +598,16 @@ content.js            did refreshFiber receive it and emit tool_evidence?
 background.js         was it journalled and delivered?
 bridge.ts             was it accepted for the intended conversation?
 correlation.ts        was requestId→conversationId stored, and restored after restart?
-kernel.ts/recorder.ts did the call wait for, find and use the exact proof?
+recorder.ts            did the historical/page record use the available evidence honestly?
 ```
-
-Agent routing is *downstream* of this. Do not start there.
 
 ChatGPT can place `metadata.request_id` on the user-message branch that opened the active
 generation. That Fiber descriptor can have `conversationId: null`, even while the browser route
 has the concrete conversation id. Preserve the triggering user section when the local generation
 opens. Join its scan-qualified `data-clf-fiber-turn` stamp to the descriptor, then submit the exact
-request id through the app's correlation handshake. This path proves only the request owner. It
-does not give the user branch an assistant turn id or recorder ownership. Do not wait for an
-assistant tool row or a descriptor conversation id; either can arrive after the kernel's identity
-window closes.
+request id through the app's correlation handshake. This path is page/recording evidence only.
+It does not grant workstream ownership, agent identity, workspace, terminal authority or a
+recorder thread.
 
 **Acceptance.** Correlation and browser identity are live-only claims. Use the installed extension,
 the real ChatGPT page and connector observations; never accept a synthetic Fiber/DOM transcript.
@@ -862,14 +885,13 @@ Experimental, enabled on fresh installs while existing configs preserve their st
 **one global active execution run at a time**, star topology:
 `worker ← prime → worker`. Workers never message each other.
 
-**Identity.** The prime is the conversation that successfully called `agents action=spawn`
-with proven caller identity. Worker slots are opened by the app through browser bootstrap;
-once the page has a real conversation id the extension reports it and the broker binds that
-exact conversation before normal worker work proceeds. **Conversation identity is the
-routing credential** — established from the same evidence as recorder attribution — so no
-secret token rides in model arguments and **sender identity never comes from a model
-argument**. There is no credential and no recovery action: a worker whose binding was lost
-is rebound by the extension reporting its chat, never by something a model can present.
+**Identity.** The prime is the logical workstream that successfully called
+`agents action=spawn`. Every worker receives its own preallocated logical workstream
+(`swarm-<run>-worker-N`); its browser bootstrap requires `workstream action=continue` for
+that exact name before any ordinary connector call. Agent membership, inbox routing and
+sender identity therefore come from admitted workstream identity. The extension-reported
+ChatGPT conversation is browser lifecycle metadata only: it lets the app reopen/focus that
+worker's frontend, but it never authenticates the worker's tool calls.
 
 **Messaging is at-least-once until acknowledged**: queued durably → offered on a tool result
 → acknowledged by the next authenticated tool call. Offering on a result is **not** proof
@@ -884,7 +906,7 @@ proven by `activeTurnId`/live-generating state rather than by a page heartbeat.
 
 **Ownership outlives the active run.** When no worker occupies a slot, the active incarnation is
 parked immediately and the one global execution claim is released. Its complete agent map becomes
-a durable history keyed by the prime conversation: sleeping workers, terminal/non-revivable rows,
+a durable history keyed by the prime workstream: sleeping workers, terminal/non-revivable rows,
 their exact ChatGPT conversation bindings, queued prime reports and monotonically allocated
 `worker-N` history all remain. Another prime may now start its own active incarnation, including
 its own same-named `worker-1`, without seeing or mutating the first prime's history. Caller-scoped
@@ -910,20 +932,20 @@ the slot, leaves the message queued, and tells the prime.
 reaches `WORKER_CONTEXT_CEILING_TOKENS` (400k), measured from the app's own durable session
 summary — never from a model-carried counter. Crossing it does **not** interrupt work in
 flight; it makes the *next* stop permanent. Workers **never Compact & Resume themselves**,
-automatically or manually: the worker conversation is the agent identity, so no threshold may
-open a replacement worker chat. Because workers outlive their tabs and their
+automatically or manually: their reusable browser conversation is deliberately kept stable
+for revival even though agent/tool identity is the worker workstream. Because workers outlive their tabs and their
 prime's tab, closing the prime chat pauses the run instead of ending it: the user comes back,
 the prime resumes, and the same workers are still there.
 
-**Finish and cleanup.** `finish` is idempotent; final worker output routes to the exact prime
-conversation even if parking happens on that same finish. Once no worker holds a slot, the active
+**Finish and cleanup.** `finish` is idempotent; final worker output routes to the prime
+workstream even if parking happens on that same finish. Once no worker holds a slot, the active
 incarnation releases immediately; pending reports remain in the dormant prime's inbox and retain
-the same at-least-once offer/ack semantics. Dormant worker conversations remain authority fences,
-including terminal rows, so stale tabs cannot fall through as ordinary unidentified chats while a
-different prime is active. Orphan cleanup uses durable quiescence plus the wider in-flight
-MCP/observation counters — not a heartbeat guess. Compact & Resume moves active **or dormant**
-prime ownership together with session/workspace state; normal commit and recovery repair transfer
-the same complete worker history to the child conversation or move nothing.
+the same at-least-once offer/ack semantics. Dormant worker **workstreams** remain authority fences,
+including terminal rows, so a stale browser tab cannot acquire ordinary agent authority merely by
+being observed while a different prime is active. Orphan cleanup uses durable quiescence plus the
+wider in-flight MCP/observation counters — not a heartbeat guess. Compact & Resume moves only the
+active or dormant prime's browser route and session presentation A→B; the logical prime workstream
+and its complete worker history remain the same owner throughout normal commit and recovery repair.
 
 **Acceptance.** Agent spawn/revival/sleep is a live ChatGPT/browser workflow. Validate the actual
 worker conversations and connector calls; an in-memory broker simulation is not evidence.
@@ -3210,12 +3232,24 @@ handled immediately rather than waiting for the next scheduled sample.
 
 **Working.** The current objective is still open; recent artifacts or a live relevant process are
 advancing its accepted unit; and a semantic sample has not contradicted the invariant. Leave it
-alone. A live long-running gate is working even with no output. A high commit rate is not enough.
+alone. For managed repository workstreams, no individual tool/command/test/build action is allowed
+to run for five minutes: that duration is itself a major failure signal, not a legitimate
+long-running gate. These repositories are source/architecture/definition/card work, not enterprise
+release pipelines. A command approaching five minutes requires stopping it and re-grounding in the
+explicit task/DAG/phase boundary: check for drift, a broad or pathologically slow test/build,
+unnecessary heavyweight validation, watcher/server work, or push/publication work that was never
+assigned. Resume with a narrower source action or focused owner-local check. A high commit rate is
+not enough.
 
-**Wedged.** The objective is valid and executable, substantive work remains, but there is no live
-relevant process and no advancing tree/commit/transcript evidence. First inspect the dirty tree:
-if it holds coherent finished work, the first instruction is to bank it. Then recover the chat at
-the layer actually broken. Do not call a stream wedged merely because a metric has not moved.
+**Wedged.** The objective is valid and executable, substantive work remains, but either there is no
+live relevant action and no advancing tree/commit/transcript evidence, or one individual action has
+crossed the five-minute ceiling. There is no autonomous "waiting" state after tool activity stops:
+an agent with no active tool call will not wake itself later. Conversely, an active tool call does
+not excuse a five-minute stall; a test/command lasting that long is itself the thing to stop and
+diagnose. First inspect the dirty tree: if it holds coherent finished work, the first instruction
+is to bank it. Then recover the chat at the layer actually broken. Do not call a stream wedged
+merely because a metric has not moved while fresh bounded actions are still advancing the assigned
+unit.
 
 **Blocked.** The objective is valid but cannot currently be executed because of a repository rule,
 cross-repository dependency, host condition, credential, publication decision, or missing external

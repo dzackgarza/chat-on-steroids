@@ -115,6 +115,31 @@ export function noteAppOriginatedSend(conversationId: string, typedAt: number, h
   }
 }
 
+/**
+ * Moves one still-pending send across ChatGPT's same-tab provisional→stable route rewrite.
+ *
+ * Browser routing changed; authorship did not. Keep the newest existing destination entry if
+ * one is already there, otherwise move the source entry exactly once.
+ */
+export function rebindAppOriginatedSend(
+  fromConversationId: string,
+  toConversationId: string,
+): boolean {
+  if (
+    !fromConversationId ||
+    !toConversationId ||
+    fromConversationId === toConversationId
+  )
+    return false;
+  const source = appSends.get(fromConversationId);
+  if (!source) return false;
+  const destination = appSends.get(toConversationId);
+  if (!destination || source.typedAt > destination.typedAt)
+    appSends.set(toConversationId, source);
+  appSends.delete(fromConversationId);
+  return true;
+}
+
 function consumeMatchingAppSend(conversationId: string, at: number): boolean {
   const send = appSends.get(conversationId);
   if (!send) return false;

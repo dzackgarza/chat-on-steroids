@@ -231,39 +231,43 @@ the manual Compact & Resume action is unavailable. Reaching 400k does not interr
 worker conversation; it may finish the live task and receive messages normally, then its next stop
 becomes permanent and the same chat remains only as non-revivable history.
 
-Sleeping workers belong to the **prime conversation's durable worker history**, not to a global
+Sleeping workers belong to the **prime workstream's durable worker history**, not to a global
 swarm lock. If the last working worker goes to sleep, that active run is parked immediately and
-another ChatGPT conversation may start its own workers. The original prime still sees its own full
+another prime workstream may start its own workers. The original prime still sees its own full
 history in `agents action=status`, including sleeping and permanently non-revivable rows, can spawn
 a fresh `worker-N` without reviving an older sleeper, and can later wake any reusable old worker in
 its exact original chat once the global execution slot is free. Friendly ids such as `worker-1`
 are scoped to that prime history, so two primes may each retain their own `worker-1` without
-sharing identity or workspace. **Compact & Resume moves that complete worker history and revival
-authority from the parent chat to its resumed child.** Explicitly clearing the swarm is the action
+sharing identity or workspace. Compact & Resume may move the prime's browser frontend, but the
+worker history and revival authority remain owned by the same prime workstream. Explicitly clearing the swarm is the action
 that discards that retained ownership. Turning Multi-agent **off is only an execution pause**:
 queued browser work is withdrawn and active workers are parked, but every prime-owned worker
 history stays durable across disabled app restarts and is available again after re-enable.
 
-Every tool call requires an app-issued `conversation_key` and `workstream_lock`, including
-ad hoc chats and Desktop calls. App-opened chats receive their key in the opening message.
-Otherwise, send `conversation_key: "new", workstream_lock: "claim"`; the response issues a
-key and asks the model to announce it in an assistant message. The paired extension binds
-that exact announcement to the browser conversation. Retry with the key and
-`workstream_lock: "claim"` (or `"claim:workstream-id"`) to acquire a lease. Neither handshake
-executes the requested operation. Subsequent calls carry both returned tokens.
+Every ordinary Core/Desktop tool call requires an opaque `workstream_id`, obtained once from
+the unscoped `workstream` identity-registration tool. `workstream action=start
+workstream="<name>"` registers and claims a new logical repository/task identity for this
+chat; `workstream action=continue workstream="<name>"` claims an already-registered one.
+Either returns the `workstream_id` to carry on every subsequent ordinary call.
 
-Keys route recordings, workspaces, terminals and agent messages without request headers.
-They are cooperative routing identifiers, so a model must never copy another chat's key.
-The browser binding is required before execution, so automatic recovery can address the
-actual ChatGPT thread. A lease expires after five minutes without new tool or recorded chat
-activity. Another conversation can claim the workstream immediately after expiry. A
-superseded lock cannot execute tools; already admitted calls must settle and retained
-terminal processes are stopped before the successor executes.
+The workstream id routes recordings, workspaces, terminals and agent messages without
+request headers. It is a cooperative routing identifier, so a model must never copy another
+chat's id. A workstream id expires (is superseded) after five minutes without new tool or
+recorded chat activity; the next `workstream action=continue` issues a fresh id and fences
+the previous one. A superseded id cannot execute tools; already admitted calls must settle
+and retained terminal processes are stopped before the successor executes.
+
+The logical workstream is the provenance thread. Ordinary tool calls, terminal sessions and
+the durable recorder session are grouped by that claimed workstream; ChatGPT conversation ids
+and request-id/browser correlation do not determine ownership. The controller separately keeps
+the current browser conversation, when known, only so it can route page observations and inject
+continuation/recovery messages into the right frontend.
 
 The app gives a stalled workstream one same-chat continuation push and a 30-second recovery
 window. New activity cancels recovery; polling and the app's own continuation text do not renew
 a lease. If recovery fails, the extension stops and archives the actual ChatGPT conversation,
-confirms its archived state, and the app opens a fresh thread for the same workstream.
+accepts the successful archive mutation response, and the app opens a fresh frontend for the
+same logical workstream.
 The opening message includes the saved project context and generic instructions to read
 AGENTS.md, TODOs and vault plans as needed, then begin the next unblocked DAG work.
 Delivery or archival errors are exposed in workstream status; an unconfirmed archive never
@@ -274,10 +278,19 @@ Scripts use the loopback bridge and its existing `state/local-token` bearer cred
 | Request | Body / result |
 | --- | --- |
 | `POST /workstreams/start` | `{ "id": "research", "context": "Work in /project; objective ..." }`; opens a chat, returning `commandId` |
+| `POST /workstreams/auto-advance` | `{ "id": "research", "enabled": true }`; controls whether observed turn completion immediately drives the next managed turn |
 | `GET /workstreams` | Owner conversation, phase, activity/expiry times, recovery attempts, pending command and error |
 | `POST /workstreams/pause` | `{ "id": "research" }`; stops recovery and refuses its tool calls |
 | `POST /workstreams/resume` | `{ "id": "research" }`; resumes a paused owner |
 | `POST /workstreams/replace` | `{ "id": "research" }`; immediately fences the current owner and enters the same archive/replacement path used after failed automatic recovery |
+
+Controller-started workstreams auto-advance by default: an observed `completed` turn queues the
+next workstream prompt immediately, while an observed failed/stopped/interrupted turn enters the
+bounded recovery path immediately. `action=start` from the model remains identity registration
+only and does not make that chat self-driving. Set `autoAdvance:false` on `/workstreams/start` for
+one-shot controller fixtures. Auto-advancing workstreams are kept page-mounted rather than enrolled
+in tabless sleep, because their observed turn boundary is the scheduler signal; restart recovery
+also remounts any such conversation that had previously been persisted as slept.
 
 Use `/send/outcome?id=COMMAND_ID` for initial delivery. Workstream status separately tracks
 lease activity and recovery. The extension credential cannot manage workstreams through
@@ -306,7 +319,7 @@ This is experimental browser automation, and parallel chats can edit the same fi
 - **Tools missing or still visible after a permission change:** refresh/review the custom app in ChatGPT, or recreate it if needed, then start a new conversation so it discovers the current schema.
 - **Extension says app not found:** session recording or multi-agent mode must be on for the browser bridge to run; then reopen the extension popup.
 - **Extension version mismatch:** reload the unpacked extension after every app update.
-- **A tool requests `conversation_key`:** refresh the connector schema and use the key supplied to this chat. If no key was supplied, request one with `"new"` and retry. `CONVERSATION_KEY_PENDING` means the browser has not acknowledged the app-opened chat yet.
+- **An ordinary tool asks for `workstream_id`:** call the `workstream` identity-registration tool first (`action=start` with `workstream="<name>"` to register and claim a new logical workstream, or `action=continue` with that name to claim an existing one), then use the returned `workstream_id` on every subsequent call.
 - **OS/browser warning about an unverified app:** expected for the unsigned beta. Verify `SHA256SUMS.txt` before overriding an OS trust prompt.
 - **Linux says secure credential storage is unavailable:** start/unlock GNOME Keyring, KWallet or another Secret Service provider, then restart the app. The insecure Electron `basic_text` fallback is intentionally rejected.
 - **Tunnel unavailable:** use Advanced settings to point at an explicit `tunnel-client` / `cloudflared` executable, or use the bundled copy from the release build.

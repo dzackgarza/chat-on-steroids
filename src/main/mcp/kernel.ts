@@ -19,46 +19,53 @@
  * genuinely read-only tool is marked as such.
  */
 
-import { rawPromises as fs } from '../rawfs.js';
-import { inboundConnectorSession, inboundRequestId } from './inbound.js';
-import { browserConversationForKey, conversationForKey, startConversationKey } from '../session/conversation-key.js';
-import { admitWorkstreamCall, claimWorkstream, noteWorkstreamWorkspace, workstreamForKey, workstreamIdSchema } from '../workstreams.js';
-import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
-import { z } from 'zod';
-import type { Capabilities, Root } from '../../shared/types.js';
-import { FsOpError, formatBytes, type FileInfo } from '../fsops.js';
-import { logInfo, logWarn } from '../logger.js';
+import { rawPromises as fs } from "../rawfs.js";
+import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
+import {
+  admitWorkstreamCall,
+  noteWorkstreamWorkspace,
+  workstreamWorkspace,
+} from "../workstreams.js";
+import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
+import { z } from "zod";
+import type { Capabilities, Root } from "../../shared/types.js";
+import { FsOpError, formatBytes, type FileInfo } from "../fsops.js";
+import { logInfo, logWarn } from "../logger.js";
 import {
   SandboxError,
   isAbsoluteVirtualPath,
   isNativeWindowsPath,
   resolvePath,
-  type Resolved
-} from '../sandbox.js';
-import { currentWorkspace, learnWorkspace } from '../workspace.js';
-import { ExecError } from '../exec.js';
-import { ComputerError } from '../computer/index.js';
-import { getConfig } from '../config.js';
+  type Resolved,
+} from "../sandbox.js";
+import {
+  currentWorkspace,
+  learnWorkspace,
+  setCurrentWorkspace,
+} from "../workspace.js";
+import { ExecError } from "../exec.js";
+import { ComputerError } from "../computer/index.js";
+import { getConfig } from "../config.js";
 import {
   AgentError,
   acknowledgeOffers,
-  acknowledgeOffersForConversation,
-  dormantWorkerNotice,
-  endedWorkerNotice,
+  acknowledgeOffersForWorkstream,
+  dormantWorkerNoticeForWorkstream,
+  endedWorkerNoticeForWorkstream,
   sleepSilentDetachedWorkers,
-  noteAgentAlive,
+  noteAgentAliveForWorkstream,
   agentForCaller,
   agentForFinishCaller,
   offerMessages,
-  offerMessagesForConversation,
+  offerMessagesForWorkstream,
   persistCriticalSwarmNow,
   requestWorkerRevivals,
   releaseQuiescentRun,
-  retiredWorkerForConversation,
+  retiredWorkerForWorkstream,
   stageQueuedWorkerRevivals,
-  swarmRunning
-} from '../agents.js';
-import type { SurfaceId } from './surfaces.js';
+  swarmRunning,
+} from "../agents.js";
+import type { SurfaceId } from "./surfaces.js";
 import {
   currentCall,
   emptyEvidence,
@@ -66,11 +73,11 @@ import {
   runInCallContext,
   trackInFlight,
   trackMcpRequest,
-  type CallContext
-} from './call-context.js';
-import { recordAgentMessage, recordToolCall } from '../session/recorder.js';
-import { readOverflowText } from '../session/store.js';
-import type { StoredText } from '../../shared/session.js';
+  type CallContext,
+} from "./call-context.js";
+import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
+import { readOverflowText } from "../session/store.js";
+import type { StoredText } from "../../shared/session.js";
 
 export interface ToolContext {
   roots: Root[];
@@ -112,28 +119,40 @@ export interface ToolContext {
 }
 
 export type ToolContent =
-  | { type: 'text'; text: string }
-  | { type: 'image'; data: string; mimeType: string };
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
 
-export type ToolResult = { content: ToolContent[]; structuredContent?: Record<string, unknown>; isError?: boolean };
+export type ToolResult = {
+  content: ToolContent[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
 
-export const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] });
-export const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
+export const ok = (text: string): ToolResult => ({
+  content: [{ type: "text", text }],
+});
+export const fail = (text: string): ToolResult => ({
+  content: [{ type: "text", text }],
+  isError: true,
+});
 
 /** Maps runtime errors to short model-facing text without ever exposing real paths. */
 export function friendlyError(err: unknown): string {
-  if (err instanceof SandboxError || err instanceof ComputerError) return err.message;
+  if (err instanceof SandboxError || err instanceof ComputerError)
+    return err.message;
   const code = (err as NodeJS.ErrnoException).code;
-  if (code === 'ENOENT') return 'Not found';
-  if (code === 'EACCES' || code === 'EPERM') return 'Access denied by the operating system';
-  if (code === 'EBUSY') return 'The file is in use by another program';
-  if (code === 'ENOTEMPTY') return 'Directory is not empty';
-  if (code === 'EEXIST') return 'Already exists';
+  if (code === "ENOENT") return "Not found";
+  if (code === "EACCES" || code === "EPERM")
+    return "Access denied by the operating system";
+  if (code === "EBUSY") return "The file is in use by another program";
+  if (code === "ENOTEMPTY") return "Directory is not empty";
+  if (code === "EEXIST") return "Already exists";
   // Node filesystem errors routinely embed the absolute host path in `err.message`.
   // Unknown errno values (ELOOP, ENAMETOOLONG, EINVAL, ENOSPC, …) used to fall through
   // verbatim and violate the model-facing virtual-path contract. Keep the errno useful
   // without echoing the path Windows supplied.
-  if (typeof code === 'string' && code.length > 0) return `Filesystem error (${code})`;
+  if (typeof code === "string" && code.length > 0)
+    return `Filesystem error (${code})`;
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -170,7 +189,10 @@ export function resetToolClock(): void {
  * unexpected internals out of the response. Error results are logged with only their
  * first line, so Activity stays useful without copying command output or file contents.
  */
-export async function guard(name: string, fn: () => Promise<ToolResult>): Promise<ToolResult> {
+export async function guard(
+  name: string,
+  fn: () => Promise<ToolResult>,
+): Promise<ToolResult> {
   const started = Date.now();
   // Counted before the work, and counted even when the tool is disabled or fails:
   // the question this answers is whether the model may call us at all.
@@ -180,15 +202,20 @@ export async function guard(name: string, fn: () => Promise<ToolResult>): Promis
     const elapsed = Date.now() - started;
     if (result.isError) {
       const summary = result.content
-        .find((item): item is Extract<ToolContent, { type: 'text' }> => item.type === 'text')
+        .find(
+          (item): item is Extract<ToolContent, { type: "text" }> =>
+            item.type === "text",
+        )
         ?.text.split(/\r?\n/, 1)[0]
         ?.slice(0, 500);
       // A rejected edit, disabled permission, stale cursor, etc. is a normal tool
       // outcome, not evidence that the connector itself is unhealthy.
-      noteOutcomeSafely('rejected');
-      logInfo(`tool ${name} rejected in ${elapsed} ms${summary ? `: ${summary}` : ''}`);
+      noteOutcomeSafely("rejected");
+      logInfo(
+        `tool ${name} rejected in ${elapsed} ms${summary ? `: ${summary}` : ""}`,
+      );
     } else {
-      noteOutcomeSafely('ok');
+      noteOutcomeSafely("ok");
       logInfo(`tool ${name} ok in ${elapsed} ms`);
     }
     return result;
@@ -202,10 +229,10 @@ export async function guard(name: string, fn: () => Promise<ToolResult>): Promis
       err instanceof ExecError ||
       err instanceof AgentError
     ) {
-      noteOutcomeSafely('rejected');
+      noteOutcomeSafely("rejected");
       logInfo(`tool ${name} rejected in ${elapsed} ms: ${message}`);
     } else {
-      noteOutcomeSafely('error');
+      noteOutcomeSafely("error");
       logWarn(`tool ${name} failed in ${elapsed} ms: ${message}`);
     }
     return fail(message);
@@ -214,7 +241,7 @@ export async function guard(name: string, fn: () => Promise<ToolResult>): Promis
 
 // noteOutcome is only meaningful inside a call context. Internal paths can have none, and a
 // missing context must not turn into an error.
-function noteOutcomeSafely(outcome: 'ok' | 'rejected' | 'error'): void {
+function noteOutcomeSafely(outcome: "ok" | "rejected" | "error"): void {
   try {
     noteOutcome(outcome);
   } catch {
@@ -223,7 +250,7 @@ function noteOutcomeSafely(outcome: 'ok' | 'rejected' | 'error'): void {
 }
 
 /** The only SDK handler context field this layer consumes; request identity comes from ingress ALS. */
-type McpCallContext = Pick<ServerContext, 'sessionId'>;
+type McpCallContext = Pick<ServerContext, "sessionId">;
 
 /**
  * ChatGPT's id for this request, from `x-request-id`, without the per-attempt suffix.
@@ -247,9 +274,15 @@ function requestIdOf(mcpCtx: McpCallContext | undefined): string | null {
 }
 
 /** Diagnostic only: caller routing uses the app-issued key, regardless of transport. */
-let transportIdentity: { checked: boolean; present: boolean } = { checked: false, present: false };
+let transportIdentity: { checked: boolean; present: boolean } = {
+  checked: false,
+  present: false,
+};
 
-export function transportIdentityStatus(): { checked: boolean; present: boolean } {
+export function transportIdentityStatus(): {
+  checked: boolean;
+  present: boolean;
+} {
   return { ...transportIdentity };
 }
 
@@ -258,8 +291,8 @@ function noteTransportIdentity(transportKey: string | null): void {
   transportIdentity = { checked: true, present: transportKey !== null };
   logInfo(
     transportKey
-      ? 'MCP transport supplied a session id; caller identity uses conversation_key'
-      : 'MCP transport supplied no session id; caller identity uses conversation_key'
+      ? "MCP transport supplied a session id; caller identity uses workstream_id"
+      : "MCP transport supplied no session id; caller identity uses workstream_id",
   );
 }
 
@@ -275,32 +308,35 @@ function noteTransportIdentity(transportKey: string | null): void {
  * again, because that is the first real evidence this result reached ChatGPT.
  */
 function withInbox(
-  conversationId: string | null | undefined,
+  workstreamId: string | null | undefined,
   agent: string | null,
   result: ToolResult,
-  onFinish = false
+  onFinish = false,
 ): ToolResult {
-  // Conversation ownership is the durable authority. This matters most for a parked prime:
-  // there is deliberately no live `agent:prime` while another history may be active, but its
-  // exact conversation still owns final worker reports queued before parking. The finish flag
-  // also preserves the one dormant-worker exception: retrying a lost finish result may re-offer
-  // rows that rode on that finish, without re-authorising ordinary worker activity.
-  const scoped = offerMessagesForConversation(conversationId, onFinish, onFinish);
+  const scoped = offerMessagesForWorkstream(
+    workstreamId,
+    onFinish,
+    onFinish,
+  );
   const recipient = scoped?.agentId ?? agent;
-  const messages = scoped?.messages ?? (agent ? offerMessages(agent, onFinish) : []);
+  const messages =
+    scoped?.messages ?? (agent ? offerMessages(agent, onFinish) : []);
   if (messages.length === 0) return result;
   const lines = messages
     .map(
       (message) =>
-        `• [${message.id}] from ${message.from}${message.offers > 1 ? ' (repeat — you may have seen this)' : ''}: ${message.text}`
+        `• [${message.id}] from ${message.from}${message.offers > 1 ? " (repeat — you may have seen this)" : ""}: ${message.text}`,
     )
-    .join('\n');
+    .join("\n");
   return {
     ...result,
     content: [
       ...result.content,
-      { type: 'text', text: `\n--- ${messages.length} message(s) for ${recipient ?? 'this conversation'} ---\n${lines}` }
-    ]
+      {
+        type: "text",
+        text: `\n--- ${messages.length} message(s) for ${recipient ?? "this conversation"} ---\n${lines}`,
+      },
+    ],
   };
 }
 
@@ -321,8 +357,10 @@ async function dispatch(
   transportKey: string | null,
   requestId: string | null,
   surface: SurfaceId,
-  conversationId: string,
-  run: () => Promise<ToolResult>
+  workstreamId: string | null,
+  workstreamClaimId: string | null,
+  workstreamSessionId: string | null,
+  run: () => Promise<ToolResult>,
 ): Promise<ToolResult> {
   // The context is built here, one layer out from where the work happens, because the
   // compaction barrier asks about the whole request and not just the handler. A call is
@@ -332,21 +370,27 @@ async function dispatch(
   const context: CallContext = {
     startedAt: Date.now(),
     tool: name,
+    workstreamId,
+    workstreamClaimId,
+    workstreamSessionId,
     transportKey,
     agent: null,
     caller: {
+      workstreamId,
       transportKey,
       requestId,
-      conversationId,
+      conversationId: null,
       sessionKey: inboundConnectorSession(),
       inferredConversationId: null,
-      inferredMethod: null
+      inferredMethod: null,
     },
     outcome: null,
-    evidence: emptyEvidence()
+    evidence: emptyEvidence(),
   };
   return trackMcpRequest(() =>
-    trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, surface, run))
+    trackInFlight(context, () =>
+      dispatchTracked(context, name, args, transportKey, surface, run),
+    ),
   );
 }
 
@@ -356,7 +400,7 @@ async function dispatchTracked(
   args: unknown,
   transportKey: string | null,
   surface: SurfaceId,
-  run: () => Promise<ToolResult>
+  run: () => Promise<ToolResult>,
 ): Promise<ToolResult> {
   noteTransportIdentity(transportKey);
   // Recorded here rather than in `guard` because only this layer knows which server
@@ -365,9 +409,9 @@ async function dispatchTracked(
   surfaceToolCallAt.set(surface, Date.now());
   const isFinish = isFinishCall(name, args);
   const startedAt = context.startedAt;
-  // The required app-issued conversation key was resolved before dispatch.
-  // Two things about liveness, both before the agent is resolved so that the answer this
-  // call gets is the state this call itself established.
+  // Workstream admission already established caller identity before dispatch. Browser
+  // conversation/request evidence is irrelevant here. Two things about liveness happen before
+  // the agent is resolved so the answer this call gets reflects the state this call established.
   //
   // A detached worker that has also stopped calling is put to sleep here rather than on a
   // timer: nothing about a run changes while nothing is happening, and this is the moment
@@ -375,19 +419,20 @@ async function dispatchTracked(
   // costs the run nothing — its own next call takes the slot straight back.
   const quietWorkers = sleepSilentDetachedWorkers();
   for (const quiet of quietWorkers) {
-    if (quiet.report) await recordAgentMessage(quiet.report, 'sent');
+    if (quiet.report) await recordAgentMessage(quiet.report, "sent");
   }
-  // And this call is itself first-hand evidence that its own conversation is alive. That is
-  // what undoes a worker given up on because its tab went away — the turn never stopped, so
-  // the call arrives from a chat the app had written off, and the write-off was wrong.
-  const alive = noteAgentAlive(context.caller.conversationId);
-  if (alive?.report) await recordAgentMessage(alive.report, 'sent');
+  // The admitted workstream is first-hand evidence that this agent is active. It says nothing
+  // about whether the browser route currently has a live page.
+  const alive = noteAgentAliveForWorkstream(context.workstreamId);
+  if (alive?.report) await recordAgentMessage(alive.report, "sent");
   // A prime message accepted while a worker's tab was closed could not safely be injected while
   // that server-side turn might still be running. If the silence check above has now proved the
   // worker stopped, carry that already-durable unread work into a revival instead of leaving it
   // stranded until the prime happens to send a second message. Do this after noteAgentAlive so a
   // tool call from the supposedly quiet worker wins and simply keeps the worker active.
-  const deferredWake = stageQueuedWorkerRevivals(quietWorkers.map((entry) => entry.info.id));
+  const deferredWake = stageQueuedWorkerRevivals(
+    quietWorkers.map((entry) => entry.info.id),
+  );
   if (deferredWake.waking.length > 0) {
     try {
       if (await persistCriticalSwarmNow()) {
@@ -395,23 +440,29 @@ async function dispatchTracked(
         requestWorkerRevivals(deferredWake.waking);
       } else {
         deferredWake.rollback();
-        logWarn('multi-agent: could not durably reserve queued work for a worker that just fell asleep');
+        logWarn(
+          "multi-agent: could not durably reserve queued work for a worker that just fell asleep",
+        );
       }
     } catch (err) {
       deferredWake.rollback();
       logWarn(
-        `multi-agent: could not durably reserve queued work for a worker that just fell asleep — ${err instanceof Error ? err.message : String(err)}`
+        `multi-agent: could not durably reserve queued work for a worker that just fell asleep — ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
-  context.agent = isFinish ? agentForFinishCaller(context.caller) : agentForCaller(context.caller);
-  const retiredWorker = retiredWorkerForConversation(context.caller.conversationId);
+  context.agent = isFinish
+    ? agentForFinishCaller(context.caller)
+    : agentForCaller(context.caller);
+  const retiredWorker = retiredWorkerForWorkstream(context.workstreamId);
   // Parking a run releases its global execution claim without retiring its worker chats. Those
   // exact conversations remain workers, though: a stale sleeping/terminal worker tab must not
   // turn into an ordinary unidentified chat and keep running local tools merely because another
   // prime currently owns the active run (or because no run is active at all). Only the owning
   // prime's explicit agents message may wake a sleeping worker.
-  const dormantWorker = isFinish ? null : dormantWorkerNotice(context.caller.conversationId);
+  const dormantWorker = isFinish
+    ? null
+    : dormantWorkerNoticeForWorkstream(context.workstreamId);
   // A worker that really is over learns so on its own next call. Without this its calls
   // resolved to nobody and ran anyway, so a chat the user had ended went on writing files
   // in the name of no agent at all.
@@ -419,30 +470,35 @@ async function dispatchTracked(
   // result. It still has a tombstone identity for that call so the dispatcher can re-offer the
   // inbox that rode on the missing result. Every other tool call from the same chat is refused
   // by endedWorkerNotice as before.
-  const endedWorker = isFinish ? null : endedWorkerNotice(context.caller.conversationId);
+  const endedWorker = isFinish
+    ? null
+    : endedWorkerNoticeForWorkstream(context.workstreamId);
   const result = await runInCallContext(context, () =>
-      dormantWorker
-        ? Promise.resolve(fail(dormantWorker))
-        : retiredWorker
+    dormantWorker
+      ? Promise.resolve(fail(dormantWorker))
+      : retiredWorker
         ? Promise.resolve(
             fail(
-              `WORKER_RETIRED: ${retiredWorker.id} was retired because ${retiredWorker.reason}. This chat can no longer use local tools. Stop working and return to the prime chat.`
-            )
+              `WORKER_RETIRED: ${retiredWorker.id} was retired because ${retiredWorker.reason}. This chat can no longer use local tools. Stop working and return to the prime chat.`,
+            ),
           )
         : endedWorker
-        ? Promise.resolve(fail(endedWorker))
-        : run().then((result) => {
-            const workspace = currentWorkspace();
-            if (workspace && context.caller.conversationId) noteWorkstreamWorkspace(context.caller.conversationId, workspace.virtual);
-            return result;
-          })
+          ? Promise.resolve(fail(endedWorker))
+          : run().then((result) => {
+              const workspace = currentWorkspace();
+              if (workspace && context.workstreamId)
+                noteWorkstreamWorkspace(context.workstreamId, workspace.virtual);
+              return result;
+            }),
   );
   // Never erase an identity a handler proved more strongly (agents::callerNow). The old
   // post-handler pass could fail to rediscover evidence that callerNow had already reserved
   // and then set agent back to null, which is the live WORKER_IDENTITY_LOST / missing-inbox
   // split brain worker-1 observed.
   if (!context.agent) {
-    context.agent = isFinish ? agentForFinishCaller(context.caller) : agentForCaller(context.caller);
+    context.agent = isFinish
+      ? agentForFinishCaller(context.caller)
+      : agentForCaller(context.caller);
   }
   // This call is the best evidence there is that the previous result reached the agent's
   // conversation, so anything offered then can be retired and written to its history —
@@ -450,20 +506,24 @@ async function dispatchTracked(
   // retry after a lost result. The SDK exposes the JSON-RPC id, but a model-issued retry is
   // a new MCP request with a new id, so that id cannot prove the previous finish result was
   // seen. The broker therefore re-offers rather than assuming; see acknowledgeOffers.
-  const acknowledgedForConversation = acknowledgeOffersForConversation(
-    context.caller.conversationId,
+  const acknowledgedForWorkstream = acknowledgeOffersForWorkstream(
+    context.workstreamId,
     isFinish,
     startedAt,
-    isFinish
+    isFinish,
   );
   const acknowledged =
-    acknowledgedForConversation?.messages ??
-    (context.agent ? acknowledgeOffers(context.agent, isFinish, startedAt) : []);
+    acknowledgedForWorkstream?.messages ??
+    (context.agent
+      ? acknowledgeOffers(context.agent, isFinish, startedAt)
+      : []);
   for (const message of acknowledged) {
-    // The exact caller conversation is stronger than the friendly recipient id and remains
-    // unique after a run parks. Without this override, a parked Prime A acknowledging its report
-    // while Prime B is active could file the delivery into B's `prime` session (or Unattributed).
-    await recordAgentMessage(message, 'delivered', context.caller.conversationId);
+    // Delivery ownership was already resolved by the admitted workstream above. Recording must
+    // not re-resolve a parked prime through whichever browser conversation happens to be active.
+    await recordAgentMessage(
+      message,
+      "delivered",
+    );
   }
   // This is the MCP call's wall-clock latency. A managed child can outlive the call, and
   // its own lifetime is process evidence; letting that number overwrite ToolCallRecord's
@@ -472,29 +532,37 @@ async function dispatchTracked(
   // Inbox messages are part of the MCP result ChatGPT actually receives. Build the delivered
   // result before recording so session(action=read, tool_call=T…) is genuine wire forensics rather than a
   // subtly earlier internal value that omits the worker report most likely to matter later.
-  const delivered = withInbox(context.caller.conversationId, context.agent, result, isFinish);
+  const delivered = withInbox(
+    context.workstreamId,
+    context.agent,
+    result,
+    isFinish,
+  );
   const recorderStartedAt = Date.now();
   const recording = recordToolCall({
     tool: name,
     args,
     content: delivered.content,
-    outcome: context.outcome ?? (result.isError ? 'rejected' : 'ok'),
+    outcome: context.outcome ?? (result.isError ? "rejected" : "ok"),
     durationMs,
     startedAt,
     evidence: context.evidence,
     agent: context.agent,
-    bind: context.bindOnAttribution ?? null,
     requestId: context.caller.requestId,
     conversationId: context.caller.conversationId,
-    attributionMethod: 'conversation_key',
+    workstreamId: context.workstreamId,
+    workstreamSessionId: context.workstreamSessionId,
+    attributionMethod: "workstream",
     inferredConversationId: context.caller.inferredConversationId ?? null,
-    inferredMethod: context.caller.inferredMethod ?? null
+    inferredMethod: context.caller.inferredMethod ?? null,
   });
-  // The validated key supplies identity before execution. Recording belongs to this
+  // The admitted workstream supplies identity before execution. Recording belongs to this
   // request's completion boundary, with no browser grace window or fleet-wide charge.
   await recording;
-  if (name === 'observe' || name === 'computer') {
-    logInfo(`desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`);
+  if (name === "observe" || name === "computer") {
+    logInfo(
+      `desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`,
+    );
   }
   // Retire a completed run only after this call has had every chance to acknowledge and
   // receive its inbox. Doing it inside acknowledgeOffers would let `agents status` destroy
@@ -523,9 +591,9 @@ export async function adoptAgent(agent: string | null): Promise<void> {
 }
 
 function isFinishCall(name: string, args: unknown): boolean {
-  if (name !== 'agents') return false;
-  if (!args || typeof args !== 'object') return false;
-  return (args as Record<string, unknown>)['action'] === 'finish';
+  if (name !== "agents") return false;
+  if (!args || typeof args !== "object") return false;
+  return (args as Record<string, unknown>)["action"] === "finish";
 }
 
 /**
@@ -546,22 +614,40 @@ function isFinishCall(name: string, args: unknown): boolean {
 export async function resolveIn(
   roots: Parameters<typeof resolvePath>[0],
   requested: string,
-  options: { allowMissing?: boolean; base?: string | null } = {}
+  options: { allowMissing?: boolean; base?: string | null } = {},
 ): Promise<Resolved> {
+  let workspace = currentWorkspace();
+  if (!workspace && options.base === undefined) {
+    const logicalWorkstream = currentCall()?.workstreamId ?? null;
+    const remembered = logicalWorkstream
+      ? workstreamWorkspace(logicalWorkstream)
+      : null;
+    if (remembered) {
+      const restored = await resolvePath(roots, remembered);
+      setCurrentWorkspace({ real: restored.real, virtual: restored.virtual });
+      workspace = currentWorkspace();
+    }
+  }
   // An explicit adapter-supplied base beats the workspace; otherwise the workspace is the base.
   // Either way the joining happens inside `resolvePath`, ahead of validation,
   // so a `..` in the caller's text still meets `checkSegment` instead of being normalised
   // away first. Doing that join here is how a relative patch path could climb out of the
   // workspace: `posix.normalize('/root/a/../../elsewhere')` is a perfectly clean-looking
   // `/elsewhere`, and nothing downstream can tell it apart from a path that was always that.
-  const base = options.base !== undefined ? options.base : (currentWorkspace()?.virtual ?? null);
+  const base =
+    options.base !== undefined
+      ? options.base
+      : (workspace?.virtual ?? null);
   const resolved = await resolvePath(roots, requested, {
-    ...(options.allowMissing === undefined ? {} : { allowMissing: options.allowMissing }),
-    base
+    ...(options.allowMissing === undefined
+      ? {}
+      : { allowMissing: options.allowMissing }),
+    base,
   });
   // Absolute only: a workspace learned from a relative path would let one loose resolution
   // decide where the next loose resolution points. See workspace.ts.
-  if (isAbsoluteVirtualPath(requested) || isNativeWindowsPath(requested)) await learnWorkspace(resolved);
+  if (isAbsoluteVirtualPath(requested) || isNativeWindowsPath(requested))
+    await learnWorkspace(resolved);
   return resolved;
 }
 
@@ -580,24 +666,34 @@ export interface ResolvedCwd {
  * wrong build: a live run meant for `…/minecraft-web-demo` fell back to the first root and
  * rebuilt the parent Electron app instead, and nothing in the reply said so.
  */
-export async function resolveCwd(ctx: ToolContext, virtualPath: string | undefined): Promise<ResolvedCwd> {
+export async function resolveCwd(
+  ctx: ToolContext,
+  virtualPath: string | undefined,
+): Promise<ResolvedCwd> {
   // The chat's own folder before the first root: a command with no `workdir` should run where the
   // chat has been working, which is the whole point of the workspace and is exactly the case
   // the note above describes going wrong.
   const workspace = currentWorkspace();
   // Codex treats an explicitly empty workdir exactly like an omitted one.
-  const provided = virtualPath !== undefined && virtualPath !== '';
+  const provided = virtualPath !== undefined && virtualPath !== "";
   if (!provided && !workspace && swarmRunning()) {
     throw new SandboxError(
-      'WORKSPACE_REQUIRED: this multi-agent chat has no proven workspace. Supply an explicit approved workdir before running a command.'
+      "WORKSPACE_REQUIRED: this multi-agent chat has no proven workspace. Supply an explicit approved workdir before running a command.",
     );
   }
-  const target = provided ? virtualPath : (workspace?.virtual ?? (ctx.roots[0] ? `/${ctx.roots[0].name}` : ''));
-  if (!target) throw new SandboxError('No folder is approved, so there is nowhere to run');
+  const target = provided
+    ? virtualPath
+    : (workspace?.virtual ?? (ctx.roots[0] ? `/${ctx.roots[0].name}` : ""));
+  if (!target)
+    throw new SandboxError("No folder is approved, so there is nowhere to run");
   const resolved = await resolveIn(ctx.roots, target);
   const stat = await fs.stat(resolved.real);
-  if (!stat.isDirectory()) throw new SandboxError('workdir must be a folder');
-  return { real: resolved.real, virtual: resolved.virtual, defaulted: !provided };
+  if (!stat.isDirectory()) throw new SandboxError("workdir must be a folder");
+  return {
+    real: resolved.real,
+    virtual: resolved.virtual,
+    defaulted: !provided,
+  };
 }
 
 // ------------------------------------------------------------------ shared args
@@ -609,16 +705,18 @@ export const imageCoordinateArg = z.number().int().min(-100_000).max(100_000);
 // Zod's plain object parser strips unknown keys even though its generated JSON Schema says
 // additionalProperties=false. Keep runtime validation as strict as the wire contract so a
 // misspelled coordinate/crop field cannot be silently discarded.
-export const pointArg = z.object({ x: imageCoordinateArg, y: imageCoordinateArg }).strict();
+export const pointArg = z
+  .object({ x: imageCoordinateArg, y: imageCoordinateArg })
+  .strict();
 export const cropArg = z
   .object({
     x: z.number().int().min(0).max(100_000),
     y: z.number().int().min(0).max(100_000),
     width: z.number().int().min(1).max(100_000),
-    height: z.number().int().min(1).max(100_000)
+    height: z.number().int().min(1).max(100_000),
   })
   .strict();
-export const mouseButtonArg = z.enum(['left', 'right', 'middle']);
+export const mouseButtonArg = z.enum(["left", "right", "middle"]);
 // ------------------------------------------------------------------ registration
 
 export interface ToolAnnotations {
@@ -656,17 +754,61 @@ export interface SurfaceRegistrar {
       outputSchema?: z.ZodType;
       annotations?: ToolAnnotations;
     },
-    handler: (args: z.output<Schema>) => Promise<ToolResult>
+    handler: (args: z.output<Schema>) => Promise<ToolResult>,
   ): void;
   /** Runs `fn` only while `cap` is live, and explains the refusal otherwise. */
-  guarded(cap: keyof Capabilities, name: string, fn: () => Promise<ToolResult>): Promise<ToolResult>;
+  guarded(
+    cap: keyof Capabilities,
+    name: string,
+    fn: () => Promise<ToolResult>,
+  ): Promise<ToolResult>;
   /** Refusal used when a whole feature is off but its tool is still exposed. */
   featureDisabled(feature: string, setting: string): ToolResult;
   /** Names actually registered on this server, in registration order. */
   registered(): string[];
 }
 
-export function createRegistrar(server: McpServer, ctx: ToolContext, surface: SurfaceId): SurfaceRegistrar {
+// ------------------------------------------------------------------ emergency recovery bypass
+//
+// Temporary, exact-chat maintenance exception, installed only while the unscoped
+// setup/attachment operation was absent. Gated entirely on process environment so it is
+// inert everywhere unless the daemon is launched with the recovery credentials.
+//
+// It does NOT create, claim, renew, retire, or otherwise touch a workstream, and it does
+// NOT alter conversation-key bindings. It lets a single known chat reach the four
+// filesystem/execution tools directly, bypassing workstream admission. Remove this block
+// and its systemd drop-in once the `workstream` setup tool is confirmed live.
+
+const recoveryConversationKey =
+  process.env.COS_RECOVERY_CONVERSATION_KEY?.trim() ?? "";
+
+const recoveryWorkstreamLock =
+  process.env.COS_RECOVERY_WORKSTREAM_LOCK?.trim() ?? "";
+
+const RECOVERY_TOOL_NAMES = new Set([
+  "read",
+  "exec_command",
+  "apply_patch",
+  "write_stdin",
+]);
+
+function isEmergencyRecoveryCall(
+  toolName: string,
+  workstreamId: string | undefined,
+): boolean {
+  if (!recoveryConversationKey || !recoveryWorkstreamLock) return false;
+  // The recovery sentinel rides the ordinary workstream_id slot on this exact chat. It is
+  // the value of the old `workstream_lock` recovery credential, now carried in the single
+  // identity field the ordinary-tool schema exposes.
+  if (workstreamId !== recoveryWorkstreamLock) return false;
+  return RECOVERY_TOOL_NAMES.has(toolName);
+}
+
+export function createRegistrar(
+  server: McpServer,
+  ctx: ToolContext,
+  surface: SurfaceId,
+): SurfaceRegistrar {
   const caps = ctx.caps;
   const exposedCaps = ctx.exposedCaps ?? caps;
   // These two do not follow a capability checkbox: they are whole features the user
@@ -677,7 +819,8 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
   const agentToolsLive = ctx.agentTools ?? getConfig().multiAgent.enabled;
   const sessionToolsExposed = ctx.exposedSessionTools ?? sessionToolsLive;
   const agentToolsExposed = ctx.exposedAgentTools ?? agentToolsLive;
-  const findExposed = ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
+  const findExposed =
+    ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
   const names: string[] = [];
 
   return {
@@ -693,39 +836,56 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
     register(name, config, handler) {
       names.push(name);
       const inputSchema = config.inputSchema.safeExtend({
-        conversation_key: z.string().min(1).max(100).describe(
-          'This chat’s key; "new" to obtain one.'
-        ),
-        workstream_lock: z.string().min(1).max(150).describe('Lease token; claim or claim:ID to acquire.')
+        workstream_id: z
+          .string()
+          .min(1)
+          .max(150)
+          .describe(
+            "The identity token returned after this chat registers/claims a logical workstream with the `workstream` setup tool. Reuse it on every ordinary Core/Desktop call under that workstream.",
+          ),
       });
-      server.registerTool(name, { ...config, inputSchema }, (async (input: Record<string, unknown>, mcpCtx?: McpCallContext) => {
-        const { conversation_key: key, workstream_lock: lock, ...args } = input;
-        if (key === 'new') {
-          const issued = await startConversationKey();
-          logInfo(`MCP ${surface} ${name}: conversation key issued; operation not executed`);
-          return fail(`CONVERSATION_KEY_ISSUED: ${issued}\nNo operation ran. First print this exact line as an assistant message so the browser can bind this key to your ChatGPT thread:\nChat On Steroids identity: ${issued}\nThen retry with conversation_key set to it and workstream_lock="claim" (or "claim:ID" for an assigned workstream) to obtain your lease.`);
+      server.registerTool(name, { ...config, inputSchema }, (async (
+        input: Record<string, unknown>,
+        mcpCtx?: McpCallContext,
+      ) => {
+        const { workstream_id, ...args } = input;
+        if (isEmergencyRecoveryCall(name, workstream_id as string)) {
+          logWarn(`EMERGENCY_RECOVERY_BYPASS tool=${name} surface=${surface}`);
+          return dispatch(
+            name,
+            args,
+            mcpCtx?.sessionId ?? null,
+            requestIdOf(mcpCtx),
+            surface,
+            null,
+            null,
+            null,
+            () => handler(args as never),
+          );
         }
-        let conversationId: string;
-        try { conversationId = conversationForKey(key as string); }
-        catch (error) {
-          const message = (error as Error).message;
-          logInfo(`MCP ${surface} ${name}: ${message}`);
-          return fail(message);
+        const admitted = await admitWorkstreamCall(workstream_id as string);
+        if (!admitted.ok) {
+          if (admitted.code === "WORKSTREAM_BUSY")
+            return fail(
+              "WORKSTREAM_BUSY: a superseded owner still has an already-admitted tool call settling. " +
+                "Retry this ordinary call with the SAME workstream_id after it settles; do not call workstream setup again.",
+            );
+          return fail(
+            "WORKSTREAM_SETUP_REQUIRED: this workstream id is not current. " +
+              "Use the workstream setup tool to establish this chat's identity: action=start with a new named workstream, " +
+              "or action=continue with an already-registered name. Then use the returned workstream_id on every ordinary call.",
+          );
         }
-        const browserConversation = browserConversationForKey(key as string);
-        if (!browserConversation) return fail(`BROWSER_IDENTITY_REQUIRED: print the following as an assistant message, let the paired browser observe it, then retry.\nChat On Steroids identity: ${key}`);
-        if (lock === 'claim' || (typeof lock === 'string' && lock.startsWith('claim:'))) {
-          const id = lock === 'claim' ? (workstreamForKey(key as string)?.id ?? `chat-${(key as string).slice(3)}`) : lock.slice(6);
-          if (!workstreamIdSchema.safeParse(id).success) return fail('INVALID_WORKSTREAM_ID');
-          const lease = await claimWorkstream(key as string, browserConversation, id);
-          return lease.ok
-            ? fail(`WORKSTREAM_LOCK_ISSUED: ${lease.lock}\nWorkstream: ${lease.workstreamId}. No operation ran. Supply this workstream_lock and your conversation_key on every call. The lease expires after ten minutes without activity; a replaced owner cannot resume.`)
-            : fail(lease.code);
-        }
-        const admitted = await admitWorkstreamCall(key as string, lock as string);
-        if (!admitted.ok) return fail(admitted.code);
-        return dispatch(name, args, mcpCtx?.sessionId ?? null, requestIdOf(mcpCtx), surface, conversationId, () =>
-          handler(args as never)
+        return dispatch(
+          name,
+          args,
+          mcpCtx?.sessionId ?? null,
+          requestIdOf(mcpCtx),
+          surface,
+          admitted.id,
+          workstream_id as string,
+          admitted.sessionId,
+          () => handler(args as never),
         );
       }) as never);
     },
@@ -734,7 +894,7 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
         if (!caps[cap]) {
           return fail(
             `TOOL_DISABLED: ${name} is disabled by the current Chat On Steroids permissions. ` +
-              'Ask the user to enable the permission in the app, then retry. If the tool list in this conversation is stale, start a new chat.'
+              "Ask the user to enable the permission in the app, then retry. If the tool list in this conversation is stale, start a new chat.",
           );
         }
         return fn();
@@ -743,9 +903,9 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
     featureDisabled(feature, setting) {
       return fail(
         `FEATURE_DISABLED: ${feature} is switched off in Chat On Steroids. ` +
-          `Ask the user to enable "${setting}" in the app, then try again.`
+          `Ask the user to enable "${setting}" in the app, then try again.`,
       );
-    }
+    },
   };
 }
 
@@ -763,43 +923,6 @@ export function createRegistrar(server: McpServer, ctx: ToolContext, surface: Su
 export const MAX_HANDOFF_CHARS = 400_000;
 
 /**
- * How long a prime-role `agents` call waits for the calling chat to show its own block.
- *
- * The prime holds no credential, so this window *is* its identity, and it has to be
- * evidence from this call: a block rendered after the call began, in exactly one
- * conversation. Shorter than a join because a prime calls `agents` repeatedly during a run
- * and a join happens once, but long enough that a page reporting on its own tick lands
- * inside it. Nothing falls back to "the only chat that has been active lately".
- */
-export const PRIME_EVIDENCE_MS = 2_500;
-
-/**
- * The same window for a call ChatGPT gave a request id, which is waiting for one exact
- * page record rather than for whichever block turns up.
- *
- * Two and a half seconds was measured too short for the case that matters most: a worker's
- * first `agents` call runs seconds after its tab opened, and on 2026-08-18 worker-1 was
- * told WORKER_IDENTITY_LOST at 16:33:56 with the page evidence for that very call arriving
- * at 16:34:04. The wait is event-driven and ends the instant the mate lands, so the extra
- * seconds are only ever spent by a call that was going to be refused anyway.
- */
-export const IDENTITY_EVIDENCE_MS = 15_000;
-
-/**
- * The same window again for the two `agents` actions whose refusal cannot be retried cheaply.
- *
- * Everything else that waits for identity is asking about work it can decline and be asked
- * for again a moment later. `spawn` is not: a refused `spawn` ends the turn with
- * no run, and the model's own retry costs the user another full generation — on 2026-08-21 it
- * cost two, and the run still never started. The wait is event-driven and returns the instant
- * the page's request-id mate lands, so a longer ceiling is only ever spent by a call that was
- * going to be refused anyway; against that, the live evidence shows ids arriving twenty
- * seconds after the window that refused them. Kept well inside ChatGPT's own connector
- * timeout, so a slow proof still comes back as a spawned run rather than as a dead call.
- */
-export const SPAWN_EVIDENCE_MS = 30_000;
-
-/**
  * Recovers the complete text behind a stored field.
  *
  * A long tool argument or result is bounded inline in the log and written whole beside
@@ -809,7 +932,7 @@ export const SPAWN_EVIDENCE_MS = 30_000;
  */
 export async function expandStored(
   sessionId: string,
-  stored: StoredText
+  stored: StoredText,
 ): Promise<{ text: string; complete: boolean }> {
   if (!stored.truncated) return { text: stored.text, complete: true };
   if (stored.assetId) {
@@ -823,7 +946,7 @@ export async function expandStored(
 export function chunkText(text: string, size: number): string[] {
   if (text.length <= size) return [text];
   const parts: string[] = [];
-  let current = '';
+  let current = "";
   for (const block of text.split(/\n{2,}/)) {
     const candidate = current ? `${current}\n\n${block}` : block;
     if (candidate.length <= size) {
@@ -834,12 +957,13 @@ export function chunkText(text: string, size: number): string[] {
     if (block.length <= size) {
       current = block;
     } else {
-      for (let at = 0; at < block.length; at += size) parts.push(block.slice(at, at + size));
-      current = '';
+      for (let at = 0; at < block.length; at += size)
+        parts.push(block.slice(at, at + size));
+      current = "";
     }
   }
   if (current) parts.push(current);
-  return parts.length > 0 ? parts : [''];
+  return parts.length > 0 ? parts : [""];
 }
 
 /** The per-path header `read` prints. This is what `file_info` used to be. */
@@ -849,11 +973,11 @@ export function formatFileInfo(info: FileInfo): string {
     `type: ${info.type}`,
     `size: ${formatBytes(info.bytes)}`,
     `modified: ${info.modified}`,
-    `created: ${info.created}`
+    `created: ${info.created}`,
   ];
-  if (info.readOnly) lines.push('readonly: true');
+  if (info.readOnly) lines.push("readonly: true");
   if (info.binary !== null) lines.push(`binary: ${info.binary}`);
   if (info.lines !== null) lines.push(`lines: ${info.lines}`);
   if (info.sha256) lines.push(`sha256: ${info.sha256}`);
-  return lines.join('\n');
+  return lines.join("\n");
 }

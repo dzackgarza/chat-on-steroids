@@ -131,9 +131,20 @@ state_dir := if os() == "macos" {
 # three it is actually keeping alive. Pass a bigger number, or 0, for the whole history.
 chats hours="24":
     #!/usr/bin/env python3
-    import json, pathlib, time
+    import json, pathlib, sys, time
 
     root = pathlib.Path("{{sessions_dir}}")
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     def describe(row):
         """One line for the newest thing this chat did. `busy` alone says nothing about
@@ -161,7 +172,7 @@ chats hours="24":
             continue  # nothing to address a message to
         session = meta_file.parent
 
-        events = [json.loads(l) for l in (session / "events.jsonl").read_text().splitlines() if l.strip()]
+        events = load_jsonl(session / "events.jsonl")
         # A message is rewritten in its own shard while it streams, so the newest one is not
         # in events.jsonl at all and is often the only thing that happened recently.
         messages = [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
@@ -350,7 +361,18 @@ _set-archived chat flag verb:
 # Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
 tabs quiet="30":
     #!/usr/bin/env python3
-    import json, subprocess, pathlib, time, glob
+    import json, subprocess, pathlib, sys, time, glob
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     def dt(path):
         out = subprocess.run(["curl", "-s", "-m", "5", "{{devtools}}" + path],
@@ -369,7 +391,7 @@ tabs quiet="30":
         if not chat:
             continue
         titles[chat] = " ".join((meta.get("title") or "").split())[:38]
-        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows = load_jsonl(meta_file.parent / "events.jsonl")
         rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
@@ -408,7 +430,18 @@ tabs quiet="30":
 # time — a chat under active management is quiet between pushes, and quiet is not finished.
 tidy quiet="30" keep="":
     #!/usr/bin/env python3
-    import json, subprocess, pathlib, time, glob
+    import json, subprocess, pathlib, sys, time, glob
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     def dt(path):
         out = subprocess.run(["curl", "-s", "-m", "5", "{{devtools}}" + path],
@@ -426,7 +459,7 @@ tidy quiet="30" keep="":
         chat = meta.get("conversationId")
         if not chat:
             continue
-        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows = load_jsonl(meta_file.parent / "events.jsonl")
         rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
@@ -544,7 +577,18 @@ tidy quiet="30" keep="":
 # whether this one is still someone's live work, or a leftover the app has finished with.
 who chat:
     #!/usr/bin/env python3
-    import json, pathlib, time, glob
+    import json, pathlib, sys, time, glob
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     home = pathlib.Path.home()
     want = "{{chat}}"
@@ -563,7 +607,7 @@ who chat:
         if meta.get("conversationId") != want:
             continue
         title = " ".join((meta.get("title") or "").split())[:60]
-        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows = load_jsonl(meta_file.parent / "events.jsonl")
         rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
         if rows:
             when = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000

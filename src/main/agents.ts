@@ -1,60 +1,59 @@
 /**
  * The multi-agent broker.
  *
- * Experimental and disabled by default. One ChatGPT conversation is the prime agent; it
- * spawns workers, each of which is a separate ChatGPT tab the extension opens. All state
- * lives here, in this app: the browser only opens tabs and types the first message.
+ * Experimental and disabled by default. One claimed logical workstream is the prime agent;
+ * it spawns worker workstreams, each of which currently has a ChatGPT tab the extension opens
+ * as its frontend. All state lives here, in this app: the browser only opens/routes tabs and
+ * types user messages.
  *
- * ## One active run; durable history per prime conversation
+ * ## One active run; durable history per prime workstream
  *
  * There is at most one *executing* run at a time. That is the global capacity claim: while any
  * worker is invited, active, detached or waking, another prime cannot start workers. Ownership
  * lasts longer. When the final slot-holder stops, the active incarnation is parked immediately
- * and its entire agent map becomes dormant history keyed by the exact prime conversation. That
- * history holds no global slot, so another chat may run its own workers while the original prime
+ * and its entire agent map becomes dormant history keyed by the exact prime workstream. That
+ * history holds no global slot, so another workstream may run its own workers while the original prime
  * still sees every worker it ever created and may later wake the reusable ones in their exact
  * old ChatGPT conversations once the global execution claim is free.
  *
- * A prime is established only by a successful `spawn` from a conversation this app proved made
- * the call. Its ownership key moves only through the app's authenticated Compact & Resume
- * transaction, including recovery of a durable A→B session move. Nothing infers a prime,
- * promotes one or takes one over.
+ * A prime is established only by a successful `spawn` from an already-admitted logical
+ * workstream. Compact & Resume may move its browser route A→B, but the prime workstream
+ * identity never moves. Nothing infers a prime from browser state, promotes one, or takes one over.
  *
  * That makes every other question a lookup rather than a guess:
  *
- *   · a call from the active `primeConversationId` is that run's prime;
+ *   · a call from the active `primeWorkstreamId` is that run's prime;
  *   · a call from a dormant owner may inspect only that owner's history;
- *   · a call from an active worker's bound conversation is that worker;
- *   · a dormant worker conversation remains worker-owned identity but cannot act until its own
+ *   · a call from an active worker's workstream is that worker;
+ *   · a dormant worker workstream remains worker-owned identity but cannot act until its own
  *     prime explicitly wakes it;
- *   · every other conversation is a stranger, and while another run exists it is told
+ *   · every other workstream is a stranger, and while another run exists it is told
  *     `AGENTS_BUSY` and nothing else — never another prime's history.
  *
  * ## Why spawn is atomic
  *
  * `spawn` used to create workers and then work out who the prime was, which is how a chat
  * that was not the prime ended up owning worker chats. Here the order is fixed and every
- * step that can fail happens before the first mutation: prove the caller's conversation →
- * check it is not a worker → check no other run holds the execution claim → reactivate this
+ * step that can fail happens before the first mutation: use the already-admitted caller
+ * workstream → check it is not a worker → check no other run holds the execution claim → reactivate this
  * prime's own dormant history or create a new owner → create workers. The staged durability
  * boundary can roll a reactivated history back to dormant without losing its old workers.
  *
- * ## Why nobody holds a credential
+ * ## Workstream identity; browser routing is separate
  *
- * Every agent here is identified by *where it is*, and only by that. The prime is the
- * conversation the user is sitting in; a worker is the conversation this app opened for its
- * slot and watched itself open. Making a model carry a bearer secret through every tool call
- * put a routing token in the transcript for roles that a conversation id already names, and
- * a token the model has to remember is a token it can forget, paste into the wrong chat, or
- * have stripped by ChatGPT's own harness.
+ * Every agent is identified by its logical workstream. The model claims that workstream
+ * through the same setup boundary as every other Core/Desktop caller and supplies the current
+ * opaque claim id on ordinary calls. A worker's ChatGPT conversation is only its current
+ * frontend route: the broker keeps it so it can reopen the same worker chat, observe page
+ * lifecycle and inject prime messages. It is never tool or agent ownership authority.
  *
  * ## A worker is a worker before it speaks
  *
- * The lifecycle transition is the app's, not the model's. The extension opens the tab, learns
- * its exact `/c/<id>`, and reports it; {@link bindConversation} binds *and activates* the slot
- * in one step, before the model in that chat has said anything. So the first user message in
- * a worker chat is the task itself — there is no handshake to perform, no key to quote, and
- * nothing a worker has to do before it can start working.
+ * The extension opens the tab, learns its exact `/c/<id>`, and reports it so browser
+ * lifecycle/revival can target that frontend. The bootstrap also tells the worker the exact
+ * logical workstream name allocated by the broker; before its first ordinary tool call the
+ * worker claims that workstream and thereafter its workstream identity, not its browser
+ * location, determines ownership.
  *
  * ## Workers sleep; they do not end
  *
@@ -178,7 +177,7 @@ export class AgentError extends Error {}
 export class AgentsBusyError extends AgentError {
   constructor() {
     super(
-      'AGENTS_BUSY: another ChatGPT conversation is already running the one sub-agent swarm this app supports. ' +
+      'AGENTS_BUSY: another prime workstream is already running the one sub-agent swarm this app supports. ' +
         'Nothing about that run is visible from here. Wait for it to finish, or ask the user to press Clear swarm ' +
         'in Chat On Steroids.'
     );
@@ -186,20 +185,13 @@ export class AgentsBusyError extends AgentError {
 }
 
 /**
- * Raised when a call meant for the run could not be placed in any conversation.
- *
- * Every identity here is a conversation, so a call this app cannot place is a call it cannot
- * attribute — and the answer to that is to say so, not to accept a key the model is carrying
- * instead. In practice this is a page whose extension is not reporting: the fix is in the
- * browser, and the message says where to look.
+ * Raised when a broker action somehow reached this layer without an admitted logical workstream.
  */
 export class IdentityLostError extends AgentError {
   constructor() {
     super(
-      'WORKER_IDENTITY_LOST: Chat On Steroids could not tell which conversation this call came from, so it cannot ' +
-        'act on the run from here. Check that the extension is connected in this tab and try once more. If this chat ' +
-        'was opened as a worker and never took up its slot, there is nothing to repair from inside the chat: ask the ' +
-        'user to clear that worker row in the app and spawn a replacement.'
+      'WORKSTREAM_SETUP_REQUIRED: this agent action has no admitted logical workstream identity. ' +
+        'Establish/continue the correct workstream and retry with its current workstream_id.'
     );
   }
 }
@@ -275,6 +267,7 @@ interface PrimeTransfer {
 
 interface Run {
   runId: string;
+  primeWorkstreamId: string;
   primeConversationId: string;
   startedAt: number;
   agents: Map<string, Agent>;
@@ -308,9 +301,10 @@ let run: Run | null = null;
  * A prime-owned worker family while none of its workers is currently running.
  *
  * This is deliberately separate from {@link run}. `run` is the one global execution claim:
- * while it exists, no unrelated chat may start workers. A dormant run is only durable
- * ownership. It keeps the exact worker conversations, queues, results and context accounting
- * under the prime conversation that created them, but holds no global worker/run slot at all.
+ * while it exists, no unrelated prime workstream may start workers. A dormant run is only
+ * durable ownership. It keeps the worker workstreams, browser routes, queues, results and
+ * context accounting under the prime workstream that created them, but holds no global
+ * worker/run slot at all.
  *
  * The distinction is what makes reusable workers and one-global-run compatible. When the last
  * working worker stops, the active incarnation is parked here and `run` becomes null
@@ -320,6 +314,7 @@ let run: Run | null = null;
  * never bind to the revived worker.
  */
 interface DormantRun {
+  primeWorkstreamId: string;
   primeConversationId: string;
   startedAt: number;
   parkedAt: number;
@@ -328,6 +323,7 @@ interface DormantRun {
   transfer: PrimeTransfer | null;
 }
 
+/** Prime-owned histories keyed by logical workstream, never browser conversation. */
 const dormantRuns = new Map<string, DormantRun>();
 
 /**
@@ -518,7 +514,8 @@ export function onSwarmEnd(listener: (reason: string, retired: RetiredChat[]) =>
 /** A worker chat whose run ended and whose conversation must not immediately become an ordinary chat. */
 export interface RetiredChat {
   id: string;
-  conversationId: string;
+  workstreamId: string;
+  conversationId: string | null;
   reason: string;
   retiredAt: number;
 }
@@ -527,6 +524,7 @@ export interface RetiredChat {
 export interface WorkerSpawn {
   id: string;
   task: string;
+  workstreamId: string;
 }
 
 /** Workers that exist but have not joined: their chat is still owed. */
@@ -537,7 +535,11 @@ export function pendingWorkerSpawns(): WorkerSpawn[] {
       (agent) =>
         agent.info.role === 'worker' && agent.info.state === 'invited' && !unpublishedAgents.has(agent)
     )
-    .map((agent) => ({ id: agent.info.id, task: agent.info.task }));
+    .map((agent) => ({
+      id: agent.info.id,
+      task: agent.info.task,
+      workstreamId: agent.info.workstreamId,
+    }));
 }
 
 /**
@@ -564,14 +566,9 @@ export function onSpawnRequest(handler: (workers: WorkerSpawn[]) => void): () =>
  * What a caller can offer as proof of who it is. No field is ever an agent id.
  */
 export interface Caller {
-  /**
-   * The ChatGPT conversation this call was proven to come from, and the only identity any
-   * agent has.
-   *
-   * Only ever set from evidence gathered for the call being handled: ChatGPT's own message
-   * model naming this exact tool request, in exactly one conversation. Never from anything
-   * the model wrote, and never from "the chat that has been active lately".
-   */
+  /** Logical workstream admitted by the connector for this ordinary call. */
+  workstreamId?: string | null;
+  /** Current browser route for that workstream, when known. Never identity authority. */
   conversationId?: string | null;
 }
 
@@ -591,10 +588,37 @@ function agentForConversationId(conversationId: string): Agent | null {
   return null;
 }
 
-/** Prime-owned dormant state, addressed only by the prime conversation that owns it. */
+/** The live agent owned by one claimed logical workstream. */
+function agentForWorkstreamId(workstreamId: string): Agent | null {
+  if (!run) return null;
+  for (const agent of run.agents.values()) {
+    if (
+      agent.info.workstreamId === workstreamId &&
+      !isOver(agent.info.state)
+    )
+      return agent;
+  }
+  return null;
+}
+
+/** Browser-lifecycle lookup for a dormant prime by its current/last frontend conversation. */
 function dormantRunForPrime(conversationId: string | null | undefined): DormantRun | null {
   if (!conversationId) return null;
-  return dormantRuns.get(conversationId) ?? null;
+  let found: DormantRun | null = null;
+  for (const dormant of dormantRuns.values()) {
+    if (dormant.primeConversationId !== conversationId) continue;
+    if (found) return null;
+    found = dormant;
+  }
+  return found;
+}
+
+/** Prime-owned dormant state addressed by the prime's stable logical workstream. */
+function dormantRunForPrimeWorkstream(
+  workstreamId: string | null | undefined,
+): DormantRun | null {
+  if (!workstreamId) return null;
+  return dormantRuns.get(workstreamId) ?? null;
 }
 
 /**
@@ -639,6 +663,21 @@ function dormantAgentForConversation(
   return found;
 }
 
+function dormantAgentForWorkstream(
+  workstreamId: string | null | undefined,
+): { owner: DormantRun; agent: Agent } | null {
+  if (!workstreamId) return null;
+  let found: { owner: DormantRun; agent: Agent } | null = null;
+  for (const dormant of dormantRuns.values()) {
+    for (const agent of dormant.agents.values()) {
+      if (agent.info.workstreamId !== workstreamId) continue;
+      if (found) return null;
+      found = { owner: dormant, agent };
+    }
+  }
+  return found;
+}
+
 /**
  * Reclaims one dormant owner into the single active execution slot.
  *
@@ -647,18 +686,19 @@ function dormantAgentForConversation(
  */
 function reactivateDormantRun(dormant: DormantRun): Run | null {
   if (run) return null;
-  if (dormantRuns.get(dormant.primeConversationId) !== dormant) return null;
+  if (dormantRuns.get(dormant.primeWorkstreamId) !== dormant) return null;
   if (dormant.transfer && !transferExpired(dormant.transfer)) return null;
   if (dormant.transfer && transferExpired(dormant.transfer)) dormant.transfer = null;
   const prime = dormant.agents.get(PRIME_ID);
   if (!prime) return null;
-  dormantRuns.delete(dormant.primeConversationId);
+  dormantRuns.delete(dormant.primeWorkstreamId);
   const now = Date.now();
   prime.info.state = 'active';
   prime.info.detachedAt = null;
   prime.info.lastSeenAt = now;
   run = {
     runId: randomUUID(),
+    primeWorkstreamId: dormant.primeWorkstreamId,
     primeConversationId: dormant.primeConversationId,
     // The browser-command fence gets a new incarnation id, but this is still the same prime's
     // worker history. Keep the original history start instead of pretending the workers were
@@ -668,7 +708,7 @@ function reactivateDormantRun(dormant: DormantRun): Run | null {
     transfer: dormant.transfer,
     primeGoneAt: null
   };
-  logInfo(`multi-agent: reactivated workers owned by conversation ${dormant.primeConversationId} as run ${run.runId}`);
+  logInfo(`multi-agent: reactivated workers owned by workstream ${dormant.primeWorkstreamId} as run ${run.runId}`);
   changed();
   return run;
 }
@@ -690,14 +730,14 @@ export function reactivateDormantRunForConversation(conversationId: string | nul
  */
 export function swarmStateForCaller(caller: Caller): SwarmState {
   requireEnabled();
-  if (!caller.conversationId) throw new IdentityLostError();
+  if (!caller.workstreamId) throw new IdentityLostError();
 
   if (run) {
-    const member = agentForConversationId(caller.conversationId);
+    const member = agentForWorkstreamId(caller.workstreamId);
     if (member) return stateForAgents(run.agents, true);
   }
 
-  const dormant = dormantRunForPrime(caller.conversationId);
+  const dormant = dormantRunForPrimeWorkstream(caller.workstreamId);
   if (dormant) return stateForAgents(dormant.agents, false);
 
   if (run) throw new AgentsBusyError();
@@ -718,9 +758,9 @@ export interface CallerSwarmStatus {
 /** One caller-scoped status snapshot, so no global run id/slot count can leak across owners. */
 export function statusForCaller(caller: Caller): CallerSwarmStatus {
   requireEnabled();
-  if (!caller.conversationId) throw new IdentityLostError();
+  if (!caller.workstreamId) throw new IdentityLostError();
   if (run) {
-    const member = agentForConversationId(caller.conversationId);
+    const member = agentForWorkstreamId(caller.workstreamId);
     if (member) {
       return {
         self: { ...member.info },
@@ -730,7 +770,7 @@ export function statusForCaller(caller: Caller): CallerSwarmStatus {
       };
     }
   }
-  const dormant = dormantRunForPrime(caller.conversationId);
+  const dormant = dormantRunForPrimeWorkstream(caller.workstreamId);
   const prime = dormant?.agents.get(PRIME_ID);
   if (dormant && prime) {
     return {
@@ -742,20 +782,19 @@ export function statusForCaller(caller: Caller): CallerSwarmStatus {
   }
   if (run) throw new AgentsBusyError();
   throw new AgentError(
-    'No sub-agent run or worker history belongs to this conversation. Call agents action=spawn to start one.'
+    'No sub-agent run or worker history belongs to this workstream. Call agents action=spawn to start one.'
   );
 }
 
 /**
  * Who is calling, or null.
  *
- * One lookup, because there is one identity: the conversation this call was proven to come
- * from. A call that could not be placed in a conversation belongs to nobody, and saying so
- * is what keeps an unidentified call from being filed under whichever agent was busiest.
+ * One lookup, because there is one authority: the logical workstream already admitted by the
+ * connector. Browser conversation routing is not consulted.
  */
 function resolve(caller: Caller): Agent | null {
-  if (!run || !caller.conversationId) return null;
-  return agentForConversationId(caller.conversationId);
+  if (!run || !caller.workstreamId) return null;
+  return agentForWorkstreamId(caller.workstreamId);
 }
 
 /** Attribution for an ordinary tool call: only ever a binding, never a claim. */
@@ -767,10 +806,11 @@ export function agentForCaller(caller: Caller): string | null {
 /**
  * Identity for the one control call a terminal worker is allowed to retry: `agents finish`.
  *
- * Ordinary resolution deliberately hides terminal workers so an ended chat cannot keep using
- * local tools as a live member of the run. A lost `finish` result is different: the broker must
- * recognise the same conversation's tombstone so the dispatcher can re-offer anything that
- * rode on that lost result without reviving the worker or authorising another action.
+ * Ordinary resolution deliberately hides terminal workers so an ended worker workstream cannot
+ * keep using local tools as a live member of the run. A lost `finish` result is different:
+ * the broker must recognise the same workstream's tombstone so the dispatcher can re-offer
+ * anything that rode on that lost result without reviving the worker or authorising another
+ * action.
  *
  * Keep this as a separate lookup rather than widening {@link agentForCaller}. The dispatcher
  * selects it only for the literal finish action; every other call retains the fail-closed live
@@ -778,27 +818,29 @@ export function agentForCaller(caller: Caller): string | null {
  */
 export function agentForFinishCaller(caller: Caller): string | null {
   if (!getConfig().multiAgent.enabled) return null;
-  return (resolve(caller) ?? retiredAgent(caller))?.info.id ?? null;
+  return (
+    resolve(caller) ??
+    retiredAgent(caller) ??
+    dormantAgentForWorkstream(caller.workstreamId)?.agent
+  )?.info.id ?? null;
 }
 
 /**
  * Resolves the caller to a member of the active run, or refuses in the one honest way.
  *
  * Three refusals, deliberately different. A caller with no run at all is told how to start
- * one. A chat that *was* identified and is not in the run learns only `AGENTS_BUSY` — never
- * who the prime is, how many workers there are, or what they are doing. And a call whose
- * conversation could not be established at all is a different failure entirely: it is not a
- * stranger, it is an agent whose identity this app could not read, so it is told that in
- * those words rather than being handed a credential to carry instead.
+ * one. A workstream that is not a member of the active run learns only `AGENTS_BUSY` — never
+ * who the prime is, how many workers there are, or what they are doing. A call that somehow
+ * reached this layer without an admitted workstream gets `WORKSTREAM_SETUP_REQUIRED`.
  */
 function requireMember(caller: Caller): Agent {
   requireEnabled();
   if (!run) {
     throw new AgentError(
-      'No sub-agent run is active. The chat that calls agents action=spawn becomes the prime agent of a new run.'
+      'No sub-agent run is active. The workstream that calls agents action=spawn becomes the prime agent of a new run.'
     );
   }
-  if (!caller.conversationId) throw new IdentityLostError();
+  if (!caller.workstreamId) throw new IdentityLostError();
   const agent = resolve(caller);
   if (!agent) throw new AgentsBusyError();
   return agent;
@@ -807,15 +849,15 @@ function requireMember(caller: Caller): Agent {
 /** Resolves who is calling, or refuses with something the model can act on. */
 export function identify(caller: Caller): AgentInfo {
   requireEnabled();
-  if (!caller.conversationId) throw new IdentityLostError();
+  if (!caller.workstreamId) throw new IdentityLostError();
   const active = resolve(caller);
   if (active) return { ...active.info };
-  const dormant = dormantRunForPrime(caller.conversationId);
+  const dormant = dormantRunForPrimeWorkstream(caller.workstreamId);
   const prime = dormant?.agents.get(PRIME_ID);
   if (prime) return { ...prime.info };
   if (run) throw new AgentsBusyError();
   throw new AgentError(
-    'No sub-agent run or worker history belongs to this conversation. Call agents action=spawn to start one.'
+    'No sub-agent run or worker history belongs to this workstream. Call agents action=spawn to start one.'
   );
 }
 
@@ -837,10 +879,20 @@ Your task:
 ${task}`;
 }
 
-function makeWorker(id: string, label: string, task: string): Agent {
+function workerWorkstreamId(runId: string, id: string): string {
+  return `swarm-${runId}-${id}`;
+}
+
+function makeWorker(
+  id: string,
+  label: string,
+  task: string,
+  workstreamId: string,
+): Agent {
   return {
     info: {
       id,
+      workstreamId,
       role: 'worker',
       label,
       task,
@@ -863,10 +915,14 @@ function makeWorker(id: string, label: string, task: string): Agent {
   };
 }
 
-function makePrime(conversationId: string): Agent {
+function makePrime(
+  workstreamId: string,
+  conversationId: string | null,
+): Agent {
   return {
     info: {
       id: PRIME_ID,
+      workstreamId,
       role: 'prime',
       label: 'Prime',
       task: 'Coordinates the workers',
@@ -931,26 +987,22 @@ function primeAgent(): Agent {
  */
 function endRun(reason: string): void {
   if (!run) return;
-  // The prime's tool calls switch from `agent:prime` back to its conversation identity the
-  // instant this run disappears. Collapse that temporary workspace identity first so the next
-  // relative path cannot revive the project the chat was using before it spawned workers.
-  releasePrimeWorkspace(run.primeConversationId);
+  // Workstream ownership survives run teardown, so this is only the workspace release hook.
+  releasePrimeWorkspace(run.primeWorkstreamId);
   const retired: RetiredChat[] = [...run.agents.values()]
-    // Keep the conversation fence after the active-run tombstone disappears. A terminal
-    // worker is still a worker chat: `finish` stops its broker role, not the ChatGPT turn or
-    // document itself. Once the prime ACKs the final report, releaseQuiescentRun() destroys the
-    // run, so excluding finished/failed workers here also destroyed the only identity record
-    // that made endedWorkerNotice() reject their later local-tool calls. The kernel's retired
-    // lease is the post-run continuation of that same boundary and therefore applies to every
-    // worker conversation the run had bound, terminal or not.
-    .filter((agent) => agent.info.role === 'worker' && agent.info.conversationId)
+    // Keep the workstream fence after the active-run tombstone disappears. Browser routing is
+    // optional here: a worker whose tab never bound still owns a logical workstream that must
+    // not become an ordinary caller after the run ends.
+    .filter((agent) => agent.info.role === 'worker')
     .map((agent) => ({
       id: agent.info.id,
-      conversationId: agent.info.conversationId as string,
+      workstreamId: agent.info.workstreamId,
+      conversationId: agent.info.conversationId,
       reason,
       retiredAt: Date.now()
     }));
-  for (const worker of retired) retiredWorkers.set(worker.conversationId, worker);
+  for (const worker of retired)
+    retiredWorkers.set(worker.workstreamId, worker);
   retiredPersist?.();
   const what = `${run.runId} (${[...run.agents.keys()].join(', ')})`;
   run = null;
@@ -966,8 +1018,9 @@ function endRun(reason: string): void {
 function parkRun(reason: string): boolean {
   if (!run || workingWorkers().length > 0) return false;
   const current = run;
-  releasePrimeWorkspace(current.primeConversationId);
-  dormantRuns.set(current.primeConversationId, {
+  releasePrimeWorkspace(current.primeWorkstreamId);
+  dormantRuns.set(current.primeWorkstreamId, {
+    primeWorkstreamId: current.primeWorkstreamId,
     primeConversationId: current.primeConversationId,
     startedAt: current.startedAt,
     parkedAt: Date.now(),
@@ -976,7 +1029,7 @@ function parkRun(reason: string): boolean {
   });
   run = null;
   logInfo(
-    `multi-agent: parked run ${current.runId} for conversation ${current.primeConversationId} — ${reason}`
+    `multi-agent: parked run ${current.runId} for workstream ${current.primeWorkstreamId} — ${reason}`
   );
   changed();
   return true;
@@ -985,9 +1038,9 @@ function parkRun(reason: string): boolean {
 function pruneRetiredWorkers(): void {
   const cutoff = Date.now() - RETIRED_WORKER_TTL_MS;
   let changed = false;
-  for (const [conversationId, worker] of retiredWorkers) {
+  for (const [workstreamId, worker] of retiredWorkers) {
     if (worker.retiredAt >= cutoff) continue;
-    retiredWorkers.delete(conversationId);
+    retiredWorkers.delete(workstreamId);
     changed = true;
   }
   if (changed) retiredPersist?.();
@@ -996,7 +1049,21 @@ function pruneRetiredWorkers(): void {
 export function retiredWorkerForConversation(conversationId: string | null | undefined): RetiredChat | null {
   pruneRetiredWorkers();
   if (!conversationId) return null;
-  const worker = retiredWorkers.get(conversationId);
+  let found: RetiredChat | null = null;
+  for (const worker of retiredWorkers.values()) {
+    if (worker.conversationId !== conversationId) continue;
+    if (found) return null;
+    found = worker;
+  }
+  return found ? { ...found } : null;
+}
+
+export function retiredWorkerForWorkstream(
+  workstreamId: string | null | undefined,
+): RetiredChat | null {
+  pruneRetiredWorkers();
+  if (!workstreamId) return null;
+  const worker = retiredWorkers.get(workstreamId);
   return worker ? { ...worker } : null;
 }
 
@@ -1006,7 +1073,12 @@ export function hasRetiredWorkerLeases(): boolean {
 }
 
 export function forgetRetiredWorker(conversationId: string): void {
-  if (retiredWorkers.delete(conversationId)) retiredPersist?.();
+  for (const [workstreamId, worker] of retiredWorkers) {
+    if (worker.conversationId !== conversationId) continue;
+    retiredWorkers.delete(workstreamId);
+    retiredPersist?.();
+    return;
+  }
 }
 
 // -------------------------------------------------------------------- spawn
@@ -1077,9 +1149,10 @@ function settleSpawnStage(stage: SpawnStageState, accepted: boolean): void {
       run = null;
     } else if (stage.resumedDormant) {
       const current = run;
-      releasePrimeWorkspace(current.primeConversationId);
-      dormantRuns.set(stage.resumedDormant.primeConversationId, {
+      releasePrimeWorkspace(current.primeWorkstreamId);
+      dormantRuns.set(stage.resumedDormant.primeWorkstreamId, {
         ...stage.resumedDormant,
+        primeWorkstreamId: current.primeWorkstreamId,
         agents: current.agents,
         transfer: current.transfer
       });
@@ -1128,7 +1201,11 @@ export function requestWorkerBootstraps(ids: readonly string[]): number {
         !unpublishedAgents.has(agent) &&
         wanted.has(agent.info.id)
     )
-    .map((agent) => ({ id: agent.info.id, task: agent.info.task }));
+    .map((agent) => ({
+      id: agent.info.id,
+      task: agent.info.task,
+      workstreamId: agent.info.workstreamId,
+    }));
   if (owed.length === 0) return 0;
   if (spawnRequest) spawnRequest(owed);
   else logWarn('multi-agent: no browser extension is paired, so worker chats cannot be opened automatically');
@@ -1136,17 +1213,17 @@ export function requestWorkerBootstraps(ids: readonly string[]): number {
 }
 
 /**
- * Claims the calling conversation as prime and creates its workers, atomically.
+ * Claims the calling logical workstream as prime and creates its workers, atomically.
  *
  * Every step that can fail happens before the first mutation, in a fixed order:
  *
  *   1. the request itself is valid (all of it, not the prefix that happened to parse);
- *   2. this app has *proven* which conversation is calling;
- *   3. that conversation is not a worker of the active run;
- *   4. no other conversation holds the one swarm;
+ *   2. the ordinary connector already admitted the caller's workstream;
+ *   3. that workstream is not a worker of the active run;
+ *   4. no other workstream holds the one swarm;
  *   5. only then is the prime bound and the workers created.
  *
- * So a spawn that fails for any reason leaves zero workers behind, and no conversation ever
+ * So a spawn that fails for any reason leaves zero workers behind, and no workstream ever
  * becomes prime as a by-product of some other outcome.
  */
 export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResult {
@@ -1179,15 +1256,17 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
     return { label, task: briefFor(context, task) };
   });
 
-  const conversationId = input.caller.conversationId ?? null;
-  if (!conversationId) {
+  const workstreamId = input.caller.workstreamId ?? null;
+  if (!workstreamId) {
     throw new AgentError(
-      'UNIDENTIFIED_CALLER: this app could not prove which ChatGPT conversation this call came from, so it will not ' +
-        'make this chat the prime agent of a run. No workers were created. The paired browser extension has to be ' +
-        'connected and this conversation has to be showing its connector activity; wait a moment and call ' +
-        'agents action=spawn again.'
+      'WORKSTREAM_SETUP_REQUIRED: this agents call has no admitted logical workstream. No workers were created.'
     );
   }
+  const conversationId = input.caller.conversationId ?? null;
+  if (!conversationId)
+    throw new AgentError(
+      'WORKSTREAM_FRONTEND_UNBOUND: this workstream has no current ChatGPT frontend route, so worker tabs cannot be attached safely. No workers were created.'
+    );
 
   if (run) {
     const caller = resolve(input.caller);
@@ -1197,14 +1276,14 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
           'agent a message instead and let it decide.'
       );
     }
-    if (conversationId !== run.primeConversationId) throw new AgentsBusyError();
+    if (workstreamId !== run.primeWorkstreamId) throw new AgentsBusyError();
   }
 
   const becamePrime = run === null;
   let resumedDormant: DormantRun | null = null;
   let createdFreshRun = false;
   if (!run) {
-    resumedDormant = dormantRunForPrime(conversationId);
+    resumedDormant = dormantRunForPrimeWorkstream(workstreamId);
     if (resumedDormant) {
       if (!reactivateDormantRun(resumedDormant)) {
         throw new AgentError(
@@ -1218,9 +1297,10 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
         // in run B. Truncating a UUID to eight hex characters made that safety boundary only
         // 32 bits wide; keep the full UUID and shorten it only where a UI chooses to render it.
         runId: randomUUID(),
+        primeWorkstreamId: workstreamId,
         primeConversationId: conversationId,
         startedAt: Date.now(),
-        agents: new Map([[PRIME_ID, makePrime(conversationId)]]),
+        agents: new Map([[PRIME_ID, makePrime(workstreamId, conversationId)]]),
         transfer: null,
         primeGoneAt: null
       };
@@ -1270,12 +1350,17 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
   const createdAgents: Agent[] = [];
   for (const [index, worker] of planned.entries()) {
     const id = ids[index] as string;
-    const agent = makeWorker(id, worker.label || id, worker.task);
+    const agent = makeWorker(
+      id,
+      worker.label || id,
+      worker.task,
+      workerWorkstreamId(activeRun.runId, id),
+    );
     activeRun.agents.set(id, agent);
     // A worker starts in the folder the prime was working in, so its first call can use the
     // same shorthand. It is a copy: a worker sent into another project overwrites its own
     // entry and never the prime's.
-    inheritWorkspace(id, activeRun.primeConversationId);
+    inheritWorkspace(agent.info.workstreamId, activeRun.primeWorkstreamId);
     createdAgents.push(agent);
     created.push({ ...agent.info });
   }
@@ -1296,7 +1381,7 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
 
   logInfo(
     becamePrime
-      ? `multi-agent: run ${activeRun.runId} started by conversation ${conversationId} with ${created.length} worker(s)`
+      ? `multi-agent: run ${activeRun.runId} started by workstream ${workstreamId} with ${created.length} worker(s)`
       : `multi-agent: created ${created.length} worker(s) in run ${activeRun.runId}`
   );
   changed();
@@ -1351,9 +1436,13 @@ function matchExistingRequest(
  * lookup that can see them.
  */
 function retiredAgent(caller: Caller): Agent | null {
-  if (!run || !caller.conversationId) return null;
+  if (!run || !caller.workstreamId) return null;
   for (const agent of run.agents.values()) {
-    if (agent.info.conversationId === caller.conversationId && isOver(agent.info.state)) return agent;
+    if (
+      agent.info.workstreamId === caller.workstreamId &&
+      isOver(agent.info.state)
+    )
+      return agent;
   }
   return null;
 }
@@ -1402,11 +1491,13 @@ function enqueue(to: Agent, message: AgentMessage): void {
   recount(to);
 }
 
-function newMessage(from: string, to: string, text: string): AgentMessage {
+function newMessage(from: Agent, to: Agent, text: string): AgentMessage {
   return {
     id: randomUUID().slice(0, 8),
-    from,
-    to,
+    from: from.info.id,
+    fromWorkstreamId: from.info.workstreamId,
+    to: to.info.id,
+    toWorkstreamId: to.info.workstreamId,
     time: Date.now(),
     text,
     offeredAt: null,
@@ -1464,12 +1555,12 @@ export function stageMessages(
     throw new AgentError(`Too many messages in one call (limit ${MAX_BATCH_MESSAGES})`);
   }
   let resumedDormant = false;
-  if (!run && caller.conversationId) {
-    const dormant = dormantRunForPrime(caller.conversationId);
+  if (!run && caller.workstreamId) {
+    const dormant = dormantRunForPrimeWorkstream(caller.workstreamId);
     if (dormant) {
       if (!reactivateDormantRun(dormant)) {
         throw new AgentError(
-          'PRIME_TRANSFER_IN_PROGRESS: this conversation is being compacted/resumed, so its sleeping workers cannot be woken until that handoff settles.'
+          'PRIME_TRANSFER_IN_PROGRESS: this workstream is being compacted/resumed, so its sleeping workers cannot be woken until that handoff settles.'
         );
       }
       resumedDormant = true;
@@ -1572,7 +1663,7 @@ function stageMessagesActive(
     const already = perRecipient.get(to.info.id) ?? 0;
     assertRoom(to, already + 1);
     perRecipient.set(to.info.id, already + 1);
-    planned.push({ to, message: newMessage(from.info.id, to.info.id, trimmed) });
+    planned.push({ to, message: newMessage(from, to, trimmed) });
   }
 
   for (const { to, message } of planned) {
@@ -1703,6 +1794,39 @@ export function offerMessagesForConversation(
   return { agentId: PRIME_ID, messages: offerAgentMessages(dormant.agent, onFinish) };
 }
 
+/** Caller-scoped inbox offer by authoritative logical workstream identity. */
+export function offerMessagesForWorkstream(
+  workstreamId: string | null | undefined,
+  onFinish = false,
+  allowDormantWorkerFinishRetry = false,
+): { agentId: string; messages: AgentMessage[] } | null {
+  if (!workstreamId) return null;
+  const active = boundAgentForWorkstream(workstreamId);
+  if (active)
+    return {
+      agentId: active.info.id,
+      messages: offerAgentMessages(active, onFinish),
+    };
+  const dormant = dormantAgentForWorkstream(workstreamId);
+  if (!dormant) return null;
+  if (dormant.agent.info.role === 'worker') {
+    if (
+      !allowDormantWorkerFinishRetry ||
+      !onFinish ||
+      !hasStopped(dormant.agent.info.state)
+    )
+      return null;
+    return {
+      agentId: dormant.agent.info.id,
+      messages: offerAgentMessages(dormant.agent, true),
+    };
+  }
+  return {
+    agentId: PRIME_ID,
+    messages: offerAgentMessages(dormant.agent, onFinish),
+  };
+}
+
 /**
  * Retires everything previously offered to this agent, except what this call cannot honestly
  * be said to have proven.
@@ -1769,6 +1893,49 @@ export function acknowledgeOffersForConversation(
   return { agentId: PRIME_ID, messages: acknowledgeAgentOffers(dormant.agent, byFinish, callStartedAt) };
 }
 
+/** Caller-scoped acknowledgement by authoritative logical workstream identity. */
+export function acknowledgeOffersForWorkstream(
+  workstreamId: string | null | undefined,
+  byFinish = false,
+  callStartedAt = Number.POSITIVE_INFINITY,
+  allowDormantWorkerFinishRetry = false,
+): { agentId: string; messages: AgentMessage[] } | null {
+  if (!workstreamId) return null;
+  const active = boundAgentForWorkstream(workstreamId);
+  if (active) {
+    return {
+      agentId: active.info.id,
+      messages: acknowledgeAgentOffers(active, byFinish, callStartedAt),
+    };
+  }
+  const dormant = dormantAgentForWorkstream(workstreamId);
+  if (!dormant) return null;
+  if (dormant.agent.info.role === 'worker') {
+    if (
+      !allowDormantWorkerFinishRetry ||
+      !byFinish ||
+      !hasStopped(dormant.agent.info.state)
+    )
+      return null;
+    return {
+      agentId: dormant.agent.info.id,
+      messages: acknowledgeAgentOffers(
+        dormant.agent,
+        true,
+        callStartedAt,
+      ),
+    };
+  }
+  return {
+    agentId: PRIME_ID,
+    messages: acknowledgeAgentOffers(
+      dormant.agent,
+      byFinish,
+      callStartedAt,
+    ),
+  };
+}
+
 export function pendingCount(id: string): number {
   return run?.agents.get(id)?.info.pending ?? 0;
 }
@@ -1818,8 +1985,8 @@ export interface StagedFinish extends FinishResult {
 
 function finishTarget(caller: Caller): Agent {
   requireEnabled();
-  if (!caller.conversationId) throw new IdentityLostError();
-  // The one call that also answers from a conversation whose slot has already ended: this
+  if (!caller.workstreamId) throw new IdentityLostError();
+  // The one call that also answers from a workstream whose slot has already ended: this
   // connector loses tool results, so a retry of *this* call is exactly what that looks like,
   // and telling the chat that had genuinely finished that it was a stranger was worse than
   // useless.
@@ -1833,12 +2000,16 @@ function finishTarget(caller: Caller): Agent {
     return agent;
   }
 
-  const dormant = dormantAgentForConversation(caller.conversationId)?.agent ?? null;
+  const dormant =
+    dormantAgentForWorkstream(caller.workstreamId)?.agent ?? null;
   // A dormant worker may only be here as a retry of a finish that already stopped it. Never
   // treat an unexpected dormant worker call as authority to resume or mutate its history.
   if (dormant?.info.role === 'worker' && hasStopped(dormant.info.state)) return dormant;
   if (run) throw new AgentsBusyError();
-  if (!dormant) throw new AgentError('No sub-agent run or worker history belongs to this conversation.');
+  if (!dormant)
+    throw new AgentError(
+      'No sub-agent run or worker history belongs to this workstream.',
+    );
   if (dormant.info.role !== 'worker') {
     throw new AgentError(
       'The prime agent does not finish: the run ends when its workers have reported and the user is done with it.'
@@ -1917,8 +2088,8 @@ function planFinish(agent: Agent, result: string): { info: AgentInfo; report: Ag
       `it more work with agents action=message to="${agent.info.id}" — that wakes it up where it left off. Prefer that ` +
       'to action=spawn: a new worker starts from nothing.)';
   const report = newMessage(
-    agent.info.id,
-    PRIME_ID,
+    agent,
+    primeAgent(),
     `[${agent.info.id} ${terminal ? 'finished' : 'reported'}] ${info.result}${caveat}${capacity}`
   );
   return { info, report };
@@ -2148,14 +2319,14 @@ export function failAgent(
   if (!agent.info.revivable) agent.queue = [];
   recount(agent);
 
+  const prime = primeAgent();
   const report = newMessage(
-    id,
-    PRIME_ID,
+    agent,
+    prime,
     note ??
       `[${id} failed] Its ChatGPT tab never came up: ${agent.info.result}. It will not report. Do that part of the ` +
         'work yourself or spawn a replacement worker.'
   );
-  const prime = primeAgent();
   prime.queue.push(report);
   recount(prime);
   logWarn(`multi-agent: ${id} failed — ${reason}`);
@@ -2193,16 +2364,16 @@ function sleepAgent(agent: Agent, reason: string): FinishResult | null {
   agent.info.detachedAt = null;
   agent.info.revivable = !terminal;
   recount(agent);
+  const prime = primeAgent();
   const report = newMessage(
-    agent.info.id,
-    PRIME_ID,
+    agent,
+    prime,
     terminal
       ? `[${agent.info.id} finished] ${reason} Its chat has also reached the context limit, so it cannot be woken ` +
         'again. Its worker slot is free; spawn a new worker if that work still matters.'
       : `[${agent.info.id} is sleeping] ${reason} Its worker slot is free and its chat is intact — wake it with ` +
         `agents action=message to="${agent.info.id}" when you have more for it, rather than spawning a new worker.`
   );
-  const prime = primeAgent();
   prime.queue.push(report);
   recount(prime);
   logInfo(`multi-agent: ${agent.info.id} ${terminal ? 'finished for good' : 'is sleeping'} — ${reason}`);
@@ -2569,14 +2740,14 @@ function finishStoppedWorkerAtCeiling(agent: Agent, reason: string, sleptAt = Da
           .map((message) => `“${message.text.slice(0, 180)}”`)
           .join(', ')}${neverOffered.length > 3 ? ', …' : ''}). Those instructions are no longer queued.`
       : '';
+  const prime = primeForOwnedAgent(agent);
+  if (!prime) throw new AgentError(`Cannot find the prime that owns ${agent.info.id}.`);
   const report = newMessage(
-    agent.info.id,
-    PRIME_ID,
+    agent,
+    prime,
     `[${agent.info.id} finished for good] ${reason} Its chat has reached the context limit, so it cannot be woken again.` +
       `${missed} Its worker slot is free; spawn a new worker for any remaining work.`
   );
-  const prime = primeForOwnedAgent(agent);
-  if (!prime) throw new AgentError(`Cannot find the prime that owns ${agent.info.id}.`);
   prime.queue.push(report);
   recount(prime);
   return report;
@@ -2624,15 +2795,15 @@ export function failWorkerRevival(id: string, why: string): AgentMessage | null 
     changed();
     return terminal;
   }
+  const prime = primeAgent();
   const report = newMessage(
-    id,
-    PRIME_ID,
+    agent,
+    prime,
     `[${id} could not be woken] ${why} It is still asleep and still holds everything it knew, and what you sent it is ` +
       'still queued unread. Its slot is free again: try agents action=message to="' +
       id +
       '" once more, or do that work another way.'
   );
-  const prime = primeAgent();
   prime.queue.push(report);
   recount(prime);
   logWarn(`multi-agent: could not wake ${id} — ${why}`);
@@ -2840,21 +3011,46 @@ export interface AliveResult {
  * governs how many chats this app will start, and refusing to recognise one that is already
  * working would only make its calls unattributable.
  */
-export function noteAgentAlive(conversationId: string | null | undefined, source: 'call' | 'page' = 'call'): AliveResult | null {
+export function noteAgentAlive(
+  conversationId: string | null | undefined,
+  source: 'call' | 'page' = 'page',
+): AliveResult | null {
   if (!run || !conversationId) return null;
   const agent = boundAgent(conversationId);
   if (!agent) return null;
+  return noteAgentAliveAgent(agent, source, `conversation ${conversationId}`);
+}
+
+/** First-hand model/tool activity under an admitted logical workstream. */
+export function noteAgentAliveForWorkstream(
+  workstreamId: string | null | undefined,
+): AliveResult | null {
+  if (!run || !workstreamId) return null;
+  const agent = boundAgentForWorkstream(workstreamId);
+  if (!agent) return null;
+  return noteAgentAliveAgent(agent, 'call', `workstream ${workstreamId}`);
+}
+
+function noteAgentAliveAgent(
+  agent: Agent,
+  source: 'call' | 'page',
+  sourceLabel: string,
+): AliveResult {
+  const activeRun = run;
+  if (!activeRun)
+    return { agentId: agent.info.id, revived: false, report: null };
   const now = Date.now();
   if (agent.info.role === 'prime') {
     agent.info.lastSeenAt = now;
     // The prime chat is back. Whether it was closed and reopened or merely lost its extension
     // for a moment, the run is attended again and nothing about it is abandoned.
-    const returned = run.primeGoneAt !== null || agent.info.state === 'detached';
+    const returned =
+      activeRun.primeGoneAt !== null || agent.info.state === 'detached';
     if (returned) {
-      run.primeGoneAt = null;
+      activeRun.primeGoneAt = null;
       agent.info.state = 'active';
       agent.info.detachedAt = null;
-      logInfo(`multi-agent: the prime chat ${conversationId} is back, so its run carries on`);
+      logInfo(`multi-agent: the prime ${sourceLabel} is active, so its run carries on`);
       changed();
     }
     return { agentId: agent.info.id, revived: returned, report: null };
@@ -2900,9 +3096,10 @@ export function noteAgentAlive(conversationId: string | null | undefined, source
   let report: AgentMessage | null = null;
   if (was === 'failed' || was === 'sleeping') {
     const how = source === 'page' ? 'reappeared in the browser' : 'made another tool call';
+    const prime = primeAgent();
     report = newMessage(
-      agent.info.id,
-      PRIME_ID,
+      agent,
+      prime,
       was === 'failed'
         ? `[${agent.info.id} is back] It was reported gone, but it is working again — it just ${how}. ` +
           'Ignore that earlier report: do not redo its work, and expect its result normally.'
@@ -2910,11 +3107,12 @@ export function noteAgentAlive(conversationId: string | null | undefined, source
           `stopped — it just ${how}. It is working, it holds its slot again, and its result will arrive the ` +
           'ordinary way. You do not need to wake it.'
     );
-    const prime = primeAgent();
     prime.queue.push(report);
     recount(prime);
   }
-  logInfo(`multi-agent: ${agent.info.id} revived from ${was} — conversation ${conversationId} is still alive (${source})`);
+  logInfo(
+    `multi-agent: ${agent.info.id} revived from ${was} — ${sourceLabel} is active (${source})`,
+  );
   changed();
   return { agentId: agent.info.id, revived: true, report };
 }
@@ -2925,6 +3123,15 @@ function boundAgent(conversationId: string): Agent | null {
   if (conversationId === run.primeConversationId) return run.agents.get(PRIME_ID) ?? null;
   for (const agent of run.agents.values()) {
     if (agent.info.conversationId === conversationId) return agent;
+  }
+  return null;
+}
+
+/** Every agent owned by a logical workstream, terminal ones included. */
+function boundAgentForWorkstream(workstreamId: string): Agent | null {
+  if (!run) return null;
+  for (const agent of run.agents.values()) {
+    if (agent.info.workstreamId === workstreamId) return agent;
   }
   return null;
 }
@@ -2951,6 +3158,28 @@ export function endedWorkerNotice(conversationId: string | null | undefined): st
     `${agent.info.result ? ` (${agent.info.result.slice(0, 200)})` : ''}. Nothing was run. Stop working and stop ` +
     'calling tools: the prime agent is not waiting for anything else from this chat, and anything you do here now is ' +
     'work nobody asked for.'
+  );
+}
+
+export function endedWorkerNoticeForWorkstream(
+  workstreamId: string | null | undefined,
+): string | null {
+  if (!workstreamId) return null;
+  const agent =
+    boundAgentForWorkstream(workstreamId) ??
+    dormantAgentForWorkstream(workstreamId)?.agent ??
+    null;
+  if (
+    !agent ||
+    agent.info.role !== 'worker' ||
+    !isOver(agent.info.state) ||
+    agent.info.revivable
+  )
+    return null;
+  return (
+    `WORKER_ENDED: ${agent.info.id} has already ${agent.info.state === 'finished' ? 'finished' : 'ended'} in this run` +
+    `${agent.info.result ? ` (${agent.info.result.slice(0, 200)})` : ''}. Nothing was run. Stop working and stop ` +
+    'calling tools: the prime agent is not waiting for anything else from this workstream, and anything you do here now is work nobody asked for.'
   );
 }
 
@@ -3100,11 +3329,10 @@ export function commitPrimeTransfer(fromConversationId: string, toConversationId
   if (!dormant?.transfer || dormant.transfer.from !== fromConversationId) return false;
   const prime = dormant.agents.get(PRIME_ID);
   if (!prime || conversationOwnedOutside(dormant.agents, fromConversationId, toConversationId)) return false;
-  dormantRuns.delete(fromConversationId);
   dormant.primeConversationId = toConversationId;
   prime.info.conversationId = toConversationId;
   dormant.transfer = null;
-  dormantRuns.set(toConversationId, dormant);
+  dormantRuns.set(dormant.primeWorkstreamId, dormant);
   logInfo(`multi-agent: dormant worker history moved from conversation ${fromConversationId} to ${toConversationId}`);
   changed();
   return true;
@@ -3117,8 +3345,6 @@ function conversationOwnedOutside(ownerAgents: Map<string, Agent>, fromConversat
     if (run.primeConversationId === toConversationId) return true;
     if ([...run.agents.values()].some((agent) => agent.info.conversationId === toConversationId)) return true;
   }
-  const existingDormant = dormantRuns.get(toConversationId);
-  if (existingDormant && existingDormant.agents !== ownerAgents) return true;
   for (const dormant of dormantRuns.values()) {
     if (dormant.agents === ownerAgents) continue;
     if ([...dormant.agents.values()].some((agent) => agent.info.conversationId === toConversationId)) return true;
@@ -3150,7 +3376,26 @@ export function dormantWorkerNotice(conversationId: string | null | undefined): 
   );
 }
 
-/** Any dormant worker conversation remains an identity fence, reusable or terminal. */
+export function dormantWorkerNoticeForWorkstream(
+  workstreamId: string | null | undefined,
+): string | null {
+  const found = dormantAgentForWorkstream(workstreamId);
+  const agent = found?.agent ?? null;
+  if (!agent || agent.info.role !== 'worker') return null;
+  if (isOver(agent.info.state)) {
+    return (
+      `WORKER_ENDED: ${agent.info.id} remains part of its prime's dormant worker history but is ${agent.info.state} and cannot act again. ` +
+      'Nothing was run. Stop working and return to the prime workstream.'
+    );
+  }
+  if (agent.info.state !== 'sleeping' || !agent.info.revivable) return null;
+  return (
+    `WORKER_SLEEPING: ${agent.info.id} belongs to dormant history owned by prime workstream ${found?.owner.primeWorkstreamId}. ` +
+    'Nothing was run. Stay stopped until that prime sends a new agents message into this worker.'
+  );
+}
+
+/** Any dormant worker conversation remains a browser-lifecycle fence, reusable or terminal. */
 export function hasDormantWorkerLeases(): boolean {
   for (const dormant of dormantRuns.values()) {
     if (
@@ -3206,11 +3451,10 @@ export function repairPrimeConversationAfterRecovery(
   const prime = dormant?.agents.get(PRIME_ID);
   if (!dormant || !prime || prime.info.conversationId !== fromConversationId) return false;
   if (conversationOwnedOutside(dormant.agents, fromConversationId, toConversationId)) return false;
-  dormantRuns.delete(fromConversationId);
   dormant.primeConversationId = toConversationId;
   prime.info.conversationId = toConversationId;
   dormant.transfer = null;
-  dormantRuns.set(toConversationId, dormant);
+  dormantRuns.set(dormant.primeWorkstreamId, dormant);
   logInfo(
     `multi-agent: recovery repaired dormant worker ownership from conversation ${fromConversationId} to ${toConversationId}`
   );
@@ -3264,7 +3508,7 @@ export function agentForConversation(conversationId: string): string | null {
 }
 
 /**
- * Exact conversation ownership for durable recording/presentation, active or dormant.
+ * Exact browser conversation routing for presentation/revival, active or dormant.
  *
  * This deliberately does not reactivate anything and is not a command-authority lookup. A
  * sleeping/terminal worker keeps the same recorder identity after its active run parks, while
@@ -3291,8 +3535,8 @@ export function agentInfoForOwnedConversation(conversationId: string): AgentInfo
  * This *is* the worker lifecycle transition. Called by the bridge when the extension
  * acknowledges the tab it opened — the one party that knows the mapping first-hand, and knows
  * it before the model in that tab has said anything — so by the time the worker reads its task
- * it is already an active member of the run and its later calls route by conversation alone.
- * Nothing is asked of the model to make that true.
+ * the app already knows which frontend presents that worker. Tool/provenance identity is still
+ * the worker's preallocated logical workstream, which the bootstrap requires it to claim.
  *
  * It can never move the prime: that binding is set once by `spawn` and moved only by an
  * authenticated transfer. It can never move a worker either — see
@@ -3336,17 +3580,14 @@ function activateWorker(agent: Agent, conversationId: string): boolean {
 /**
  * The one place a worker's conversation is ever set. Exactly once, and to a free chat.
  *
- * Two invariants, both load-bearing for identity:
+ * Two invariants, both load-bearing for browser routing:
  *
  *   *One binding per slot.* A worker already running in a conversation stays there. Every
- *   later report of a different chat is either a mistake or someone else's tab, and honouring
- *   it would point the worker's messages, its recorded events and its workspace at a chat
- *   that is not doing the work — while the chat that *is* doing it stops being recognised at
- *   all. A binding is only re-set to the identical value, which is a no-op.
+ *   later report of a different chat is either a mistake or someone else's tab. A binding is
+ *   only re-set to the identical value, which is a no-op.
  *
  *   *One slot per conversation.* A conversation already holding the prime or another live
- *   worker cannot be bound again, or one chat would answer to two identities and
- *   {@link agentForConversation} would file its work under whichever it found first.
+ *   worker cannot be bound again, or revival/page-lifecycle events would become ambiguous.
  *
  * The second check counts finished workers too. Their chats are tombstones: still readable,
  * never re-usable, and a new worker inheriting one would make the transcript of a worker that
@@ -3385,9 +3626,10 @@ export function resetSwarm(): void {
   let retiredDormant = false;
   for (const dormant of dormantRuns.values()) {
     for (const agent of dormant.agents.values()) {
-      if (agent.info.role !== 'worker' || !agent.info.conversationId) continue;
-      retiredWorkers.set(agent.info.conversationId, {
+      if (agent.info.role !== 'worker') continue;
+      retiredWorkers.set(agent.info.workstreamId, {
         id: agent.info.id,
+        workstreamId: agent.info.workstreamId,
         conversationId: agent.info.conversationId,
         reason,
         retiredAt
@@ -3494,19 +3736,19 @@ export function clearAgent(id: string): ClearResult {
 // -------------------------------------------------------------- persistence
 
 export interface RetiredWorkersSnapshot {
-  version: 1;
+  version: 2;
   savedAt: number;
   workers: RetiredChat[];
 }
 
 export function snapshotRetiredWorkers(): RetiredWorkersSnapshot {
   pruneRetiredWorkers();
-  return { version: 1, savedAt: Date.now(), workers: [...retiredWorkers.values()].map((worker) => ({ ...worker })) };
+  return { version: 2, savedAt: Date.now(), workers: [...retiredWorkers.values()].map((worker) => ({ ...worker })) };
 }
 
 export function restoreRetiredWorkers(snapshot: RetiredWorkersSnapshot | null): void {
   retiredWorkers.clear();
-  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.workers)) return;
+  if (!snapshot || snapshot.version !== 2 || !Array.isArray(snapshot.workers)) return;
   const cutoff = Date.now() - RETIRED_WORKER_TTL_MS;
   // Every still-live lease is authority state. The old `slice(-64)` matched the previous
   // lifetime worker-id ceiling, but histories are now intentionally unbounded; after explicit
@@ -3516,15 +3758,17 @@ export function restoreRetiredWorkers(snapshot: RetiredWorkersSnapshot | null): 
     if (
       !worker ||
       typeof worker.id !== 'string' ||
-      typeof worker.conversationId !== 'string' ||
-      !worker.conversationId ||
+      typeof worker.workstreamId !== 'string' ||
+      !worker.workstreamId ||
+      (worker.conversationId !== null &&
+        typeof worker.conversationId !== 'string') ||
       typeof worker.reason !== 'string' ||
       !Number.isFinite(worker.retiredAt) ||
       worker.retiredAt < cutoff
     ) {
       continue;
     }
-    retiredWorkers.set(worker.conversationId, { ...worker });
+    retiredWorkers.set(worker.workstreamId, { ...worker });
   }
 }
 
@@ -3533,8 +3777,8 @@ export function restoreRetiredWorkers(snapshot: RetiredWorkersSnapshot | null): 
  *
  * Agent state and unacknowledged messages are the parts that cannot be reconstructed: the
  * session log is the audit trail, but it does not know which messages were still in flight.
- * Nothing here is a credential: an agent is the conversation it runs in, and that id is
- * recorded on purpose.
+ * Agent authority is the persisted logical workstream id. Conversation ids are retained only
+ * as browser-routing/lifecycle metadata for reopen, revival and presentation.
  */
 interface SerializedAgent {
   info: AgentInfo;
@@ -3542,6 +3786,7 @@ interface SerializedAgent {
 }
 
 interface DormantRunSnapshot {
+  primeWorkstreamId: string;
   primeConversationId: string;
   startedAt: number;
   parkedAt: number;
@@ -3550,15 +3795,15 @@ interface DormantRunSnapshot {
 
 export interface SwarmSnapshot {
   /**
-   * 5 = one optional active incarnation plus every durable dormant prime-owned history.
-   * Version 4 is accepted on restore and migrated as a single active incarnation; versions
-   * before 4 are discarded because their worker identity depended on routing codes this build
-   * cannot honour.
+   * 6 = logical workstream ownership for prime/workers plus browser conversation routing.
+   * Earlier snapshots are discarded because they persisted conversation ids as agent identity,
+   * which cannot be migrated without reintroducing browser inference.
    */
-  version: 4 | 5;
+  version: 6;
   savedAt: number;
   /** Top-level fields are the active incarnation; all are null/empty while only history remains. */
   runId: string | null;
+  primeWorkstreamId: string | null;
   primeConversationId: string | null;
   startedAt: number | null;
   agents: SerializedAgent[];
@@ -3587,13 +3832,15 @@ function buildSwarmSnapshot(includeUnpublished: boolean): SwarmSnapshot | null {
   const dormant = [...dormantRuns.values()];
   if (!active && dormant.length === 0) return null;
   return {
-    version: 5,
+    version: 6,
     savedAt: Date.now(),
     runId: active?.runId ?? null,
+    primeWorkstreamId: active?.primeWorkstreamId ?? null,
     primeConversationId: active?.primeConversationId ?? null,
     startedAt: active?.startedAt ?? null,
     agents: active ? serializeAgents(active.agents, includeUnpublished) : [],
     dormantRuns: dormant.map((history) => ({
+      primeWorkstreamId: history.primeWorkstreamId,
       primeConversationId: history.primeConversationId,
       startedAt: history.startedAt,
       parkedAt: history.parkedAt,
@@ -3674,30 +3921,64 @@ export function restoreSwarm(snapshot: SwarmSnapshot | null): void {
   persistedCriticalRevision = 0;
   criticalPersistFlight = null;
   if (!snapshot || !Array.isArray(snapshot.agents)) return;
-  if (snapshot.version !== 4 && snapshot.version !== 5) {
-    logInfo('multi-agent: discarded a run saved by an older build — spawn again to start a new one.');
+  if (snapshot.version !== 6) {
+    logInfo(
+      'multi-agent: discarded a legacy conversation-owned swarm snapshot — spawn again under claimed workstream identity.',
+    );
     return;
   }
   let repaired = false;
+  const occupiedWorkstreams = new Set<string>();
   const occupiedConversations = new Set<string>();
 
-  const acceptOwner = (primeConversationId: string, agents: Map<string, Agent>): boolean => {
+  const acceptOwner = (
+    primeWorkstreamId: string,
+    primeConversationId: string,
+    agents: Map<string, Agent>,
+  ): boolean => {
     const prime = agents.get(PRIME_ID);
-    if (!prime || prime.info.role !== 'prime' || prime.info.conversationId !== primeConversationId) return false;
-    const local = new Set<string>([primeConversationId]);
+    if (
+      !prime ||
+      prime.info.role !== 'prime' ||
+      prime.info.workstreamId !== primeWorkstreamId ||
+      prime.info.conversationId !== primeConversationId
+    )
+      return false;
+    const localWorkstreams = new Set<string>();
+    const localConversations = new Set<string>();
     for (const agent of agents.values()) {
-      if (agent.info.id === PRIME_ID || !agent.info.conversationId) continue;
-      if (local.has(agent.info.conversationId) || occupiedConversations.has(agent.info.conversationId)) return false;
-      local.add(agent.info.conversationId);
+      if (
+        !agent.info.workstreamId ||
+        localWorkstreams.has(agent.info.workstreamId) ||
+        occupiedWorkstreams.has(agent.info.workstreamId)
+      )
+        return false;
+      localWorkstreams.add(agent.info.workstreamId);
+      if (!agent.info.conversationId) continue;
+      if (
+        localConversations.has(agent.info.conversationId) ||
+        occupiedConversations.has(agent.info.conversationId)
+      )
+        return false;
+      localConversations.add(agent.info.conversationId);
     }
-    if (occupiedConversations.has(primeConversationId)) return false;
-    for (const conversationId of local) occupiedConversations.add(conversationId);
+    for (const workstreamId of localWorkstreams)
+      occupiedWorkstreams.add(workstreamId);
+    for (const conversationId of localConversations)
+      occupiedConversations.add(conversationId);
     return true;
   };
 
-  if (snapshot.version === 5 && Array.isArray(snapshot.dormantRuns)) {
+  if (Array.isArray(snapshot.dormantRuns)) {
     for (const saved of snapshot.dormantRuns) {
-      if (!saved || typeof saved.primeConversationId !== 'string' || !saved.primeConversationId || !Array.isArray(saved.agents)) {
+      if (
+        !saved ||
+        typeof saved.primeWorkstreamId !== 'string' ||
+        !saved.primeWorkstreamId ||
+        typeof saved.primeConversationId !== 'string' ||
+        !saved.primeConversationId ||
+        !Array.isArray(saved.agents)
+      ) {
         repaired = true;
         continue;
       }
@@ -3710,12 +3991,21 @@ export function restoreSwarm(snapshot: SwarmSnapshot | null): void {
         logWarn(`multi-agent: discarded invalid dormant history for ${saved.primeConversationId} with a live worker`);
         continue;
       }
-      if (!acceptOwner(saved.primeConversationId, restored.agents)) {
+      if (
+        !acceptOwner(
+          saved.primeWorkstreamId,
+          saved.primeConversationId,
+          restored.agents,
+        )
+      ) {
         repaired = true;
-        logWarn(`multi-agent: discarded conflicting dormant history for ${saved.primeConversationId}`);
+        logWarn(
+          `multi-agent: discarded conflicting dormant history for workstream ${saved.primeWorkstreamId}`,
+        );
         continue;
       }
-      dormantRuns.set(saved.primeConversationId, {
+      dormantRuns.set(saved.primeWorkstreamId, {
+        primeWorkstreamId: saved.primeWorkstreamId,
         primeConversationId: saved.primeConversationId,
         startedAt: Number.isFinite(saved.startedAt) ? saved.startedAt : snapshot.savedAt || Date.now(),
         parkedAt: Number.isFinite(saved.parkedAt) ? saved.parkedAt : snapshot.savedAt || Date.now(),
@@ -3726,21 +4016,28 @@ export function restoreSwarm(snapshot: SwarmSnapshot | null): void {
   }
 
   const hasActive =
+    typeof snapshot.primeWorkstreamId === 'string' &&
+    Boolean(snapshot.primeWorkstreamId) &&
     typeof snapshot.primeConversationId === 'string' &&
     Boolean(snapshot.primeConversationId) &&
     typeof snapshot.runId === 'string' &&
     Boolean(snapshot.runId) &&
     Array.isArray(snapshot.agents);
-  if (snapshot.version === 4 && !hasActive) {
-    logInfo('multi-agent: discarded a version-4 run with no usable prime binding');
-    return;
-  }
   if (hasActive) {
+    const primeWorkstreamId = snapshot.primeWorkstreamId as string;
     const primeConversationId = snapshot.primeConversationId as string;
     const restored = deserializeAgents(snapshot.agents, snapshot.savedAt);
     repaired ||= restored.repaired;
-    if (!acceptOwner(primeConversationId, restored.agents)) {
-      logWarn(`multi-agent: discarded active run for ${primeConversationId} because its conversation ownership conflicted`);
+    if (
+      !acceptOwner(
+        primeWorkstreamId,
+        primeConversationId,
+        restored.agents,
+      )
+    ) {
+      logWarn(
+        `multi-agent: discarded active run for workstream ${primeWorkstreamId} because its ownership conflicted`,
+      );
       repaired = true;
     } else {
       const restoredRunId =
@@ -3754,6 +4051,7 @@ export function restoreSwarm(snapshot: SwarmSnapshot | null): void {
       }
       run = {
         runId: restoredRunId,
+        primeWorkstreamId,
         primeConversationId,
         startedAt: Number.isFinite(snapshot.startedAt) ? (snapshot.startedAt as number) : snapshot.savedAt || Date.now(),
         agents: restored.agents,
@@ -3796,7 +4094,12 @@ function deserializeAgents(entries: readonly SerializedAgent[], savedAt: number)
   const agents = new Map<string, Agent>();
   let repaired = false;
   for (const entry of entries) {
-    if (!entry?.info?.id || agents.has(entry.info.id)) {
+    if (
+      !entry?.info?.id ||
+      agents.has(entry.info.id) ||
+      typeof entry.info.workstreamId !== 'string' ||
+      !entry.info.workstreamId
+    ) {
       repaired = true;
       continue;
     }

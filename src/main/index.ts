@@ -15,13 +15,9 @@ import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
 import { flushSessions, initSessionStore, pruneSessions } from './session/store.js';
 import {
   flushRecorder,
-  queueDeterministicAttributionRepair,
-  setAgentBinder,
-  setAgentConversationLookup
+  queueDeterministicAttributionRepair
 } from './session/recorder.js';
 import {
-  agentConversation,
-  bindConversation,
   onRetiredWorkersPersist,
   onRetiredWorkersPersistNow,
   onSwarmPersist,
@@ -238,10 +234,6 @@ void app.whenReady().then(async () => {
   // that was proved yesterday remains the same workflow today even if its ChatGPT tab closed.
   await restoreRequestCorrelations();
   if (windowActivation.isDisabled()) return;
-  setAgentConversationLookup(agentConversation);
-  // The prime's chat is the user's own, so no extension report can name it. It is bound
-  // when the recorder manages to place the prime's first call. See recordToolCall.
-  setAgentBinder(bindConversation);
   // Before anything can call an agent tool, and before a run is restored: the broker
   // decides whether a previous run has been abandoned partly from which ChatGPT tabs are
   // open, and without this it can only answer "I cannot see" — which it treats, on
