@@ -15,6 +15,8 @@ export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 /** A setup/reclaim is administrative, not substantive work. Give the model only enough time
  * to make its first ordinary claimed call before stale-work recovery remains eligible. */
 const WORKSTREAM_CLAIM_GRACE_MS = 30_000;
+/** Tool activity this recent proves a worker alive when only the observation of its turn ended. */
+const OBSERVATION_LOSS_ACTIVITY_MS = 2 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
 const MAX_RECOVERY_ATTEMPTS = RECOVERY_BACKOFF_MS.length;
 export const workstreamIdSchema = z
@@ -650,6 +652,16 @@ export async function scheduleWorkstreamAfterTurn(
     if (
       !row ||
       (row.lastAdvancedTurnId === turnId && time <= row.lastAdvancedTurnTime)
+    )
+      return false;
+    // These outcomes say the app lost sight of the turn (a tab closed or reloaded, another tab
+    // took over observing it, or the page could not classify the boundary), not that ChatGPT
+    // ended it badly. While the worker is visibly working, recovering would press Stop on a
+    // live turn; a real stall still surfaces through the five-minute lease.
+    if (
+      ["stalled", "observer_lost", "unknown"].includes(outcome) &&
+      (runningToolCallsForWorkstream(row.id) > 0 ||
+        now - row.lastActivity < OBSERVATION_LOSS_ACTIVITY_MS)
     )
       return false;
 

@@ -6246,20 +6246,30 @@ async function bindSentFreshCommand(command: Command): Promise<boolean> {
  */
 const TAB_REAP_GRACE_MS = 60_000;
 const TAB_REOPEN_WINDOW_MS = 5 * 60_000;
+const TAB_BLANK_DEAD_MS = 3 * 60_000;
+const tabBlankSince = new Map<string, number>();
 const tabOpenedFor = new Map<string, number>();
 const tabFirstSeen = new Map<string, number>();
 async function reapBrowserTabs(now = Date.now()): Promise<void> {
   if (!browserTabs) return;
-  const tabs = (await browserTabs.list()).filter((tab) => {
+  const pages = await browserTabs.list();
+  const tabs = pages.filter((tab) => {
     try {
       return new URL(tab.url).hostname === "chatgpt.com";
     } catch {
       return false;
     }
   });
+  // CDP reports no URL for a page that is loading or whose renderer is stuck. Such a tab is
+  // undetermined: it may be a managed chat mid-reload, so it neither counts as missing nor as a
+  // leak until it has stayed blank past TAB_BLANK_DEAD_MS, when it is dead either way.
+  const blanks = pages.filter((tab) => tab.url === "" || tab.url === "about:blank");
   for (const id of [...tabFirstSeen.keys()])
-    if (!tabs.some((tab) => tab.id === id)) tabFirstSeen.delete(id);
+    if (!pages.some((tab) => tab.id === id)) tabFirstSeen.delete(id);
+  for (const id of [...tabBlankSince.keys()])
+    if (!blanks.some((tab) => tab.id === id)) tabBlankSince.delete(id);
   for (const tab of tabs) if (!tabFirstSeen.has(tab.id)) tabFirstSeen.set(tab.id, now);
+  for (const tab of blanks) if (!tabBlankSince.has(tab.id)) tabBlankSince.set(tab.id, now);
 
   const managed = new Set<string>(liveAgentConversations().map(currentBrowserRoute));
   for (const row of workstreamStatus())
@@ -6293,10 +6303,15 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
     if (why) leaks.push({ ...tab, why });
     else kept.add(conversation!);
   }
+  for (const tab of blanks) {
+    if (commandTargets.has(tab.id)) continue;
+    if (now - (tabBlankSince.get(tab.id) ?? now) >= TAB_BLANK_DEAD_MS)
+      leaks.push({ ...tab, why: "blank page for three minutes" });
+  }
   // The other half of the tally: a managed workstream chat with no tab cannot report its turn
   // boundaries, so completed turns never advance and stalls surface only through the lease.
   // Open it once per window; a revive's own command tab supersedes this one if both exist.
-  if (openInBrowser)
+  if (openInBrowser && blanks.every((tab) => leaks.some((leak) => leak.id === tab.id)))
     for (const row of workstreamStatus()) {
       const conversation = row.conversationId ? currentBrowserRoute(row.conversationId) : null;
       if (
@@ -6318,6 +6333,7 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
   for (const leak of leaks) {
     await browserTabs.close(leak.id);
     tabFirstSeen.delete(leak.id);
+    tabBlankSince.delete(leak.id);
     logWarn(`tab reaper: closed ${leak.url} (${leak.why})`);
   }
   if (leaks.length > 0)
