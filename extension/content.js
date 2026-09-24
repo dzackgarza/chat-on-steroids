@@ -8561,7 +8561,7 @@
     // A marker-bearing fresh tab may already have a /c/<uuid> even though ChatGPT has not
     // accepted any user message. That preallocated route is transport state, not evidence that
     // the command was redirected into an existing chat. Existing authored chats remain revivals.
-    const openedConversation =
+    let openedConversation =
       openingRoute && (!fromUrl || openingHasAuthoredConversation)
         ? openingRoute
         : null;
@@ -8670,6 +8670,16 @@
     if (!fromUrl && !target) {
       // Only a command that names a conversation is ever handed to an existing document.
       return void (await fail('it was offered to a chat that already exists and it does not name one'));
+    }
+    // The app opens a revival at exactly `/c/<target>`; fresh commands open at `/` and name no
+    // target. So a page whose own opening route is the chat the redeemed command names is that
+    // chat, whatever it has rendered: a stalled chat that ended in a ChatGPT error can show no
+    // transcript at all. Run the same submit-readiness wait a recognised revival gets.
+    if (fromUrl && target && !openedConversation && openingRoute === target) {
+      openedConversation = target;
+      preallocatedFreshConversation = null;
+      if (attempt) attempt.step = 'revival-submit-ready';
+      if (!(await waitForRevivalSubmitReady(target, attempt))) return;
     }
     if (target && openedConversation !== target) {
       return void (await fail(
