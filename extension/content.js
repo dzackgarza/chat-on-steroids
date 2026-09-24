@@ -1730,7 +1730,16 @@
         // clean. The order matters — what the old chat left on screen is retired before
         // the new id is adopted, because from the next line onwards everything emitted
         // carries that id.
-        void ask({ type: 'closed', conversationId });
+        const previousId = conversationId;
+        if (/^WEB:/i.test(previousId) && !/^WEB:/i.test(id)) {
+          // ChatGPT's own rewrite of a provisional WEB:<uuid> route to the server id is the
+          // same chat. Bind the server id while the tab still records the WEB route, so the
+          // service worker reports the promotion; `closed` first erased that record and
+          // silently left the controller on a route the backend rejects.
+          void bindConversation(id).finally(() => ask({ type: 'closed', conversationId: previousId }));
+        } else {
+          void ask({ type: 'closed', conversationId });
+        }
         retireVisible(turnsNow());
         epoch++;
         conversationId = id;
