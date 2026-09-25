@@ -45,6 +45,24 @@ work behind its single worker and give it the whole sequence, so it never idles 
 stages waiting to be told what is next. If a second task genuinely cannot wait, it needs a
 separate clone that nothing else touches — not a second chat on the same checkout.
 
+**Escape hatch: a stream's own subagents.** The rule counts streams, not chats. When a
+repository's single managed stream spawns workers through `agents action=spawn`, those workers
+are that stream's execution lanes, not second streams, and may work in the same checkout. The
+prime stays the one stream the steward drives, and it owns what the rule otherwise protects:
+
+- It dispatches from its repository's plan/DAG with explicit, disjoint path ownership per
+  worker. Shared surfaces — the TODO/DAG, generated indexes and frontiers, ledgers — stay with
+  the prime.
+- Workers commit only their owned paths, by explicit pathspec, and never reset, checkout,
+  stash, clean, switch branches or reformat beyond their paths.
+- Heavyweight validation (Lean elaboration, Sage/pytest suites) runs one at a time through the
+  prime's integration lane.
+- The prime integrates and verifies before closing a node; a worker's report is not acceptance.
+
+A second *independent* stream on the same repository still needs its own clone. The app grants
+one active swarm run at a time fleet-wide (AGENTS.md §16), so only one stream can hold this
+width at once.
+
 **Width is capped by what the control path can actually feed, not by the work
 available.** A stream that cannot be reached is not a stream. Every send opens a command
 tab and counts against every other chat's `pendingTools`, so pushing harder across more

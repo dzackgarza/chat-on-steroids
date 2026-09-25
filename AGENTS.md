@@ -3521,7 +3521,10 @@ Consult when an instrument is about to change what you do. None of it is the job
   Exact-current-head behavioral acceptance is the current completion frontier, followed by
   final framework delivery. Publication remains independent of these completion nodes.
 
-One stream per repository; width is across repositories, never within one.
+One stream per repository; width is across repositories, never within one. The exception is a
+stream's own subagents: workers its prime spawns through `agents action=spawn`, dispatched with
+disjoint path ownership and one integration lane, are that stream's lanes rather than second
+streams ([escape hatch](./FANOUT-SCHEDULE.md)).
 [`FANOUT-SCHEDULE.md`](./FANOUT-SCHEDULE.md) holds the partition analysis and the unlock
 triggers. Send messages per [What to send them](#what-to-send-them).
 
