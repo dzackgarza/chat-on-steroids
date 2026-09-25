@@ -4002,6 +4002,10 @@ async function handle(
     if (receipt.conversationId)
       receipt.conversationId = currentBrowserRoute(receipt.conversationId);
     if (receipt.committed && receipt.conversationId) {
+      if (command.spec.type === "send" && command.spec.conversationId === null) {
+        freshChatBackoff.strikes = 0;
+        freshChatBackoff.until = 0;
+      }
       await bindCommandConversationKey(command.id, receipt.conversationId);
       await bindWorkstreamFrontend(command.id, receipt.conversationId);
       // Send-origin evidence (session/send-origin.ts): every committed ACK that names a
@@ -5618,6 +5622,39 @@ const WORKSTREAM_ACTION_MAX_MS = 5 * 60_000;
  */
 const WORKSTREAM_RATE_LIMIT_BACKOFF_MS = 45_000;
 const WORKSTREAM_RATE_LIMIT_JITTER_MS = 30_000;
+const FRESH_CHAT_BACKOFF_MAX_MS = 5 * 60_000;
+/**
+ * Fleet-wide hold on opening fresh chats after ChatGPT throttles one. Per-workstream holds let
+ * three stalled workstreams retry in turn every ~26 s and keep the account at 429 for 15+
+ * minutes (2026-09-25 19:40-19:55). One shared, escalating hold (45 s, doubling to 5 min,
+ * jittered) stops the burst; the first accepted fresh chat clears it.
+ */
+const freshChatBackoff = { until: 0, strikes: 0 };
+
+/** Whether a failed fresh-chat receipt is ChatGPT backpressure rather than a page defect. */
+function freshChatThrottled(error: string | null | undefined): boolean {
+  const text = error ?? "";
+  return (
+    text.includes("chatgpt_rate_limited") ||
+    // Under a 429 the new composer accepts the click and silently keeps the text: no notice,
+    // no navigation, send button enabled.
+    text.includes("did not accept the bootstrap send") ||
+    text.includes("never exposed a usable composer")
+  );
+}
+
+function strikeFreshChatBackoff(now: number): number {
+  freshChatBackoff.strikes += 1;
+  const delay = Math.min(
+    FRESH_CHAT_BACKOFF_MAX_MS,
+    WORKSTREAM_RATE_LIMIT_BACKOFF_MS * 2 ** (freshChatBackoff.strikes - 1),
+  );
+  freshChatBackoff.until = Math.max(
+    freshChatBackoff.until,
+    now + delay + Math.floor(Math.random() * WORKSTREAM_RATE_LIMIT_JITTER_MS),
+  );
+  return freshChatBackoff.until;
+}
 function workstreamCommandCurrent(command: Command): boolean {
   if (
     command.spec.type !== "send" ||
@@ -5784,21 +5821,19 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         if (row.phase === "opening" && receipt && !receipt.committed) {
           if (actionId.startsWith("replace-")) {
             if (row.autoAdvance) {
-              const rateLimited =
-                receipt.error?.includes("chatgpt_rate_limited") === true;
+              const rateLimited = freshChatThrottled(receipt.error);
+              const retryAt = rateLimited
+                ? strikeFreshChatBackoff(now)
+                : now + RECOVERY_BACKOFF_MS[0];
               await retryFailedWorkstreamReplacementDelivery(
                 row.id,
                 actionId,
                 row.commandId,
-                now +
-                  (rateLimited
-                    ? WORKSTREAM_RATE_LIMIT_BACKOFF_MS +
-                      Math.floor(Math.random() * WORKSTREAM_RATE_LIMIT_JITTER_MS)
-                    : RECOVERY_BACKOFF_MS[0]),
+                retryAt,
               );
               if (rateLimited)
                 logWarn(
-                  `workstream ${row.id}: ChatGPT rate-limited fresh replacement; holding the same replacement action about a minute`,
+                  `workstream ${row.id}: ChatGPT throttled a fresh chat; holding all fresh chats ${Math.round((retryAt - now) / 1000)}s (strike ${freshChatBackoff.strikes})`,
                 );
             } else {
               await blockWorkstreamAction(
@@ -5856,6 +5891,7 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         (command) =>
           command.spec.type === "send" && command.spec.nonce === actionId,
       );
+      if (!existing && row.phase === "opening" && now < freshChatBackoff.until) continue;
       if (!existing && row.phase !== "opening" && row.conversationId)
         workstreamPushAt.set(currentBrowserRoute(row.conversationId), now);
       const command =
