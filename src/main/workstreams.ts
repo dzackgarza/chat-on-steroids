@@ -11,7 +11,13 @@ import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
 
-export const WORKSTREAM_LEASE_MS = 5 * 60_000;
+/**
+ * Silence that counts as a stall. The managed model rarely thinks for more than two minutes
+ * without acting; longer is a backend stall or a spiral, not work. A running tool call holds
+ * the lease open (the separate five-minute action ceiling bounds it), and thought-summary rows
+ * do not renew it, so a model narrating its own spiral still reads as stalled.
+ */
+export const WORKSTREAM_LEASE_MS = 2 * 60_000;
 /** A setup/reclaim is administrative, not substantive work. Give the model only enough time
  * to make its first ordinary claimed call before stale-work recovery remains eligible. */
 const WORKSTREAM_CLAIM_GRACE_MS = 30_000;
@@ -607,6 +613,8 @@ export function observeWorkstreamMessages(
       item.text.startsWith("Continue workstream ")
     )
       continue;
+    // Thought summaries are the model narrating, not acting: a spiral produces them steadily.
+    if (item.kind === "page_tool" && item.messageId.startsWith("thought-")) continue;
     const id = `${item.kind}:${item.messageId}`;
     const digest = createHash("sha256").update(item.text).digest("hex");
     const previous = row.observations[id];
@@ -884,7 +892,8 @@ export async function nextWorkstreamActions(
       }
       if (
         row.phase === "advancing" &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS
+        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
+        runningToolCallsForWorkstream(row.id) === 0
       ) {
         row.phase = "recovering";
         row.attempts = 0;
@@ -908,7 +917,8 @@ export async function nextWorkstreamActions(
       if (
         row.phase === "active" &&
         now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
-        now >= row.nextCheck
+        now >= row.nextCheck &&
+        runningToolCallsForWorkstream(row.id) === 0
       ) {
         row.phase = "recovering";
         row.nextCheck = now;

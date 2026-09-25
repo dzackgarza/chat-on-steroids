@@ -488,8 +488,11 @@ reservation, and then kernel dispatch. A stale connector schema must be refreshe
 
 ### Workstream leases and automatic recovery
 
-`workstreams.ts` owns durable exclusive claims for every logical workstream. Five minutes
-without new substantive tool/chat activity permits immediate recovery/takeover. A new claim
+`workstreams.ts` owns durable exclusive claims for every logical workstream. Two minutes
+without a tool call, message or worker-started turn permits immediate recovery/takeover; a
+running tool call holds the lease (the five-minute action ceiling bounds it) and thought-summary
+rows never renew it. Recovery on a page that is still reporting presses Stop and continues in
+place; only a page that has stopped reporting is reloaded first. A new claim
 invalidates the old opaque token and cancels pending recovery; retained terminals owned by
 the old claim are stopped and already-admitted old calls must settle before successor
 execution. Browser polls and replayed observations are not activity. The app's own

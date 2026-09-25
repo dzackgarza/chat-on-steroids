@@ -343,6 +343,18 @@ const COMMAND_DEADLINE_MS = 90_000;
 const workstreamPushAt = new Map<string, number>();
 /** A turn_start this soon after the app's own workstream push is that push's echo. */
 const WORKSTREAM_PUSH_ECHO_MS = 2 * 60_000;
+/** A page that has reported within this window is alive; older silence means it is broken. */
+const PAGE_REPORTING_MS = 60_000;
+
+/** Whether the chat's page is still reporting to the recorder, i.e. alive rather than wedged. */
+function pageReporting(conversationId: string, now: number): boolean {
+  const state = conversationTurnState(conversationId);
+  return (
+    state.observerLostAt === null &&
+    state.lastContactAt !== null &&
+    now - state.lastContactAt < PAGE_REPORTING_MS
+  );
+}
 /** Controller-owned workstream sends are unattended; a slow exact-chat/fresh-chat open must
  * not turn a five-minute stall threshold into another multi-minute wait. */
 const WORKSTREAM_COMMAND_DEADLINE_MS = 60_000;
@@ -5847,12 +5859,13 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           text: workstreamPrompt(row),
           nonce: actionId,
           stopFirst: row.phase === "recovering",
-          // A chat silent for the whole lease usually has a broken page (ChatGPT's "Message
-          // delivery timed out" state, a frozen renderer). Stop without a reload could not type
-          // into it: on 2026-09-25 recovery pushes to sage, lean and new-qual-site all expired
-          // and fell through to replacement. Reload is the page repair; the stall already
-          // proved nothing live is lost by it.
-          reloadFirst: row.phase === "recovering",
+          // Two different stalls. A live page whose model has gone quiet is thinking or
+          // spiralling: press Stop and continue in place. A page that has stopped reporting is
+          // broken (ChatGPT's "Message delivery timed out" state, a frozen renderer) and cannot
+          // take the message without a reload; on 2026-09-25 stop-only pushes to such pages all
+          // expired and fell through to replacement.
+          reloadFirst:
+            row.phase === "recovering" && !pageReporting(row.conversationId!, now),
         });
       await persistConversationKeys();
       await writeDurableNow(COMMANDS_STATE, commandSnapshot());
