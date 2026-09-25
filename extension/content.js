@@ -161,11 +161,22 @@
       return RATE_LIMIT_ERRORS.some((fragment) => text.includes(fragment));
     };
     const found = CLF_DOM.errors ? CLF_DOM.errors() : [];
-    if (found.some((entry) => matches(entry && entry.text))) return true;
-    return CLF_DOM.blockingDialogText
-      ? matches(CLF_DOM.blockingDialogText())
-      : false;
+    const limited =
+      found.some((entry) => matches(entry && entry.text)) ||
+      (CLF_DOM.blockingDialogText ? matches(CLF_DOM.blockingDialogText()) : false);
+    // Acknowledge on sight: the throttle clears in about 30 s once dismissed, while an open
+    // notice blocks the composer until someone clicks it.
+    if (limited && CLF_DOM.acknowledgeBlockingDialog) CLF_DOM.acknowledgeBlockingDialog();
+    return limited;
   }
+  // A chat already open can be hit by the notice mid-turn; nothing else would dismiss it.
+  setInterval(() => {
+    try {
+      rateLimitError();
+    } catch {
+      /* the page is mid-navigation; the next tick checks again */
+    }
+  }, 5_000);
   /**
    * How long a tab the app opened for a command defers to a tab that already holds that chat.
    *
@@ -8884,8 +8895,16 @@
         CLF_DOM.sendDebug && typeof CLF_DOM.sendDebug === 'function'
           ? CLF_DOM.sendDebug()
           : null;
+      // The bridge keeps only the first 200 characters of a failure, so lead with the fields
+      // that discriminate a disabled or unfocused send from a slow acceptance.
       const diagnostic = detail
-        ? JSON.stringify(detail).slice(0, 320)
+        ? JSON.stringify({
+            sendButtonDisabled: detail.sendButtonDisabled,
+            sendButtonPresent: detail.sendButtonPresent,
+            activeComposer: detail.activeComposer,
+            composerChars: detail.composerChars,
+            ...detail
+          }).slice(0, 320)
         : 'no send diagnostic';
       return void (await fail(`ChatGPT did not accept the bootstrap send: ${diagnostic}`));
     }

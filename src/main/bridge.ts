@@ -5611,7 +5611,13 @@ export function queueWorkerRevival(
  */
 let workstreamSweep: Promise<void> | null = null;
 const WORKSTREAM_ACTION_MAX_MS = 5 * 60_000;
-const WORKSTREAM_RATE_LIMIT_BACKOFF_MS = 5 * 60_000;
+/**
+ * ChatGPT's request-rate notice clears about 30 s after it is acknowledged (the extension now
+ * acknowledges it on sight). Hold long enough to clear it, jittered per attempt so several
+ * workstreams limited together do not retry as one burst and re-trip it.
+ */
+const WORKSTREAM_RATE_LIMIT_BACKOFF_MS = 45_000;
+const WORKSTREAM_RATE_LIMIT_JITTER_MS = 30_000;
 function workstreamCommandCurrent(command: Command): boolean {
   if (
     command.spec.type !== "send" ||
@@ -5786,12 +5792,13 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
                 row.commandId,
                 now +
                   (rateLimited
-                    ? WORKSTREAM_RATE_LIMIT_BACKOFF_MS
+                    ? WORKSTREAM_RATE_LIMIT_BACKOFF_MS +
+                      Math.floor(Math.random() * WORKSTREAM_RATE_LIMIT_JITTER_MS)
                     : RECOVERY_BACKOFF_MS[0]),
               );
               if (rateLimited)
                 logWarn(
-                  `workstream ${row.id}: ChatGPT rate-limited fresh replacement; holding the same replacement action for five minutes`,
+                  `workstream ${row.id}: ChatGPT rate-limited fresh replacement; holding the same replacement action about a minute`,
                 );
             } else {
               await blockWorkstreamAction(

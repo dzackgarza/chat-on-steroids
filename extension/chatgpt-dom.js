@@ -1145,6 +1145,32 @@ var CLF_DOM = (() => {
     }, '');
   }
 
+  /**
+   * Clicks the acknowledgement on ChatGPT's own blocking dialog (never one of ours).
+   *
+   * ChatGPT's "You're making requests too quickly … temporarily limited access" notice clears
+   * within about 30 s once acknowledged; left open it blocks the composer indefinitely.
+   * Prefers an explicit acknowledgement label, else a dialog's only button.
+   */
+  function acknowledgeBlockingDialog() {
+    return safe(() => {
+      for (const node of document.querySelectorAll('[role="dialog"]')) {
+        if (node.closest && node.closest(OWN_SURFACES)) continue;
+        if (!displayed(node)) continue;
+        const buttons = [...node.querySelectorAll('button')].filter((b) => displayed(b) && !b.disabled);
+        const label = (b) => (b.innerText || b.getAttribute('aria-label') || '').trim();
+        const ack =
+          buttons.find((b) => /^(got it|ok|okay|close|dismiss|continue|try again)$/i.test(label(b))) ||
+          (buttons.length === 1 ? buttons[0] : null);
+        if (ack) {
+          ack.click();
+          return true;
+        }
+      }
+      return false;
+    }, false);
+  }
+
   // ChatGPT serves two composer builds at once. The older one carries #prompt-textarea; the home
   // page rolled out 2026-09-25 renders a ProseMirror textbox with no id inside
   // form[data-chatgpt-composer]. Matching only the id left every fresh chat with "no usable
@@ -1608,6 +1634,7 @@ var CLF_DOM = (() => {
   }
 
   return {
+    acknowledgeBlockingDialog,
     conversationId,
     conversationTitle,
     turns,
