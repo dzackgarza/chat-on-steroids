@@ -1575,7 +1575,11 @@ var CLF_DOM = (() => {
           characterData: true,
           attributes: true
         });
-        timer = setTimeout(() => finish(false), 3000);
+        // Acceptance is observed, so a long window only delays a genuine failure. The home
+        // composer rolled out 2026-09-25 takes ~6 s to show acceptance (it navigates to the new
+        // /c/ route first); a 3 s window reported every real send as not-accepted, the app
+        // opened another chat, and each retry created one more real conversation.
+        timer = setTimeout(() => finish(false), 20000);
 
         try {
           const button = document.querySelector(SEND);
