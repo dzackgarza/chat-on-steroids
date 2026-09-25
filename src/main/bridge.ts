@@ -5830,7 +5830,12 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           text: workstreamPrompt(row),
           nonce: actionId,
           stopFirst: row.phase === "recovering",
-          reloadFirst: false,
+          // A chat silent for the whole lease usually has a broken page (ChatGPT's "Message
+          // delivery timed out" state, a frozen renderer). Stop without a reload could not type
+          // into it: on 2026-09-25 recovery pushes to sage, lean and new-qual-site all expired
+          // and fell through to replacement. Reload is the page repair; the stall already
+          // proved nothing live is lost by it.
+          reloadFirst: row.phase === "recovering",
         });
       await persistConversationKeys();
       await writeDurableNow(COMMANDS_STATE, commandSnapshot());
