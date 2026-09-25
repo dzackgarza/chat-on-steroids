@@ -19,7 +19,20 @@ import { startMcpServer, tunnelProbeHeaders, type McpEndpoint } from './mcp/serv
 import { startTunnel, type TunnelHandle } from './tunnel/index.js';
 import { initSessionStore } from './session/store.js';
 import { restoreRequestCorrelations } from './session/correlation.js';
-import { initDurableStore } from './durable.js';
+import { initDurableStore, readDurable, writeDurableNow, writeDurableSoon } from './durable.js';
+import {
+  onRetiredWorkersPersist,
+  onRetiredWorkersPersistNow,
+  onSwarmPersist,
+  onSwarmPersistNow,
+  pauseSwarmForDisable,
+  restoreRetiredWorkers,
+  restoreSwarm,
+  snapshotRetiredWorkers,
+  snapshotSwarm,
+  type RetiredWorkersSnapshot,
+  type SwarmSnapshot
+} from './agents.js';
 import { APP_VERSION } from './version.js';
 import { setBrowserCloser, setBrowserOpener, setBrowserTabs, shutdownBridge, startBridge } from './bridge.js';
 import { restoreSleepWake, setSleepWakeDriver, sleepWakeSettings } from './session/sleep-wake.js';
@@ -246,6 +259,20 @@ async function main(): Promise<void> {
   await restoreSleepWake();
   if (sleepWakeSettings().enabled) {
     console.log('Sleep/wake tab architecture is ENABLED (sleepWake.enabled in config.json).');
+  }
+
+  // The headless daemon never wired the broker's persistence, so every agents action=spawn
+  // failed its durable acceptance barrier (persistCriticalSwarmNow() had no sink) and no run
+  // could survive a restart. Mirror index.ts: sinks from startup, then restore before the bridge.
+  onSwarmPersist(() => writeDurableSoon('swarm', snapshotSwarm()));
+  onSwarmPersistNow((snapshot) => writeDurableNow('swarm', snapshot));
+  onRetiredWorkersPersist(() => writeDurableSoon('retired-workers', snapshotRetiredWorkers()));
+  onRetiredWorkersPersistNow((snapshot) => writeDurableNow('retired-workers', snapshot));
+  restoreRetiredWorkers(await readDurable<RetiredWorkersSnapshot>('retired-workers'));
+  restoreSwarm(await readDurable<SwarmSnapshot>('swarm'));
+  if (!getConfig().multiAgent.enabled) {
+    pauseSwarmForDisable('multi-agent mode is disabled');
+    await writeDurableNow('swarm', snapshotSwarm());
   }
 
   const bridgePort = await startBridge();
