@@ -6319,9 +6319,17 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
       conversation !== null &&
       keptByCommand.has(conversation) &&
       conversationTurnState(conversation)?.generating === true;
+    // A tab whose chat has an open turn is live work, not a leak, whatever the row table says
+    // yet. sage-categories' replacement started its turn in WEB:ae891aaf at 09:18:02 on
+    // 2026-09-25 before its row bound that route; this reaper closed it at 09:23:08 as
+    // unmanaged, and the workstream sat dead until the lease opened another chat at 09:36.
+    const openTurn =
+      conversation !== null &&
+      (conversationTurnState(conversation)?.generating === true ||
+        (shown !== null && conversationTurnState(shown)?.generating === true));
     const why = !conversation
       ? "no conversation and no command"
-      : !managed.has(conversation)
+      : !managed.has(conversation) && !openTurn
         ? "conversation is not managed"
         : kept.has(conversation) && !coveredOnlyByCommand
           ? "duplicate tab"
