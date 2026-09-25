@@ -6288,29 +6288,49 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
     commands.map((command) => commandTabTargets.get(command.id)).filter(Boolean),
   );
   const kept = new Set<string>();
+  const keptByCommand = new Set<string>();
   const leaks: Array<{ id: string; url: string; why: string }> = [];
-  // Command tabs first, so a chat being revived keeps the tab the command is working in.
+  // Command tabs first, so a chat being revived keeps the tab the command is working in. Plain
+  // tabs newest first: once a command ends, the tab it opened loaded the chat last and is the one
+  // showing its current turn, so an older duplicate is the stale view.
   const ordered = [
     ...tabs.filter((tab) => commandTargets.has(tab.id)),
-    ...tabs.filter((tab) => !commandTargets.has(tab.id)),
+    ...tabs
+      .filter((tab) => !commandTargets.has(tab.id))
+      .sort((a, b) => (tabFirstSeen.get(b.id) ?? now) - (tabFirstSeen.get(a.id) ?? now)),
   ];
   for (const tab of ordered) {
     const shown = tabConversation(tab.url);
     const conversation = shown ? currentBrowserRoute(shown) : null;
     if (commandTargets.has(tab.id)) {
-      if (conversation) kept.add(conversation);
+      if (conversation) {
+        kept.add(conversation);
+        keptByCommand.add(conversation);
+      }
       continue;
     }
     if (now - (tabFirstSeen.get(tab.id) ?? now) < TAB_REAP_GRACE_MS) continue;
+    // A command tab opened into a chat whose turn is running has not taken that turn over: the
+    // page will not type until the turn ends, and the command may still expire. Closing the tab
+    // already observing the turn in its favour left sage-categories with no observer mid-turn on
+    // 2026-09-25 (closed 01:40:08, command expired 01:40:38, turn detached 01:41:28). Keep one
+    // plain tab beside the command tab until the turn ends.
+    const coveredOnlyByCommand =
+      conversation !== null &&
+      keptByCommand.has(conversation) &&
+      conversationTurnState(conversation)?.generating === true;
     const why = !conversation
       ? "no conversation and no command"
       : !managed.has(conversation)
         ? "conversation is not managed"
-        : kept.has(conversation)
+        : kept.has(conversation) && !coveredOnlyByCommand
           ? "duplicate tab"
           : null;
     if (why) leaks.push({ ...tab, why });
-    else kept.add(conversation!);
+    else {
+      kept.add(conversation!);
+      keptByCommand.delete(conversation!);
+    }
   }
   for (const tab of blanks) {
     if (commandTargets.has(tab.id)) continue;
