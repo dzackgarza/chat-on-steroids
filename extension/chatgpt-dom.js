@@ -1564,7 +1564,8 @@ var CLF_DOM = (() => {
         return false;
       };
 
-      return await new Promise((resolve) => {
+      // Async executor: the send path awaits the send control becoming live before clicking.
+      return await new Promise(async (resolve) => {
         let done = false;
         let observer = null;
         let timer = null;
@@ -1605,10 +1606,23 @@ var CLF_DOM = (() => {
         // composer rolled out 2026-09-25 takes ~6 s to show acceptance (it navigates to the new
         // /c/ route first); a 3 s window reported every real send as not-accepted, the app
         // opened another chat, and each retry created one more real conversation.
-        timer = setTimeout(() => finish(false), 20000);
+        timer = setTimeout(() => finish(false), 30000);
 
         try {
-          const button = document.querySelector(SEND);
+          // The home composer rolled out 2026-09-25 renders before its send control is live: the
+          // button stays disabled for a moment after text is inserted, and the Enter fallback
+          // below is an untrusted event ChatGPT ignores. Every workstream bootstrap typed into
+          // that window and sat unsent. Wait for the button to enable before choosing a path.
+          const enabledSend = () => {
+            const candidate = document.querySelector(SEND);
+            return candidate && !candidate.disabled ? candidate : null;
+          };
+          const deadline = Date.now() + 10_000;
+          while (!done && !enabledSend() && Date.now() < deadline) {
+            await new Promise((wait) => setTimeout(wait, 100));
+          }
+          if (done) return;
+          const button = enabledSend() || document.querySelector(SEND);
           if (button && !button.disabled) {
             button.click();
           } else {
