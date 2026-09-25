@@ -5779,13 +5779,7 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           if (actionId.startsWith("replace-")) {
             if (row.autoAdvance) {
               const rateLimited =
-                receipt.error?.includes("chatgpt_rate_limited") === true ||
-                // ChatGPT's "You're making requests too quickly … limited access to your
-                // conversations" state leaves a fresh chat with no composer and no typed error.
-                // Retrying every 30 s kept it limited: on 2026-09-25 18:45-19:08 research,
-                // sage-categories and new-qual-site failed a fresh chat every 15-30 s while
-                // the fleet sat idle. Back off exactly as for an explicit rate limit.
-                receipt.error?.includes("never exposed a usable composer") === true;
+                receipt.error?.includes("chatgpt_rate_limited") === true;
               await retryFailedWorkstreamReplacementDelivery(
                 row.id,
                 actionId,
