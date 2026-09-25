@@ -44,6 +44,7 @@ import {
   finishWorkstreamArchive,
   invalidateWorkstreamConversation,
   nextWorkstreamActions,
+  noteWorkstreamChatActivity,
   observeWorkstreamMessages,
   pauseWorkstream,
   promoteWorkstreamConversation,
@@ -338,6 +339,10 @@ const RATE_LIMIT = 900;
  * after everybody had stopped expecting them.
  */
 const COMMAND_DEADLINE_MS = 90_000;
+/** conversation -> when the app last queued a workstream advance/recovery push into it. */
+const workstreamPushAt = new Map<string, number>();
+/** A turn_start this soon after the app's own workstream push is that push's echo. */
+const WORKSTREAM_PUSH_ECHO_MS = 2 * 60_000;
 /** Controller-owned workstream sends are unattended; a slow exact-chat/fresh-chat open must
  * not turn a five-minute stall threshold into another multi-minute wait. */
 const WORKSTREAM_COMMAND_DEADLINE_MS = 60_000;
@@ -2186,6 +2191,16 @@ async function handle(
       }
     }
     observeWorkstreamMessages(id, observations);
+    // A turn the worker started is movement even before it writes a row. research began one at
+    // 10:18:35 on 2026-09-25; the lease ignored it, fired at ~10:20, pushed Stop+reload into
+    // the live turn and replaced the chat. A start within WORKSTREAM_PUSH_ECHO_MS of the app's
+    // own workstream push is that push's echo and must not renew the lease that sent it.
+    for (const item of observations) {
+      if (item.kind !== "turn_start" || typeof item.time !== "number") continue;
+      const pushedAt = workstreamPushAt.get(currentBrowserRoute(id));
+      if (pushedAt !== undefined && item.time - pushedAt < WORKSTREAM_PUSH_ECHO_MS) continue;
+      noteWorkstreamChatActivity(id, item.time);
+    }
     observationWritesInFlight += 1;
     try {
       const agent = agentForOwnedConversation(id);
@@ -5822,6 +5837,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         (command) =>
           command.spec.type === "send" && command.spec.nonce === actionId,
       );
+      if (!existing && row.phase !== "opening" && row.conversationId)
+        workstreamPushAt.set(currentBrowserRoute(row.conversationId), now);
       const command =
         existing ??
         queue({
