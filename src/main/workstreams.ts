@@ -18,6 +18,19 @@ import type { ChatObservation } from "./session/recorder.js";
  * do not renew it, so a model narrating its own spiral still reads as stalled.
  */
 export const WORKSTREAM_LEASE_MS = 2 * 60_000;
+/**
+ * A fresh chat spends its first minutes reading and thinking before any tool call, and a
+ * provisional WEB: route cannot take a push at all. Judging those by the two-minute stall window
+ * tore every replacement down before it attached (2026-09-25 17:51-17:57: five successive chats
+ * per workstream, a new one each minute), so a frontend still attaching keeps the old window.
+ */
+const ATTACH_LEASE_MS = 5 * 60_000;
+
+function leaseFor(row: { phase: string; conversationId: string | null }): number {
+  return row.phase === "opening" || (row.conversationId ?? "").startsWith("WEB:")
+    ? ATTACH_LEASE_MS
+    : WORKSTREAM_LEASE_MS;
+}
 /** A setup/reclaim is administrative, not substantive work. Give the model only enough time
  * to make its first ordinary claimed call before stale-work recovery remains eligible. */
 const WORKSTREAM_CLAIM_GRACE_MS = 30_000;
@@ -916,7 +929,7 @@ export async function nextWorkstreamActions(
       }
       if (
         row.phase === "active" &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
+        now >= row.lastActivity + leaseFor(row) &&
         now >= row.nextCheck &&
         runningToolCallsForWorkstream(row.id) === 0
       ) {
@@ -930,7 +943,7 @@ export async function nextWorkstreamActions(
         row.phase === "opening" &&
         row.conversationId &&
         row.commandId === null &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS
+        now >= row.lastActivity + leaseFor(row)
       ) {
         row.phase = "recovering";
         row.attempts = 0;
