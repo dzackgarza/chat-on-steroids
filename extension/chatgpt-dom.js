@@ -11,8 +11,9 @@
  *     data-message-author-role, data-interrupted, data-testid)
  *   · `.markdown` for assistant prose when the current renderer supplies no assistant
  *     data-message-id; progress markdown under data-interrupted is excluded
- *   · the id #prompt-textarea on the composer, and the send/stop/dictation buttons beside
- *     it, which is where our own composer control is anchored
+ *   · the composer: #prompt-textarea, or the ProseMirror textbox inside
+ *     form[data-chatgpt-composer] on the newer build, and the send/stop/dictation buttons
+ *     beside it, which is where our own composer control is anchored
  *   · one structural tool-message class substring, plus a display-contents row shape that
  *     is confirmed structurally (short header line, no prose) before it is believed
  *
@@ -1144,8 +1145,15 @@ var CLF_DOM = (() => {
     }, '');
   }
 
+  // ChatGPT serves two composer builds at once. The older one carries #prompt-textarea; the home
+  // page rolled out 2026-09-25 renders a ProseMirror textbox with no id inside
+  // form[data-chatgpt-composer]. Matching only the id left every fresh chat with "no usable
+  // composer" and stopped all workstream replacements and worker bootstraps.
+  const COMPOSER_SELECTOR =
+    '#prompt-textarea, form[data-chatgpt-composer] div[contenteditable="true"][role="textbox"]';
+
   function composer() {
-    return safe(() => document.querySelector('#prompt-textarea'), null);
+    return safe(() => document.querySelector(COMPOSER_SELECTOR), null);
   }
 
   /**
