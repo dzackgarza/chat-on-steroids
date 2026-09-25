@@ -17,6 +17,8 @@ export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 const WORKSTREAM_CLAIM_GRACE_MS = 30_000;
 /** Tool activity this recent proves a worker alive when only the observation of its turn ended. */
 const OBSERVATION_LOSS_ACTIVITY_MS = 2 * 60_000;
+/** Row error marking a turn whose end the app did not observe while the worker looked alive. */
+const UNOBSERVED_TURN_END = "turn_end_unobserved";
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
 const REVIVE_RESPONSE_MS = 2 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
@@ -505,7 +507,9 @@ export async function admitWorkstreamCall(
     row.nextCheck = 0;
     if (!pendingReplacementBind) row.commandId = null;
     row.actionId = null;
-    row.error = null;
+    // Tool calls in a turn the page no longer observes keep it alive, but they cannot end the
+    // blindness: only an observed message or turn boundary clears the unobserved-end marker.
+    if (row.error !== UNOBSERVED_TURN_END) row.error = null;
     await save();
     return {
       ok: true,
@@ -572,6 +576,7 @@ export function noteWorkstreamChatActivity(
     row.nextCheck = 0;
     row.commandId = null;
     row.actionId = null;
+    if (row.error === UNOBSERVED_TURN_END) row.error = null;
     writeDurableSoon("workstreams", snapshot());
   }
 }
@@ -664,8 +669,14 @@ export async function scheduleWorkstreamAfterTurn(
       ["stalled", "observer_lost", "unknown"].includes(outcome) &&
       (runningToolCallsForWorkstream(row.id) > 0 ||
         now - row.lastActivity < OBSERVATION_LOSS_ACTIVITY_MS)
-    )
+    ) {
+      // Deferring to the full lease left lean-categories idle from 09:03 to 09:15 on
+      // 2026-09-25 after an unobserved end. Mark the row so nextWorkstreamActions() recovers it
+      // once OBSERVATION_LOSS_ACTIVITY_MS pass with no further activity and no running call.
+      row.error = UNOBSERVED_TURN_END;
+      await save();
       return false;
+    }
 
     row.lastAdvancedTurnId = turnId;
     row.lastAdvancedTurnTime = time;
@@ -881,6 +892,18 @@ export async function nextWorkstreamActions(
         row.commandId = null;
         row.actionId = null;
         row.error = "five_minute_no_movement";
+      }
+      if (
+        row.phase === "active" &&
+        row.error === UNOBSERVED_TURN_END &&
+        now >= row.lastActivity + OBSERVATION_LOSS_ACTIVITY_MS &&
+        runningToolCallsForWorkstream(row.id) === 0
+      ) {
+        row.phase = "recovering";
+        row.attempts = 0;
+        row.nextCheck = now;
+        row.commandId = null;
+        row.actionId = null;
       }
       if (
         row.phase === "active" &&
