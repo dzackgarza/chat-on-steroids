@@ -362,6 +362,16 @@ happens after the handler returns). Orphan and stale-agent cleanup depends on th
 one — a tool can have finished mutating the machine while its request is still being
 attributed.
 
+**Every refusal a model receives is an instruction.** The reader is a chat that has never
+heard of this app, its leases, slots, barriers or claims. Each `fail(...)` / `AgentError`
+text says, in that chat's terms, what is true now, whether anything was done, and the exact
+next call — including when to try again and what to check first (e.g. slot refusals report
+live slot use and point at `agents action=status` → `freeWorkerSlots`; they never say only
+"retry"). A leading code (`NO_FREE_SLOT:`) may stay for matching, but it never stands alone,
+and app-internal vocabulary never reaches the model. A state only a bug can reach says so
+and says not to retry. When the steward finds itself telling a worker how to react to a
+refusal, that text belongs in the refusal (0d1db26).
+
 ## 8. Filesystem containment — `sandbox.ts`
 
 The authority for every model-supplied path. Approved folders get virtual roots such as
