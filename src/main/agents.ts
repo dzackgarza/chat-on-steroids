@@ -2863,11 +2863,14 @@ export function stageQueuedWorkerRevivals(ids: readonly string[], runId?: string
     ) {
       continue;
     }
+    const failedAt = agent.info.revivalFailedAt ?? null;
     const hasUnseen = agent.queue.some(
       (message) =>
         message.ackedAt === null &&
         message.offeredAt === null &&
-        !unpublishedMessages.has(message)
+        !unpublishedMessages.has(message) &&
+        // Only work newer than a failed revival: that revival already tried to deliver the rest.
+        (failedAt === null || message.time > failedAt)
     );
     if (!hasUnseen || freeWorkerSlots() <= 0) continue;
     const sleptAt = agent.info.sleptAt;
@@ -2947,6 +2950,7 @@ export function noteWorkerRevived(
   agent.info.finishedAt = null;
   agent.info.sleptAt = null;
   agent.info.result = null;
+  agent.info.revivalFailedAt = null;
   agent.info.lastSeenAt = now;
   if (!agent.info.activatedAt) agent.info.activatedAt = now;
   if (commandId) agent.info.lastRevivalCommandId = commandId;
@@ -3061,6 +3065,7 @@ function failScopedWorkerRevival(id: string, why: string): AgentMessage | null {
     changed();
     return terminal;
   }
+  agent.info.revivalFailedAt = Date.now();
   const prime = primeAgent();
   const report = newMessage(
     agent,

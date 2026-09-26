@@ -578,6 +578,14 @@ export interface AgentInfo {
   /** Messages this agent has demonstrably received. */
   delivered: number;
   /**
+   * When the app last failed to wake this worker, cleared when a revival succeeds.
+   *
+   * Automatic revival skips a worker whose last revival failed until a newer message arrives:
+   * otherwise a chat that cannot be reopened is woken again every sweep, holding a slot each
+   * time. A deliberate message from the prime still wakes it.
+   */
+  revivalFailedAt?: number | null;
+  /**
    * The ChatGPT conversation currently presenting this agent.
    *
    * Routing/lifecycle metadata only. Tool identity is `workstreamId`. For a worker this is
