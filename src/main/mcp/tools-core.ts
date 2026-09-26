@@ -592,9 +592,6 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           }
           const pendingRefusal = settlePendingThroughPatch(reuse_search);
           if (pendingRefusal) return fail(pendingRefusal);
-          const reuseRefusal = reuseGateRefusal(args.hunks, reuse_search);
-          if (reuseRefusal) return fail(reuseRefusal);
-          if (reuse_search?.length) logInfo(`apply_patch reuse_search: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
 
           // This connector exposes one local environment. Current Codex accepts the hidden
           // `*** Environment ID:` preamble only when spec_plan enabled multi-environment
@@ -613,6 +610,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             return fail('This app has no approved project folder, so the patch was not applied. File tools cannot work until one is approved in the app; say so in your reply instead of retrying.');
           }
           const base = await resolveIn(ctx.roots, baseVirtual);
+          const reuseRefusal = await reuseGateRefusal(args.hunks, reuse_search, base.real);
+          if (reuseRefusal) return fail(reuseRefusal);
+          if (reuse_search?.length) logInfo(`apply_patch reuse_search: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
           return (await runParsedPatch(args, ctx.roots, base, caps)).result;
         })
     );
@@ -738,7 +738,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
                 return fail(`apply_patch verification failed: ${interceptedPatch.error.message}`);
               }
               if (interceptedPatch.kind === 'body') {
-                const reuseRefusal = reuseGateRefusal(interceptedPatch.args.hunks, undefined);
+                const reuseRefusal = await reuseGateRefusal(interceptedPatch.args.hunks, undefined, dir.real);
                 if (reuseRefusal) {
                   unifiedExecManager.releaseProcessId(processId);
                   return fail(`${reuseRefusal} A shell apply_patch cannot carry the record: use the apply_patch tool.`);

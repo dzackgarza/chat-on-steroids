@@ -164,11 +164,19 @@ function recordProblems(key: string, minted: readonly string[], record: readonly
 }
 
 /** Null when the patch may proceed; otherwise the refusal text. */
-export function reuseGateRefusal(hunks: readonly Hunk[], record: readonly ReuseSearchEntry[] | undefined): string | null {
+export async function reuseGateRefusal(
+  hunks: readonly Hunk[],
+  record: readonly ReuseSearchEntry[] | undefined,
+  root: string | null,
+): Promise<string | null> {
   const key = readerKey();
   if (!key) return null;
   const done = accounted.get(key);
-  const minted = mintedNames(hunks).filter((name) => !done?.has(name));
+  let minted = mintedNames(hunks).filter((name) => !done?.has(name));
+  if (root && minted.length > 0) {
+    const existing = await alreadyDefined(root, "HEAD", minted).catch(() => new Set<string>());
+    minted = minted.filter((name) => !existing.has(name));
+  }
   if (minted.length === 0) return null;
   const how = `${HOW} Then send the same patch with reuse_search: [{names, searched, found, why_new}], one entry per new name or group of names.`;
   if (!record || record.length === 0)
@@ -204,6 +212,37 @@ interface Snapshot {
 async function git(root: string, args: string[]): Promise<string> {
   const { stdout } = await run("git", ["-C", root, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 });
   return stdout;
+}
+
+const ANY_DEFINITION =
+  "(def|class|function\\*?|interface|type|enum|theorem|lemma|structure|inductive|instance|abbrev|fn|struct|trait)";
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
+/**
+ * The names among `candidates` that some tracked file at `rev` already defines. Defining one of
+ * those again is an override or extension of an existing API (Sage's one(), zero(), _repr_ …),
+ * not a new concept, so it is not minting. New file paths are never filtered.
+ */
+export async function alreadyDefined(root: string, rev: string, candidates: readonly string[]): Promise<Set<string>> {
+  const names = candidates.filter((name) => !name.includes("/"));
+  const found = new Set<string>();
+  if (names.length === 0) return found;
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  for (let i = 0; i < names.length; i += 40) {
+    const batch = names.slice(i, i + 40);
+    const pattern = `${ANY_DEFINITION}\\s+(${batch.map(escapeRegex).join("|")})([^A-Za-z0-9_'.]|$)`;
+    let out = "";
+    try {
+      out = await git(top, ["grep", "-h", "-o", "-E", pattern, rev, "--"]);
+    } catch {
+      continue; // git grep exits 1 when nothing matches
+    }
+    for (const name of batch) if (new RegExp(`\\s${escapeRegex(name)}([^A-Za-z0-9_'.]|$)`).test(out)) found.add(name);
+  }
+  return found;
 }
 
 /** Definition names and new code files in the working tree relative to `base`. */
@@ -260,7 +299,9 @@ export async function noteCommandMinted(snapshot: Snapshot | null): Promise<stri
     return [];
   }
   const done = accounted.get(snapshot.key);
-  const fresh = [...after].filter((name) => !snapshot.before.has(name) && !done?.has(name));
+  let fresh = [...after].filter((name) => !snapshot.before.has(name) && !done?.has(name));
+  const existing = await alreadyDefined(snapshot.root, snapshot.base, fresh).catch(() => new Set<string>());
+  fresh = fresh.filter((name) => !existing.has(name));
   for (const name of fresh) setFor(pending, snapshot.key).add(name);
   return fresh;
 }
