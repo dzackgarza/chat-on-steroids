@@ -183,14 +183,19 @@ export const WORKER_CONTEXT_CEILING_TOKENS = 400_000;
 
 export class AgentError extends Error {}
 
+/** For states only a broker bug can reach: the model did nothing wrong and cannot fix it. */
+const APP_FAULT =
+  'This is a fault inside the app, not something you did. Do not retry this agents call. Continue the task ' +
+  'yourself in this chat, and mention the fault in your next report.';
+
 /**
  * Raised when a broker action somehow reached this layer without an admitted logical workstream.
  */
 export class IdentityLostError extends AgentError {
   constructor() {
     super(
-      'WORKSTREAM_SETUP_REQUIRED: this agent action has no admitted logical workstream identity. ' +
-        'Establish/continue the correct workstream and retry with its current workstream_id.'
+      'WORKSTREAM_SETUP_REQUIRED: this call did not say which workstream it belongs to. Call the workstream tool ' +
+        'with action="continue" and your workstream name, then repeat this call with the workstream_id it returns.'
     );
   }
 }
@@ -667,7 +672,10 @@ export interface Caller {
 
 function requireEnabled(): void {
   if (!getConfig().multiAgent.enabled) {
-    throw new AgentError('Multi-agent mode is switched off in Chat On Steroids. Ask the user to enable it.');
+    throw new AgentError(
+      'Sub-agents are switched off in this app, so no workers can be created or messaged. Do the work yourself in ' +
+        'this chat and do not call agents again.'
+    );
   }
 }
 
@@ -835,7 +843,8 @@ export function swarmStateForCaller(caller: Caller): SwarmState {
   if (dormant) return stateForAgents(dormant.agents, false);
 
   throw new AgentError(
-    'No sub-agent history belongs to this workstream. Call agents action=spawn to start one.'
+    'You have no sub-agents yet, so there is nothing to show. To start some, call agents action=spawn with ' +
+      'workers=[{label, task}]; your chat becomes their prime and receives their reports.'
   );
 }
 
@@ -873,7 +882,8 @@ export function statusForCaller(caller: Caller): CallerSwarmStatus {
     };
   }
   throw new AgentError(
-    'No sub-agent run or worker history belongs to this workstream. Call agents action=spawn to start one.'
+    'You have no sub-agents yet, so there is nothing to show. To start some, call agents action=spawn with ' +
+      'workers=[{label, task}]; your chat becomes their prime and receives their reports.'
   );
 }
 
@@ -928,7 +938,8 @@ function requireMember(caller: Caller): Agent {
   const agent = resolve(caller);
   if (!run || !agent) {
     throw new AgentError(
-      'No sub-agent run is active for this workstream. The workstream that calls agents action=spawn becomes the prime agent of its own run.'
+      'You have no running sub-agents, so there is no one to message. To start some, call agents action=spawn ' +
+        'with workers=[{label, task}]; your chat becomes their prime.'
     );
   }
   return agent;
@@ -944,7 +955,8 @@ export function identify(caller: Caller): AgentInfo {
   const prime = dormant?.agents.get(PRIME_ID);
   if (prime) return { ...prime.info };
   throw new AgentError(
-    'No sub-agent run or worker history belongs to this workstream. Call agents action=spawn to start one.'
+    'You have no sub-agents yet, so there is nothing to show. To start some, call agents action=spawn with ' +
+      'workers=[{label, task}]; your chat becomes their prime and receives their reports.'
   );
 }
 
@@ -1064,6 +1076,26 @@ export function freeWorkerSlots(): number {
   return Math.max(0, getConfig().multiAgent.maxWorkers - allWorkingWorkers().length);
 }
 
+/**
+ * What a model refused a worker slot should do next.
+ *
+ * Written for a chat that knows nothing about this app: what is true right now, and the exact
+ * next step. A bare "no free slot" left workers retrying in a tight loop or stalling; the only
+ * useful answers are "keep working yourself" and "here is how to see when to try again".
+ */
+function slotWaitGuidance(): string {
+  const max = getConfig().multiAgent.maxWorkers;
+  const own = slotHolders(run).length;
+  const others = Math.max(0, allWorkingWorkers().length - own);
+  return (
+    `Right now ${own} of the ${max} worker slots are held by your own running workers and ${others} by other ` +
+    'workstreams on this app; a slot frees when a worker reports back (usually within minutes). Do not retry ' +
+    'this call straight away. Carry on with the work yourself in this chat. After your next completed step, call ' +
+    'agents action=status and read freeWorkerSlots: when it is large enough, make this same call again. ' +
+    'Nothing is lost by waiting.'
+  );
+}
+
 function recount(agent: Agent): void {
   const live = agent.queue.filter((message) => message.ackedAt === null && !unpublishedMessages.has(message));
   agent.info.pending = live.length;
@@ -1072,7 +1104,7 @@ function recount(agent: Agent): void {
 
 function primeAgent(): Agent {
   const agent = run?.agents.get(PRIME_ID);
-  if (!agent) throw new AgentError('No sub-agent run is active.');
+  if (!agent) throw new AgentError(APP_FAULT);
   return agent;
 }
 
@@ -1333,23 +1365,39 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
   requireEnabled();
   if (activeSpawnStage) {
     throw new AgentError(
-      'SPAWN_IN_PROGRESS: another worker spawn is still crossing its durable acceptance barrier. Retry this spawn after that call finishes.'
+      'SPAWN_IN_PROGRESS: your previous spawn is still being saved (this takes seconds). Call agents action=status: ' +
+        'if the workers you asked for are listed, they exist and you must not spawn them again. If they are not ' +
+        'listed, repeat this spawn once.'
     );
   }
-  if (input.workers.length === 0) throw new AgentError('At least one worker is required');
+  if (input.workers.length === 0) throw new AgentError(
+      'No workers were given. Pass workers=[{label: "short name", task: "what this worker must do"}] with at least one entry.'
+    );
 
   const context = input.context?.trim() ?? '';
   if (context.length > MAX_CONTEXT_CHARS) {
-    throw new AgentError(`The shared context is too long (limit ${MAX_CONTEXT_CHARS} characters)`);
+    throw new AgentError(
+      `The shared context is ${context.length} characters; the limit is ${MAX_CONTEXT_CHARS}. No workers were created. ` +
+        'Put long material in a file in the repository and give its path in the context instead, then spawn again.'
+    );
   }
 
   const planned = input.workers.map((worker, index) => {
     const task = worker.task.trim();
-    if (!task) throw new AgentError(`Worker ${index + 1} has no task. Every worker needs one.`);
-    if (task.length > MAX_TASK_CHARS) throw new AgentError(`Worker ${index + 1}'s task is too long`);
+    if (!task)
+      throw new AgentError(
+        `Worker ${index + 1} has an empty task. No workers were created. Give every worker a task saying what it must do, then spawn again.`
+      );
+    if (task.length > MAX_TASK_CHARS)
+      throw new AgentError(
+        `Worker ${index + 1}'s task is ${task.length} characters; the limit is ${MAX_TASK_CHARS}. No workers were created. ` +
+          'Move detail shared by all workers into context, or into a repository file named by path, then spawn again.'
+      );
     const label = worker.label?.trim() ?? '';
     if (label.length > MAX_LABEL_CHARS) {
-      throw new AgentError(`Worker ${index + 1}'s label is too long (limit ${MAX_LABEL_CHARS} characters)`);
+      throw new AgentError(
+        `Worker ${index + 1}'s label is ${label.length} characters; the limit is ${MAX_LABEL_CHARS}. Use a few words, then spawn again.`
+      );
     }
     // Composed once, here, and stored as *the* task. Everything downstream — the bootstrap
     // the browser types, the repeated-spawn match, the status table, the snapshot — then
@@ -1361,13 +1409,17 @@ export function spawn(input: SpawnInput, options: SpawnOptions = {}): SpawnResul
   const workstreamId = input.caller.workstreamId ?? null;
   if (!workstreamId) {
     throw new AgentError(
-      'WORKSTREAM_SETUP_REQUIRED: this agents call has no admitted logical workstream. No workers were created.'
+      'WORKSTREAM_SETUP_REQUIRED: this call did not say which workstream it belongs to, so no workers were created. ' +
+        'Call the workstream tool with action="continue" and your workstream name, then repeat this spawn with the ' +
+        'workstream_id it returns.'
     );
   }
   const conversationId = input.caller.conversationId ?? null;
   if (!conversationId)
     throw new AgentError(
-      'WORKSTREAM_FRONTEND_UNBOUND: this workstream has no current ChatGPT frontend route, so worker tabs cannot be attached safely. No workers were created.'
+      'WORKSTREAM_FRONTEND_UNBOUND: the app has not yet connected this chat to its browser page, which happens ' +
+        'briefly after a chat is opened or replaced. No workers were created. Carry on with the task yourself for ' +
+        'one step, then repeat this spawn.'
     );
 
   return inRun(runForWorkstream(workstreamId), () =>
@@ -1388,8 +1440,8 @@ function spawnInScope(
     const caller = resolve(input.caller);
     if (caller && caller.info.role === 'worker') {
       throw new AgentError(
-        `${caller.info.id} is a worker in this run. Workers must not create workers of their own — send the prime ` +
-          'agent a message instead and let it decide.'
+        `You are ${caller.info.id}, a worker, and workers cannot create workers. Do the task yourself; if it really ` +
+          'needs more hands, call agents action=message to="prime" explaining what should be split off, and keep working.'
       );
     }
   }
@@ -1402,7 +1454,8 @@ function spawnInScope(
     if (resumedDormant) {
       if (!reactivateDormantRun(resumedDormant)) {
         throw new AgentError(
-          'PRIME_TRANSFER_IN_PROGRESS: this conversation is being compacted/resumed, so its worker history cannot start a new active incarnation until that handoff settles.'
+          'PRIME_TRANSFER_IN_PROGRESS: this chat is being handed over to a fresh chat because it is running out of ' +
+            'context. Do not call agents again from here; the continuation chat will pick the workers up.'
         );
       }
     } else {
@@ -1451,9 +1504,9 @@ function spawnInScope(
     else if (createdFreshRun) setRun(null);
     const free = Math.max(0, max - working);
     throw new AgentError(
-      `NO_FREE_SLOT: this spawn needs ${planned.length} worker slot${planned.length === 1 ? '' : 's'}, but only ${free} of ` +
-        `the app's ${max} ${free === 1 ? 'is' : 'are'} free — every workstream's running workers share them. No workers ` +
-        'were created. Spawn fewer, wake a sleeping worker of your own, or retry when a worker reports.'
+      `NO_FREE_SLOT: this spawn asked for ${planned.length} worker${planned.length === 1 ? '' : 's'} but only ${free} ` +
+        `can start now, so none were created. ${free > 0 ? `You may spawn up to ${free} now instead. ` : ''}` +
+        slotWaitGuidance()
     );
   }
 
@@ -1586,12 +1639,12 @@ function retiredAgent(caller: Caller): Agent | null {
  * silently negotiates a plan the user never sees and the prime cannot report.
  */
 function assertRoute(from: Agent, to: Agent): void {
-  if (from.info.id === to.info.id) throw new AgentError('An agent cannot message itself');
+  if (from.info.id === to.info.id) throw new AgentError('That message is addressed to you. Put the note in your own work instead, or address it to another agent.');
   if (from.info.role === 'worker' && to.info.role !== 'prime') {
-    throw new AgentError('Workers may only message the prime agent. Send it there and let the prime decide.');
+    throw new AgentError('Workers can message only the prime. Call agents action=message to="prime" and let it pass things on.');
   }
   if (from.info.role === 'prime' && to.info.role !== 'worker') {
-    throw new AgentError('The prime agent can only message workers');
+    throw new AgentError('As the prime you can message only your workers. Call agents action=status to see their ids.');
   }
 }
 
@@ -1605,8 +1658,9 @@ function assertRoom(to: Agent, incoming: number): void {
   const waiting = to.queue.filter((item) => item.ackedAt === null).length;
   if (waiting + incoming > MAX_QUEUE) {
     throw new AgentError(
-      `QUEUE_FULL: ${to.info.id} already has ${waiting} unacknowledged messages, which is the limit. Nothing was sent ` +
-        'and nothing was discarded. A queue this deep normally means that agent has stopped calling tools.'
+      `QUEUE_FULL: ${to.info.id} has ${waiting} messages it has not read yet, which is the limit, so this one was ` +
+        'not sent (nothing was lost). Stop messaging it. Call agents action=status: if it is not working, spawn a ' +
+        'new worker for its task; otherwise wait for its report.'
     );
   }
 }
@@ -1682,9 +1736,9 @@ export function stageMessages(
   caller: Caller,
   items: ReadonlyArray<{ to: string; text: string }>
 ): StagedAgentMessages {
-  if (items.length === 0) throw new AgentError('No messages were given');
+  if (items.length === 0) throw new AgentError('No messages were given. Pass messages=[{to, text}] with at least one entry.');
   if (items.length > MAX_BATCH_MESSAGES) {
-    throw new AgentError(`Too many messages in one call (limit ${MAX_BATCH_MESSAGES})`);
+    throw new AgentError(`${items.length} messages in one call; the limit is ${MAX_BATCH_MESSAGES}. Nothing was sent. Split them over several calls.`);
   }
   return inRun(runForWorkstream(caller.workstreamId), () => stageMessagesForCaller(caller, items));
 }
@@ -1699,7 +1753,8 @@ function stageMessagesForCaller(
     if (dormant) {
       if (!reactivateDormantRun(dormant)) {
         throw new AgentError(
-          'PRIME_TRANSFER_IN_PROGRESS: this workstream is being compacted/resumed, so its sleeping workers cannot be woken until that handoff settles.'
+          'PRIME_TRANSFER_IN_PROGRESS: this chat is being handed over to a fresh chat because it is running out of ' +
+            'context, so nothing was sent. Do not call agents again from here; the continuation chat will pick the workers up.'
         );
       }
       resumedDormant = true;
@@ -1722,7 +1777,7 @@ function stageMessagesActive(
   const owner = run as Run;
   if (activeFinishStages.has(from)) {
     throw new AgentError(
-      `FINISH_IN_PROGRESS: ${from.info.id} is still crossing its durable finish barrier and cannot send another message yet.`
+      `FINISH_IN_PROGRESS: your report is being delivered, so your part is done. Do not send anything else or call more tools.`
     );
   }
   // A finished worker keeps its conversation so a lost finish result can be recognised as a
@@ -1730,7 +1785,8 @@ function stageMessagesActive(
   // after it had reported and stopped.
   if (isOver(from.info.state)) {
     throw new AgentError(
-      `${from.info.id} has ${from.info.state === 'failed' ? 'failed' : 'finished'} and cannot send messages.`
+      `You (${from.info.id}) have already ${from.info.state === 'failed' ? 'been stopped' : 'reported'}, so your part is done. ` +
+        'Do not send messages or call more tools.'
     );
   }
 
@@ -1741,9 +1797,12 @@ function stageMessagesActive(
   for (const [index, item] of items.entries()) {
     const where = items.length > 1 ? ` (message ${index + 1} of ${items.length})` : '';
     const trimmed = item.text?.trim() ?? '';
-    if (!trimmed) throw new AgentError(`The message is empty${where}`);
+    if (!trimmed) throw new AgentError(`The message is empty${where}. Nothing was sent; give it text and send again.`);
     if (trimmed.length > MAX_MESSAGE_CHARS) {
-      throw new AgentError(`Message is too long (limit ${MAX_MESSAGE_CHARS} characters)${where}`);
+      throw new AgentError(
+        `The message is ${trimmed.length} characters${where}; the limit is ${MAX_MESSAGE_CHARS}. Nothing was sent. ` +
+          'Put the detail in a repository file, name its path in a shorter message, and send again.'
+      );
     }
     const toId = item.to?.trim() ?? '';
     const to = toId ? run?.agents.get(toId) : undefined;
@@ -1752,19 +1811,21 @@ function stageMessagesActive(
     }
     if (unpublishedAgents.has(to)) {
       throw new AgentError(
-        `SPAWN_IN_PROGRESS: ${toId} has not crossed its durable spawn acceptance barrier yet${where}. Retry after the spawn call finishes.`
+        `SPAWN_IN_PROGRESS: ${toId} is still being created${where}, so nothing was sent. Its task already reaches it ` +
+          'at start; send any extra message after the spawn call returns.'
       );
     }
     if (activeFinishStages.has(to)) {
       throw new AgentError(
-        `FINISH_IN_PROGRESS: ${toId} is still crossing its durable finish barrier${where}. Retry after that finish call settles.`
+        `FINISH_IN_PROGRESS: ${toId} is reporting back right now${where}, so nothing was sent. Its report will reach you ` +
+          'as a message; read it before deciding whether to wake it with more work.'
       );
     }
     assertRoute(from, to);
     if (isOver(to.info.state)) {
       throw new AgentError(
         to.info.state === 'failed'
-          ? `${toId} has failed and is no longer listening${where}`
+          ? `${toId} has stopped and cannot receive messages${where}. Nothing was sent. Spawn a new worker with this work.`
           : `${toId} is finished for good — its own chat reached the context limit, so it cannot be woken` +
             `${where}. Spawn a new worker for this work.`
       );
@@ -1783,7 +1844,7 @@ function stageMessagesActive(
     if (to.info.state === 'sleeping') {
       if (!to.info.conversationId) {
         throw new AgentError(
-          `${toId} is asleep but this app never learned which chat it is in, so it cannot be woken${where}.`
+          `${toId} is asleep and cannot be woken${where}, so nothing was sent. Spawn a new worker with this work instead.`
         );
       }
       // Waking is the one send that needs capacity, because the recipient is not running. The
@@ -1792,8 +1853,8 @@ function stageMessagesActive(
       // sits unread in a chat nobody is going to open is worse than being told to wait.
       if (!reserved.has(to) && freeWorkerSlots() - reserved.size <= 0) {
         throw new AgentError(
-          `NO_FREE_SLOT: ${toId} is asleep and all ${getConfig().multiAgent.maxWorkers} worker slots are busy, so it ` +
-            `cannot be woken right now${where}. Nothing was sent. Wait for a worker to report and try again.`
+          `NO_FREE_SLOT: ${toId} is asleep and waking it needs a free worker slot${where}, so nothing was sent. ` +
+            slotWaitGuidance()
         );
       }
       reserved.add(to);
@@ -2150,7 +2211,7 @@ function finishTarget(caller: Caller): Agent {
   if (agent) {
     if (agent.info.role !== 'worker') {
       throw new AgentError(
-        'The prime agent does not finish: the run ends when its workers have reported and the user is done with it.'
+        'finish is only for workers; you are the prime, so there is nothing to finish. Read your workers\' reports and carry on with your own task.'
       );
     }
     return agent;
@@ -2163,14 +2224,16 @@ function finishTarget(caller: Caller): Agent {
   if (dormant?.info.role === 'worker' && hasStopped(dormant.info.state)) return dormant;
   if (!dormant)
     throw new AgentError(
-      'No sub-agent run or worker history belongs to this workstream.',
+      'finish is only for workers, and this chat is not one. Carry on with your task.',
     );
   if (dormant.info.role !== 'worker') {
     throw new AgentError(
-      'The prime agent does not finish: the run ends when its workers have reported and the user is done with it.'
+      'finish is only for workers; you are the prime, so there is nothing to finish. Read your workers\' reports and carry on with your own task.'
     );
   }
-  throw new AgentError(`${dormant.info.id} is dormant but has not finished, so finish cannot be retried from this state.`);
+  throw new AgentError(
+    `You (${dormant.info.id}) are asleep and have not been given new work, so there is nothing to finish. Stop calling tools.`
+  );
 }
 
 function planFinish(agent: Agent, result: string): { info: AgentInfo; report: AgentMessage } {
@@ -2236,7 +2299,7 @@ function planFinish(agent: Agent, result: string): { info: AgentInfo; report: Ag
       `it more work with agents action=message to="${agent.info.id}" — that wakes it up where it left off. Prefer that ` +
       'to action=spawn: a new worker starts from nothing.)';
   const prime = primeForOwnedAgent(agent);
-  if (!prime) throw new AgentError(`Cannot find the prime that owns ${agent.info.id}.`);
+  if (!prime) throw new AgentError(APP_FAULT);
   const report = newMessage(
     agent,
     prime,
@@ -2289,7 +2352,7 @@ function publishFinish(agent: Agent, info: AgentInfo, report: AgentMessage, dura
   // same chat is recognised as the retry it is, and — while the worker is only sleeping — that
   // id is the whole of what a later revival needs to reopen the chat and type into it.
   const prime = primeForOwnedAgent(agent);
-  if (!prime) throw new AgentError(`Cannot find the prime that owns ${agent.info.id}.`);
+  if (!prime) throw new AgentError(APP_FAULT);
   // Over the queue limit on purpose: the worker is about to stop calling tools and has no way
   // to retry its own report.
   prime.queue.push(report);
@@ -2320,7 +2383,7 @@ function stageFinish(agent: Agent, result: string, acknowledgedMessageIds: reado
       `FINISH_IN_PROGRESS: ${agent.info.id} is already crossing its durable finish barrier. Retry the same finish after that call settles.`
     );
   }
-  if (!run) throw new AgentError('No sub-agent run is active.');
+  if (!run) throw new AgentError(APP_FAULT);
   const planned = planFinish(agent, result);
   const stage: FinishStageState = {
     run,
@@ -2929,7 +2992,7 @@ function finishStoppedWorkerAtCeiling(agent: Agent, reason: string, sleptAt = Da
           .join(', ')}${neverOffered.length > 3 ? ', …' : ''}). Those instructions are no longer queued.`
       : '';
   const prime = primeForOwnedAgent(agent);
-  if (!prime) throw new AgentError(`Cannot find the prime that owns ${agent.info.id}.`);
+  if (!prime) throw new AgentError(APP_FAULT);
   const report = newMessage(
     agent,
     prime,

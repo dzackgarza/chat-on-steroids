@@ -867,13 +867,15 @@ export function createRegistrar(
         if (!admitted.ok) {
           if (admitted.code === "WORKSTREAM_BUSY")
             return fail(
-              "WORKSTREAM_BUSY: a superseded owner still has an already-admitted tool call settling. " +
-                "Retry this ordinary call with the SAME workstream_id after it settles; do not call workstream setup again.",
+              "WORKSTREAM_BUSY: a command started by an earlier chat of this workstream is still finishing " +
+                "(usually within a minute), so nothing was run. Spend a minute reading or planning, then repeat this exact " +
+                "call with the same workstream_id. Do not call the workstream tool again.",
             );
           return fail(
-            "WORKSTREAM_SETUP_REQUIRED: this workstream id is not current. " +
-              "Use the workstream setup tool to establish this chat's identity: action=start with a new named workstream, " +
-              "or action=continue with an already-registered name. Then use the returned workstream_id on every ordinary call.",
+            "WORKSTREAM_SETUP_REQUIRED: this workstream_id is missing or out of date (the workstream was claimed " +
+              "again, for example after a restart or by a newer chat), so nothing was run. Call the workstream tool " +
+              'with action="continue" and your workstream name (action="start" only for a brand-new one), then repeat ' +
+              "this call with the workstream_id it returns.",
           );
         }
         return dispatch(

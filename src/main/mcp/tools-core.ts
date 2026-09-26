@@ -498,7 +498,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               scopes.push({ real: resolved.real, virtual: resolved.virtual });
             }
           }
-          if (scopes.length === 0) return fail('No folders are approved');
+          if (scopes.length === 0) return fail('This app has no approved project folder, so nothing can be searched. File tools cannot work until one is approved in the app; say so in your reply instead of retrying.');
 
           const hits: string[] = [];
           const stopReasons = new Set<string>();
@@ -571,7 +571,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           // `*** Environment ID:` preamble only when spec_plan enabled multi-environment
           // selection; in the single-environment case the handler rejects it verbatim.
           if (args.environmentId !== null) {
-            return fail('apply_patch environment selection is unavailable for this turn');
+            return fail('This connector has a single environment, so the patch was not applied. Remove the "*** Environment ID:" line from the patch and send it again.');
           }
           const workspace = currentWorkspace();
           if (!workspace && swarmRunning()) {
@@ -581,7 +581,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           }
           const baseVirtual = workspace?.virtual ?? (ctx.roots[0] ? `/${ctx.roots[0].name}` : null);
           if (baseVirtual === null) {
-            return fail('No folder is approved, so there is nowhere to apply the patch.');
+            return fail('This app has no approved project folder, so the patch was not applied. File tools cannot work until one is approved in the app; say so in your reply instead of retrying.');
           }
           const base = await resolveIn(ctx.roots, baseVirtual);
           return (await runParsedPatch(args, ctx.roots, base, caps)).result;
@@ -1053,7 +1053,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
         if (!reg.agentToolsLive) return reg.featureDisabled('Multi-agent mode', 'Multi-agent mode (experimental)');
 
         if (input.action === 'spawn') {
-          if (!input.workers) return fail('agents action=spawn requires workers.');
+          if (!input.workers) return fail('agents action=spawn needs workers=[{label: "short name", task: "what this worker must do"}]. Nothing was created; add it and call again.');
           // One atomic operation: it either claims this exact admitted workstream as prime and
           // creates the workers, or it creates nothing at all. There is no "create the
           // workers and find out who the prime was later" — that ordering is what produced a
@@ -1129,10 +1129,10 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
           const batch = input.messages ?? [];
           const single = input.to && input.text ? [{ to: input.to, text: input.text }] : [];
           if (batch.length > 0 && single.length > 0) {
-            return fail('agents action=message takes either to+text or messages, not both.');
+            return fail('agents action=message takes either to and text (one message) or messages=[{to, text}] (several), not both. Nothing was sent; use one form and call again.');
           }
           const items = batch.length > 0 ? batch : single;
-          if (items.length === 0) return fail('agents action=message requires to and text, or a messages array.');
+          if (items.length === 0) return fail('agents action=message needs to and text (one message) or messages=[{to, text}]. Nothing was sent; add them and call again.');
           // Before any slot is reserved: a sleeping worker whose chat has since crossed the
           // context ceiling is not revivable, and this is the call that would otherwise wake it.
           const caller = await callerNow();
@@ -1189,7 +1189,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
         }
 
         if (input.action === 'finish') {
-          if (!input.result) return fail('agents action=finish requires result.');
+          if (!input.result) return fail('agents action=finish needs result: your report to the prime (what you did, what changed, anything left). Nothing was finished; call again with it.');
           const staged = stageFinishAgent(await callerNow(), input.result);
           let accepted = staged.repeat;
           try {

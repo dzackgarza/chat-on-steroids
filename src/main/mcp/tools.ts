@@ -27,7 +27,25 @@ import {
   continueWorkstream,
   startWorkstream,
   workstreamIdSchema,
+  type WorkstreamSetupResult,
 } from "../workstreams.js";
+
+/** What a refused setup call means for the chat that made it, and what it does next. */
+function workstreamRefusal(
+  code: Extract<WorkstreamSetupResult, { ok: false }>["code"],
+): string {
+  switch (code) {
+    case "WORKSTREAM_ALREADY_EXISTS":
+      return 'That workstream is already registered. Call this tool with action="continue" and the same name to claim it.';
+    case "WORKSTREAM_NOT_FOUND":
+      return 'No workstream has that name. Check the name you were given; to create a new one, call this tool with action="start".';
+    case "WORKSTREAM_UNAVAILABLE":
+      return (
+        "WORKSTREAM_UNAVAILABLE: this workstream is being moved to a fresh chat right now, and that chat carries " +
+        "the work on. Stop working on it in this chat and make no further tool calls for it here."
+      );
+  }
+}
 
 export function buildServer(ctx: ToolContext, surface: SurfaceId): McpServer {
   const definition = surfaceDefinition(surface);
@@ -105,7 +123,7 @@ function registerWorkstreamSetupTool(server: McpServer): void {
                   text:
                     result.code === "WORKSTREAM_ALREADY_EXISTS"
                       ? `Workstream "${workstream}" is already registered. Use action=continue with this name to claim it.`
-                      : result.code,
+                      : workstreamRefusal(result.code),
                 },
               ],
               isError: true,
@@ -128,7 +146,7 @@ function registerWorkstreamSetupTool(server: McpServer): void {
                 text:
                   result.code === "WORKSTREAM_NOT_FOUND"
                     ? `Workstream "${workstream}" is not registered. Use action=start with this name to register and claim it.`
-                    : result.code,
+                    : workstreamRefusal(result.code),
               },
             ],
             isError: true,
