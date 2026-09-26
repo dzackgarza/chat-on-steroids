@@ -319,7 +319,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** User-requested orphan safety net: slow enough to require durable inactivity, not a heartbeat lease. */
 export const STALE_SWARM_MS = 2 * 60_000;
 /** An open worker turn with no durable write for this long was abandoned by its page. */
-const ABANDONED_TURN_MS = 10 * 60_000;
+const ABANDONED_TURN_MS = 2 * 60_000;
 const STALE_SWARM_SWEEP_MS = 30_000;
 /** /events batches currently between parse and durable/session+worker lifecycle completion. */
 let observationWritesInFlight = 0;
@@ -4163,13 +4163,11 @@ async function durableQuiescence(
  */
 export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
   const runId = currentRunId();
-  if (
-    !runId ||
-    swarmTransferActive() ||
-    inFlightMcpRequests() > 0 ||
-    observationWritesInFlight > 0
-  )
-    return false;
+  // Any fleet-wide in-flight call used to abort the whole sweep, and with four busy
+  // workstreams one almost always is, so dead workers were never reconsidered. Freeing one
+  // worker's slot only needs that worker's own calls to be settled (checked per worker below);
+  // releasing the whole run still waits for global quiet further down.
+  if (!runId || swarmTransferActive() || observationWritesInFlight > 0) return false;
 
   let state = swarmState();
   if (!state.running) return false;
@@ -4203,14 +4201,15 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
       (agent.state === "active" || agent.state === "detached"),
   )) {
     if (!worker.conversationId) continue;
+    if (runningToolCallsForWorkstream(worker.workstreamId) > 0) continue;
     const proof = await durableQuiescence(worker.conversationId, now);
     if (
       currentRunId() !== runId ||
       swarmTransferActive() ||
-      inFlightMcpRequests() > 0 ||
       observationWritesInFlight > 0
     )
       return false;
+    if (runningToolCallsForWorkstream(worker.workstreamId) > 0) continue;
     if (!proof.quiescent) continue;
 
     if (proof.lastOutcome === "completed") {
