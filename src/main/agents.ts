@@ -1777,7 +1777,8 @@ function stageMessagesActive(
   const owner = run as Run;
   if (activeFinishStages.has(from)) {
     throw new AgentError(
-      `FINISH_IN_PROGRESS: your report is being delivered, so your part is done. Do not send anything else or call more tools.`
+      'FINISH_IN_PROGRESS: your finish call is still being saved, so this message was not sent. Wait for finish to ' +
+        'return, then send this again with agents action=message to="prime".'
     );
   }
   // A finished worker keeps its conversation so a lost finish result can be recognised as a
@@ -1785,8 +1786,14 @@ function stageMessagesActive(
   // after it had reported and stopped.
   if (isOver(from.info.state)) {
     throw new AgentError(
-      `You (${from.info.id}) have already ${from.info.state === 'failed' ? 'been stopped' : 'reported'}, so your part is done. ` +
-        'Do not send messages or call more tools.'
+      from.info.state === 'failed'
+        ? `The app has stopped driving this chat (${from.info.result ?? 'no reason recorded'}) and has told the prime ` +
+          'that this worker will not report, so this message was not sent and no tool will run from this chat again. ' +
+          'That is about the chat, not your work: files you changed stay in the repository, where the prime can see ' +
+          'them. End your turn with a plain reply saying where you stopped.'
+        : `Your finish report reached the prime, but this chat is now too large for the app to reopen, so no message ` +
+          'or tool will run from it again and this message was not sent. Files you changed stay in the repository, ' +
+          'where the prime can see them. End your turn with a plain reply saying anything left unsaid.'
     );
   }
 
@@ -2380,7 +2387,8 @@ function stageFinish(agent: Agent, result: string, acknowledgedMessageIds: reado
   }
   if (activeFinishStages.has(agent)) {
     throw new AgentError(
-      `FINISH_IN_PROGRESS: ${agent.info.id} is already crossing its durable finish barrier. Retry the same finish after that call settles.`
+      'FINISH_IN_PROGRESS: your earlier finish call is still being saved. Do not call finish again; wait for that ' +
+        'call to return.'
     );
   }
   if (!run) throw new AgentError(APP_FAULT);
@@ -3495,9 +3503,11 @@ export function endedWorkerNoticeForWorkstream(
   )
     return null;
   return (
-    `WORKER_ENDED: ${agent.info.id} has already ${agent.info.state === 'finished' ? 'finished' : 'ended'} in this run` +
-    `${agent.info.result ? ` (${agent.info.result.slice(0, 200)})` : ''}. Nothing was run. Stop working and stop ` +
-    'calling tools: the prime agent is not waiting for anything else from this workstream, and anything you do here now is work nobody asked for.'
+    `WORKER_ENDED: nothing was run. ${agent.info.state === 'finished'
+      ? 'You called finish when this chat was already too large for the app to reopen, so no tool will run from it again.'
+      : `The app stopped driving this chat (${(agent.info.result ?? 'no reason recorded').slice(0, 200)}) and told the prime this worker will not report.`} ` +
+    'Files you changed stay in the repository, where the prime can see them. End your turn with a plain reply saying ' +
+    'where you stopped and anything left unsaid.'
   );
 }
 
@@ -3706,14 +3716,16 @@ export function dormantWorkerNoticeForWorkstream(
   if (!agent || agent.info.role !== 'worker') return null;
   if (isOver(agent.info.state)) {
     return (
-      `WORKER_ENDED: ${agent.info.id} remains part of its prime's dormant worker history but is ${agent.info.state} and cannot act again. ` +
-      'Nothing was run. Stop working and return to the prime workstream.'
+      'WORKER_ENDED: nothing was run, and no tool will run from this chat again: the app can no longer reopen or ' +
+        'drive it. Files you changed stay in the repository. End your turn with a plain reply saying where you ' +
+        'stopped and anything left unsaid.'
     );
   }
   if (agent.info.state !== 'sleeping' || !agent.info.revivable) return null;
   return (
-    `WORKER_SLEEPING: ${agent.info.id} belongs to dormant history owned by prime workstream ${found?.owner.primeWorkstreamId}. ` +
-    'Nothing was run. Stay stopped until that prime sends a new agents message into this worker.'
+    'WORKER_SLEEPING: nothing was run. Your prime\'s workers are parked, so tools from this chat are refused until it ' +
+      'sends you new work, which arrives as a message in this chat. End your turn with a plain reply saying where ' +
+      'you stopped.'
   );
 }
 

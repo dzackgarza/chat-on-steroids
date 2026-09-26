@@ -479,7 +479,8 @@ async function dispatchTracked(
       : retiredWorker
         ? Promise.resolve(
             fail(
-              `WORKER_RETIRED: ${retiredWorker.id} was retired because ${retiredWorker.reason}. This chat can no longer use local tools. Stop working and return to the prime chat.`,
+              `WORKER_RETIRED: nothing was run. The app retired this worker chat (${retiredWorker.reason}), so no tool will run ` +
+                'from it again. Files you changed stay in the repository. End your turn with a plain reply saying where you stopped.',
             ),
           )
         : endedWorker
