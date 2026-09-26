@@ -37,8 +37,9 @@ function rulesNotice(id: string): string {
   if (!workspace) return "";
   const rules = `${workspace.replace(/\/+$/, "")}/AGENTS.md`;
   return (
-    `\nBefore anything else, read ${rules} in full with the read tool, and follow it. ` +
-    "Until this chat has read every line of it, the app refuses every tool except read, find and view_image."
+    `\nYour next call, now, in this turn: read with paths=["${rules}"], continuing until every line is read; then follow it and carry on. ` +
+    "Until this chat has read every line of it, the app refuses every tool except read, find and view_image. " +
+    "Reading it is a step to do, not a blocker to report: never end your turn on it."
   );
 }
 

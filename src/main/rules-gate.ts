@@ -114,8 +114,8 @@ export async function rulesGateRefusal(
   const size = current.totalLines ? ` (${current.totalLines} lines)` : "";
   return (
     `RULES_UNREAD: this workstream's rules are in ${virtual}${size}, and this chat has not read all of them yet, ` +
-    `so nothing was run. Read it with the read tool, paths=["${virtual}"], starting at line ${gaps[0]![0]}; ` +
-    `each result says where to continue. Still unread: lines ${ranges}. Follow those rules, then repeat this call. ` +
-    "read, find and view_image stay available meanwhile."
+    `so nothing was run. Your next call is read with paths=["${virtual}"] and start_line=${gaps[0]![0]}: make it now, in this ` +
+    `turn, without stopping; each result says where to continue. Still unread: lines ${ranges}. Then repeat this call and carry on. ` +
+    "This is a step to do, not a blocker to report: never end your turn on it. read, find and view_image stay available."
   );
 }

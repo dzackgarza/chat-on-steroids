@@ -120,7 +120,7 @@ import {
   noteExec
 } from './call-context.js';
 import { noteRulesRead } from '../rules-gate.js';
-import { acceptReuseRecord, reuseGateRefusal, settlePendingThroughPatch } from '../reuse-gate.js';
+import { reuseGateRefusal, settlePendingThroughPatch } from '../reuse-gate.js';
 import { recordAgentMessage } from '../session/recorder.js';
 import { findSessionByConversation } from '../session/store.js';
 import {
@@ -617,24 +617,6 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         })
     );
 
-    reg.register(
-      'reuse_record',
-      {
-        title: 'Record the reuse search for shell-made definitions',
-        description:
-          'When a command you ran added a new code file or class/function/method/declaration name, every tool except read and find ' +
-          'is refused until this records, for each such name, the searches you ran for existing owners, what they found and why none is reused. ' +
-          'Each search must be one you actually ran (a find call or an rg/grep/fd/ast-grep/probe command), not a search for the new name.',
-        inputSchema: z.object({ reuse_search: REUSE_SEARCH_SCHEMA.min(1) }).strict()
-      },
-      async ({ reuse_search }) =>
-        guard('reuse_record', async () => {
-          const accepted = acceptReuseRecord(reuse_search);
-          if (!accepted.ok) return fail(accepted.text);
-          logInfo(`reuse_record: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
-          return ok(accepted.text);
-        })
-    );
   }
 
   // ------------------------------------------------------- exec / write_stdin

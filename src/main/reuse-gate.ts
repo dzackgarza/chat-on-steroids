@@ -18,7 +18,8 @@
  * git tree is compared with the HEAD from before the command (so a commit made inside the
  * command hides nothing). A name minted that way with no record becomes pending, and every
  * tool except reading ones and `reuse_record` is refused until `reuse_record` supplies the
- * same verified entries.
+ * same verified entries on its next apply_patch (a separate tool would change the connector's
+ * published shape, which ChatGPT does not re-discover mid-conversation).
  */
 
 import { execFile } from "node:child_process";
@@ -266,16 +267,16 @@ export async function noteCommandMinted(snapshot: Snapshot | null): Promise<stri
 
 /** Refusal while shell-minted names await their record; null otherwise. */
 export function reusePendingRefusal(tool: string, args: Record<string, unknown>): string | null {
-  if (tool === "reuse_record" || tool === "read" || tool === "find" || tool === "view_image") return null;
-  // A chat whose cached tool list predates reuse_record settles through apply_patch's reuse_search.
+  if (tool === "read" || tool === "find" || tool === "view_image") return null;
+  // The record for shell-made names travels on the next apply_patch.
   if (tool === "apply_patch" && Array.isArray(args["reuse_search"])) return null;
   const key = readerKey();
   const waiting = key ? pending.get(key) : undefined;
   if (!waiting || waiting.size === 0) return null;
   return (
     `REUSE_SEARCH_PENDING: a command you ran added ${[...waiting].join(", ")} with no reuse record, so nothing was run. ` +
-    `${HOW} Then call reuse_record with reuse_search entries covering exactly those names (or send your next apply_patch with ` +
-    "a reuse_search that covers them as well). If the addition was a mistake, " +
+    `${HOW} Then call apply_patch with a reuse_search whose entries cover those names (the patch may be the next edit you ` +
+    "were going to make, or a one-line comment change). If the addition was a mistake, " +
     "revert it and say so in why_new. read and find stay available meanwhile."
   );
 }

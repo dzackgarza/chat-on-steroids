@@ -922,8 +922,8 @@ export function createRegistrar(
                 type: "text",
                 text:
                   `REUSE_SEARCH_PENDING: this command added ${minted.join(", ")} without a reuse record. ` +
-                  "Every tool except read, find and reuse_record is now refused until reuse_record covers those names " +
-                  "with the searches you ran for existing owners, what they found and why none is reused.",
+                  "Every tool except read and find is now refused until an apply_patch carries a reuse_search covering those names: " +
+                  "the searches you ran for existing owners, what they found and why none is reused.",
               });
             }
             return result;
