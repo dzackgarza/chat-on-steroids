@@ -4202,6 +4202,28 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
   )) {
     if (!worker.conversationId) continue;
     if (runningToolCallsForWorkstream(worker.workstreamId) > 0) continue;
+    // A worker whose page detached can lose its recording (the session is unbound from the
+    // conversation), and then durableQuiescence finds nothing to prove and never releases it.
+    // The broker's own last sight of the worker is the fallback-free fact that still exists:
+    // no running call, no generating page, and silent for ABANDONED_TURN_MS is abandoned.
+    const generatingNow = liveConversations().some(
+      (entry) => entry.conversationId === worker.conversationId && entry.generating,
+    );
+    if (
+      !generatingNow &&
+      typeof worker.lastSeenAt === "number" &&
+      now - worker.lastSeenAt >= ABANDONED_TURN_MS
+    ) {
+      const slept = sleepWorker(
+        worker.id,
+        `Its chat stopped reporting ${Math.round((now - worker.lastSeenAt) / 60_000)} min ago with no running call; its slot is released so the prime can wake or replace it.`,
+      );
+      if (slept?.report) {
+        await recordAgentMessage(slept.report, "sent");
+        stoppedWorkers.push(worker.id);
+      }
+      continue;
+    }
     const proof = await durableQuiescence(worker.conversationId, now);
     if (
       currentRunId() !== runId ||
