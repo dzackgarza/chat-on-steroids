@@ -26,9 +26,21 @@ import { logWarn } from "../logger.js";
 import {
   continueWorkstream,
   startWorkstream,
+  workstreamWorkspace,
   workstreamIdSchema,
   type WorkstreamSetupResult,
 } from "../workstreams.js";
+
+/** Tells a chat that claimed a workstream to read its rules first; rules-gate.ts enforces it. */
+function rulesNotice(id: string): string {
+  const workspace = workstreamWorkspace(id);
+  if (!workspace) return "";
+  const rules = `${workspace.replace(/\/+$/, "")}/AGENTS.md`;
+  return (
+    `\nBefore anything else, read ${rules} in full with the read tool, and follow it. ` +
+    "Until this chat has read every line of it, the app refuses every tool except read, find and view_image."
+  );
+}
 
 /** What a refused setup call means for the chat that made it, and what it does next. */
 function workstreamRefusal(
@@ -137,7 +149,7 @@ function registerWorkstreamSetupTool(server: McpServer): void {
             content: [
               {
                 type: "text" as const,
-                text: `Registered and claimed workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.`,
+                text: `Registered and claimed workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + rulesNotice(result.id),
               },
             ],
           };
@@ -160,7 +172,7 @@ function registerWorkstreamSetupTool(server: McpServer): void {
           content: [
             {
               type: "text" as const,
-              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.`,
+              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + rulesNotice(result.id),
             },
           ],
         };

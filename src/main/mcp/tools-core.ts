@@ -119,6 +119,7 @@ import {
   noteDetail,
   noteExec
 } from './call-context.js';
+import { noteRulesRead } from '../rules-gate.js';
 import { recordAgentMessage } from '../session/recorder.js';
 import { findSessionByConversation } from '../session/store.js';
 import {
@@ -337,6 +338,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               remaining -= section.bytes;
               successes++;
               sections.push(section.text);
+              if (section.lines) {
+                await noteRulesRead(section.lines.real, section.lines.first, section.lines.last, section.lines.total);
+              }
               if (section.image) images.push(section.image);
             } catch (err) {
               failures++;
@@ -1865,7 +1869,13 @@ interface ReadOneOptions {
 async function readOne(
   requested: string,
   options: ReadOneOptions
-): Promise<{ text: string; bytes: number; image?: { data: string; mimeType: string } }> {
+): Promise<{
+  text: string;
+  bytes: number;
+  image?: { data: string; mimeType: string };
+  /** For a text file: its real path and the lines actually returned. */
+  lines?: { real: string; first: number; last: number; total: number | null };
+}> {
   const resolved = await resolveIn(options.roots, requested);
   const info = await statInfo(resolved.real, resolved.virtual, { scanContent: !options.canRead });
 
@@ -1994,6 +2004,7 @@ async function readOne(
   const text = `${header}${numbered.text === '' && visibleLastLine < result.firstLine ? '' : `\n${numbered.text}`}${note}`;
   return {
     text,
+    lines: { real: resolved.real, first: result.firstLine, last: visibleLastLine, total: result.totalLines },
     // Charge the aggregate call budget for what is actually serialized, including headers and
     // line-number prefixes. Counting only raw file bytes let thousands of short lines amplify a
     // nominal 512 KiB cap into a multi-megabyte MCP response.

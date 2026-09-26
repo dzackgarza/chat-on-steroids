@@ -76,6 +76,7 @@ import {
   type CallContext,
 } from "./call-context.js";
 import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
+import { rulesGateRefusal } from "../rules-gate.js";
 import { readOverflowText } from "../session/store.js";
 import type { StoredText } from "../../shared/session.js";
 
@@ -888,7 +889,18 @@ export function createRegistrar(
           admitted.id,
           workstream_id as string,
           admitted.sessionId,
-          () => handler(args as never),
+          async () => {
+            // A chat acts only after it has read its repository's rules (rules-gate.ts).
+            const unread = await rulesGateRefusal(name, async (virtual) => {
+              try {
+                return (await resolvePath(ctx.roots, virtual)).real;
+              } catch {
+                return null;
+              }
+            });
+            if (unread) return fail(unread);
+            return handler(args as never);
+          },
         );
       }) as never);
     },
