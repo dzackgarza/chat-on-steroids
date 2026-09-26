@@ -143,7 +143,11 @@
     'too many requests',
     'rate limit',
     'temporarily limited access',
-    'temporarily limited access to your conversations'
+    'temporarily limited access to your conversations',
+    // Seen 2026-09-26 on a sage workstream tab after a burst of recovery sends; the page shows it
+    // with a Retry button in place of the reply. Treated as the same platform throttle.
+    'detected unusual activity',
+    'unusual activity coming from your system'
   ];
   const RECOVERABLE_ERRORS = ['message delivery timed out'];
   /**
