@@ -296,7 +296,8 @@ export type WorkstreamSetupResult =
       code:
         | "WORKSTREAM_ALREADY_EXISTS"
         | "WORKSTREAM_NOT_FOUND"
-        | "WORKSTREAM_UNAVAILABLE";
+        | "WORKSTREAM_UNAVAILABLE"
+        | "WORKSTREAM_PAUSED";
     };
 
 export type WorkstreamAdmitResult =
@@ -382,6 +383,11 @@ export async function continueWorkstream(
     // (`archiving`) genuinely refuses, because a distinct thread already owns the handoff.
     if (prior.phase === "archiving")
       return { ok: false, code: "WORKSTREAM_UNAVAILABLE" };
+    // A pause is the owner's decision, and only resumeWorkstream() lifts it. The paused chat's
+    // own calls are refused as not current, and its natural reaction is to re-attach; letting
+    // that re-attach succeed undid the pause within seconds.
+    if (prior.phase === "paused")
+      return { ok: false, code: "WORKSTREAM_PAUSED" };
     const newLock = freshWorkstreamId();
     const retiredKeys = [...new Set([...prior.retiredKeys, prior.lock])].slice(-16);
     rows.set(logicalWorkstream, {

@@ -43,6 +43,11 @@ function workstreamRefusal(
       return (
         "WORKSTREAM_UNAVAILABLE: this workstream is being moved to a fresh chat right now, and that chat carries " +
         "the work on. Stop working on it in this chat and make no further tool calls for it here."
+      );    case "WORKSTREAM_PAUSED":
+      return (
+        "WORKSTREAM_PAUSED: the owner has paused this workstream to free its resources. Stop working: " +
+        "make no further tool calls for it, and end your turn with a short note of where the work stands. " +
+        "The owner resumes it when wanted, and the resumed chat is told."
       );
   }
 }
