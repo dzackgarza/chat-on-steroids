@@ -6495,6 +6495,8 @@ function retire(command: Command, why: string): void {
   logInfo(`bridge: ${specKey(command.spec)} is done — ${why}`);
   changed();
   persistCommands();
+  // The command may have held the one delivery lease; whatever queued behind it is next.
+  void deliver();
 }
 
 /**
@@ -6703,6 +6705,10 @@ function drop(command: Command, why: string): boolean {
   logWarn(`bridge: gave up on ${specKey(command.spec)} — ${why}`);
   changed();
   persistCommands();
+  // A dropped command frees the delivery lease, and nothing else is guaranteed to come back
+  // for what queued behind it: sage-categories' fresh chat sat unclaimed after lean's
+  // recovery send was dropped at its deadline (2026-09-26 09:44).
+  void deliver();
   // A timeout is another last-slot transition with no future MCP epilogue guaranteed. Once the
   // command is no longer deliverable, let the broker release/park the active incarnation if
   // every worker is now stopped. Any sibling bootstrap/revival still in flight occupies a slot
