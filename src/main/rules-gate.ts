@@ -9,13 +9,14 @@
  * still unread. Reading tools stay open, since reading is how the gate is passed.
  *
  * Coverage belongs to the conversation, not to the claim. A chat that re-attaches after a
- * restart or recovery has the file in its context already; a replacement chat does not. It is
- * held in memory: after an app restart each chat reads the file once more, which is the cost of
- * not trusting a claim the app cannot check.
+ * restart or recovery has the file in its context already; a replacement chat does not.
+ * Coverage is durable (`rules-coverage`): forcing every chat to re-read a 200 KB file after
+ * each app restart was pure load on the account, and ChatGPT flagged it as unusual activity.
  */
 
 import { realpath } from "node:fs/promises";
 
+import { readDurable, writeDurableSoon } from "./durable.js";
 import { currentCall } from "./mcp/call-context.js";
 import { workstreamConversation, workstreamWorkspace } from "./workstreams.js";
 
@@ -31,6 +32,19 @@ interface Coverage {
 }
 
 const coverage = new Map<string, Coverage>();
+let loaded: Promise<void> | null = null;
+
+/** Loads the durable coverage once per app lifetime. */
+function load(): Promise<void> {
+  loaded ??= readDurable<Record<string, Coverage>>("rules-coverage").then((saved) => {
+    for (const [key, entry] of Object.entries(saved ?? {})) if (!coverage.has(key)) coverage.set(key, entry);
+  });
+  return loaded;
+}
+
+function save(): void {
+  writeDurableSoon("rules-coverage", Object.fromEntries(coverage));
+}
 
 function readerKey(workstreamId: string, claimId: string | null, realPath: string): string {
   const reader = workstreamConversation(workstreamId) ?? `claim:${claimId ?? ""}`;
@@ -73,6 +87,7 @@ function rulesVirtualPath(workstreamId: string): string | null {
 export async function noteRulesRead(realPath: string, first: number, last: number, totalLines: number | null): Promise<void> {
   const call = currentCall();
   if (!call?.workstreamId || last < first || !realPath.endsWith("/AGENTS.md")) return;
+  await load();
   const path = (await realpath(realPath).catch(() => null)) ?? realPath;
   const key = readerKey(call.workstreamId, call.workstreamClaimId, path);
   const prior = coverage.get(key) ?? { path, totalLines, read: [] };
@@ -81,6 +96,7 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
     totalLines: totalLines ?? prior.totalLines,
     read: addInterval(prior.read, first, last),
   });
+  save();
 }
 
 /**
@@ -100,6 +116,7 @@ export async function rulesGateRefusal(
   if (!virtual) return null;
   const resolved = await resolveRules(virtual);
   if (!resolved) return null;
+  await load();
   const real = (await realpath(resolved).catch(() => null)) ?? resolved;
   const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, real)) ?? {
     path: real,
