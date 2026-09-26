@@ -120,7 +120,7 @@ import {
   noteExec
 } from './call-context.js';
 import { noteRulesRead } from '../rules-gate.js';
-import { reuseGateRefusal } from '../reuse-gate.js';
+import { acceptReuseRecord, reuseGateRefusal, settlePendingThroughPatch } from '../reuse-gate.js';
 import { recordAgentMessage } from '../session/recorder.js';
 import { findSessionByConversation } from '../session/store.js';
 import {
@@ -138,6 +138,22 @@ import {
   type ToolResult
 } from './kernel.js';
 import { registerSessionTool as registerSessionSearchReadTool } from './session-tool.js';
+
+/** A reuse record: for each new name, the searches run, what they found and why none is reused. */
+const REUSE_SEARCH_SCHEMA = z
+              .array(
+                z
+                  .object({
+                    names: z.array(z.string().min(1)).min(1).describe('The new names or new file paths this entry accounts for.'),
+                    searched: z
+                      .array(z.string().min(1))
+                      .min(1)
+                      .describe('Searches you actually ran in this chat, quoted as run: a find query or the rg/grep/fd/ast-grep/probe command. Search for the concept and its likely owners, not for the new name.'),
+                    found: z.string().describe('Existing code those searches turned up, with paths, or "nothing relevant".'),
+                    why_new: z.string().describe('Why nothing found is reused or extended instead.')
+                  })
+                  .strict()
+              );
 
 /** Entries one `read` of a directory returns before it says it stopped. */
 const MAX_DIR_ENTRIES = 200;
@@ -554,24 +570,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         inputSchema: z
           .object({
             patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION),
-            reuse_search: z
-              .array(
-                z
-                  .object({
-                    names: z.array(z.string().min(1)).min(1).describe('The new names or new file paths this entry accounts for.'),
-                    searched: z
-                      .array(z.string().min(1))
-                      .min(1)
-                      .describe('Searches you actually ran in this chat, quoted as run: a find query or the rg/grep/fd/ast-grep/probe command. Search for the concept and its likely owners, not for the new name.'),
-                    found: z.string().describe('Existing code those searches turned up, with paths, or "nothing relevant".'),
-                    why_new: z.string().describe('Why nothing found is reused or extended instead.')
-                  })
-                  .strict()
-              )
-              .optional()
-              .describe(
-                'Required when the patch adds a new code file or a new class, function, method or declaration name: one entry per new name or group of names. The patch is refused without it.'
-              )
+            reuse_search: REUSE_SEARCH_SCHEMA.optional().describe(
+              'Required when the patch adds a new code file or a new class, function, method or declaration name: one entry per new name or group of names. The patch is refused without it.'
+            )
           })
           .strict()
       },
@@ -589,6 +590,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           } catch (error) {
             return fail(`apply_patch verification failed: ${applyPatchErrorText(error)}`);
           }
+          const pendingRefusal = settlePendingThroughPatch(reuse_search);
+          if (pendingRefusal) return fail(pendingRefusal);
           const reuseRefusal = reuseGateRefusal(args.hunks, reuse_search);
           if (reuseRefusal) return fail(reuseRefusal);
           if (reuse_search?.length) logInfo(`apply_patch reuse_search: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
@@ -611,6 +614,25 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           }
           const base = await resolveIn(ctx.roots, baseVirtual);
           return (await runParsedPatch(args, ctx.roots, base, caps)).result;
+        })
+    );
+
+    reg.register(
+      'reuse_record',
+      {
+        title: 'Record the reuse search for shell-made definitions',
+        description:
+          'When a command you ran added a new code file or class/function/method/declaration name, every tool except read and find ' +
+          'is refused until this records, for each such name, the searches you ran for existing owners, what they found and why none is reused. ' +
+          'Each search must be one you actually ran (a find call or an rg/grep/fd/ast-grep/probe command), not a search for the new name.',
+        inputSchema: z.object({ reuse_search: REUSE_SEARCH_SCHEMA.min(1) }).strict()
+      },
+      async ({ reuse_search }) =>
+        guard('reuse_record', async () => {
+          const accepted = acceptReuseRecord(reuse_search);
+          if (!accepted.ok) return fail(accepted.text);
+          logInfo(`reuse_record: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
+          return ok(accepted.text);
         })
     );
   }

@@ -77,7 +77,7 @@ import {
 } from "./call-context.js";
 import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
 import { rulesGateRefusal } from "../rules-gate.js";
-import { noteSearch } from "../reuse-gate.js";
+import { noteCommandMinted, noteSearch, reusePendingRefusal, snapshotBeforeCommand } from "../reuse-gate.js";
 import { readOverflowText } from "../session/store.js";
 import type { StoredText } from "../../shared/session.js";
 
@@ -900,8 +900,33 @@ export function createRegistrar(
               }
             });
             if (unread) return fail(unread);
+            const reusePending = reusePendingRefusal(name, args);
+            if (reusePending) return fail(reusePending);
             noteSearch(name, args);
-            return handler(args as never);
+            if (name !== "exec_command" && name !== "write_stdin") return handler(args as never);
+            // Shell commands can mint definitions without apply_patch; see reuse-gate.ts.
+            const workspace = workstreamWorkspace(admitted.id);
+            let root: string | null = null;
+            if (workspace) {
+              try {
+                root = (await resolvePath(ctx.roots, workspace)).real;
+              } catch {
+                root = null;
+              }
+            }
+            const snapshot = await snapshotBeforeCommand(root);
+            const result = await handler(args as never);
+            const minted = await noteCommandMinted(snapshot);
+            if (minted.length > 0 && result && Array.isArray((result as { content?: unknown }).content)) {
+              (result as { content: Array<{ type: "text"; text: string }> }).content.push({
+                type: "text",
+                text:
+                  `REUSE_SEARCH_PENDING: this command added ${minted.join(", ")} without a reuse record. ` +
+                  "Every tool except read, find and reuse_record is now refused until reuse_record covers those names " +
+                  "with the searches you ran for existing owners, what they found and why none is reused.",
+              });
+            }
+            return result;
           },
         );
       }) as never);

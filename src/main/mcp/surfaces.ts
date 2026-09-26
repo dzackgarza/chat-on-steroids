@@ -114,6 +114,7 @@ const CORE: SurfaceDefinition = {
     "view_image",
     "find",
     "apply_patch",
+    "reuse_record",
     "exec_command",
     "write_stdin",
     "session",
