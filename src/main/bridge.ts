@@ -6222,6 +6222,9 @@ function waitingForRevivalReadiness(command: Command): boolean {
   );
 }
 
+/** How long a revival may wait for its worker's page before the slot goes back to the pool. */
+const REVIVAL_READINESS_MS = 10 * 60_000;
+
 function commandDeadlineDelay(
   command: Command,
   now = Date.now(),
@@ -6229,12 +6232,16 @@ function commandDeadlineDelay(
   // A revival's first lease belongs to the *browser-open attempt*, not yet to a document. The
   // exact worker chat may still be rendering the assistant message that contains agents.finish,
   // so the content script deliberately refuses to redeem until that page is submit-ready. That
-  // wait must survive a tab reload/browser restart without turning ordinary ChatGPT busyness into
-  // a failed broker revival. Once a document actually redeems (`owner !== null`), the ordinary
+  // wait survives a tab reload or browser restart, up to REVIVAL_READINESS_MS. Once a document actually redeems (`owner !== null`), the ordinary
   // short acknowledgement deadline applies again: text may be about to cross the irreversible
   // send boundary and a dead document must not own it indefinitely.
-  if (waitingForRevivalReadiness(command)) return null;
   const claimedAt = command.claimedAt ?? now;
+  // Bounded, because the `waking` reservation holds a worker slot for as long as this waits.
+  // Unbounded, a revival whose tab was closed or never came up held its slot indefinitely
+  // (lean-categories worker-10 for 12h on 2026-09-26). Ending it is not a worker failure:
+  // failWorkerRevival puts the worker back to sleep with its inbox intact and tells the prime.
+  if (waitingForRevivalReadiness(command))
+    return claimedAt + REVIVAL_READINESS_MS - now;
   if (command.lastError === SENT_WAITING_FOR_CONVERSATION)
     return claimedAt + WORKSTREAM_SENT_IDENTITY_DEADLINE_MS - now;
   return claimedAt + commandAckDeadlineMs(command.spec) - now;
@@ -6246,11 +6253,6 @@ function armDeadline(
 ): void {
   if (command.timer) clearTimeout(command.timer);
   if (delay === null) {
-    // An exact-chat revival waiting for submit-readiness has no wall-clock failure. Its broker
-    // `waking` reservation and run/conversation identity are the cancellation authority instead:
-    // tidyCommands/onSwarmEnd retire it as soon as any of those facts changes. This is what lets
-    // a browser stay closed or a ChatGPT turn stay busy for arbitrarily long without converting
-    // page availability into a false worker failure.
     command.timer = null;
     return;
   }
