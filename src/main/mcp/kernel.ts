@@ -77,6 +77,7 @@ import {
 } from "./call-context.js";
 import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
 import { rulesGateRefusal } from "../rules-gate.js";
+import { noteSearch } from "../reuse-gate.js";
 import { readOverflowText } from "../session/store.js";
 import type { StoredText } from "../../shared/session.js";
 
@@ -899,6 +900,7 @@ export function createRegistrar(
               }
             });
             if (unread) return fail(unread);
+            noteSearch(name, args);
             return handler(args as never);
           },
         );

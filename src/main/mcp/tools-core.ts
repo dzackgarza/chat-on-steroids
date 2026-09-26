@@ -120,6 +120,7 @@ import {
   noteExec
 } from './call-context.js';
 import { noteRulesRead } from '../rules-gate.js';
+import { reuseGateRefusal } from '../reuse-gate.js';
 import { recordAgentMessage } from '../session/recorder.js';
 import { findSessionByConversation } from '../session/store.js';
 import {
@@ -552,11 +553,29 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         description: APPLY_PATCH_DESCRIPTION,
         inputSchema: z
           .object({
-            patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION)
+            patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION),
+            reuse_search: z
+              .array(
+                z
+                  .object({
+                    names: z.array(z.string().min(1)).min(1).describe('The new names or new file paths this entry accounts for.'),
+                    searched: z
+                      .array(z.string().min(1))
+                      .min(1)
+                      .describe('Searches you actually ran in this chat, quoted as run: a find query or the rg/grep/fd/ast-grep/probe command. Search for the concept and its likely owners, not for the new name.'),
+                    found: z.string().describe('Existing code those searches turned up, with paths, or "nothing relevant".'),
+                    why_new: z.string().describe('Why nothing found is reused or extended instead.')
+                  })
+                  .strict()
+              )
+              .optional()
+              .describe(
+                'Required when the patch adds a new code file or a new class, function, method or declaration name: one entry per new name or group of names. The patch is refused without it.'
+              )
           })
           .strict()
       },
-      async ({ patch }) =>
+      async ({ patch, reuse_search }) =>
         guard('apply_patch', async () => {
           if (!caps.create && !caps.edit && !caps.move && !caps.deleteFile) {
             return fail(
@@ -570,6 +589,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           } catch (error) {
             return fail(`apply_patch verification failed: ${applyPatchErrorText(error)}`);
           }
+          const reuseRefusal = reuseGateRefusal(args.hunks, reuse_search);
+          if (reuseRefusal) return fail(reuseRefusal);
+          if (reuse_search?.length) logInfo(`apply_patch reuse_search: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
 
           // This connector exposes one local environment. Current Codex accepts the hidden
           // `*** Environment ID:` preamble only when spec_plan enabled multi-environment
@@ -712,6 +734,11 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
                 return fail(`apply_patch verification failed: ${interceptedPatch.error.message}`);
               }
               if (interceptedPatch.kind === 'body') {
+                const reuseRefusal = reuseGateRefusal(interceptedPatch.args.hunks, undefined);
+                if (reuseRefusal) {
+                  unifiedExecManager.releaseProcessId(processId);
+                  return fail(`${reuseRefusal} A shell apply_patch cannot carry the record: use the apply_patch tool.`);
+                }
                 try {
                   const patchRun = await runParsedPatch(interceptedPatch.args, ctx.roots, dir);
                   if (patchRun.result.isError || patchRun.content === null) return patchRun.result;
