@@ -318,6 +318,8 @@ const PORTS = ((): number[] => {
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** User-requested orphan safety net: slow enough to require durable inactivity, not a heartbeat lease. */
 export const STALE_SWARM_MS = 2 * 60_000;
+/** An open worker turn with no durable write for this long was abandoned by its page. */
+const ABANDONED_TURN_MS = 10 * 60_000;
 const STALE_SWARM_SWEEP_MS = 30_000;
 /** /events batches currently between parse and durable/session+worker lifecycle completion. */
 let observationWritesInFlight = 0;
@@ -4120,8 +4122,14 @@ async function durableQuiescence(
   }
 
   let lastOutcome: string | null = summary.lastTurnOutcome;
-  if (summary.activeTurnId)
+  // A turn left open by a page that detached never records its end, so "still open" alone kept
+  // dead workers in their slots forever: lean-categories' worker-9 and worker-11 held both slots
+  // from ~21:30 to 08:00 on 2026-09-26 while every spawn and wake answered NO_FREE_SLOT. An open
+  // turn with no durable write for ABANDONED_TURN_MS is abandoned, not running.
+  if (summary.activeTurnId && now - lastDurableWrite < ABANDONED_TURN_MS)
     return { quiescent: false, ended: summary.endedAt !== null, lastOutcome };
+  if (summary.activeTurnId)
+    return { quiescent: true, ended: summary.endedAt !== null, lastOutcome: "abandoned" };
   // Pre-1.8.8 metadata has no durable open-turn projection. Bound that one migration path
   // to the newest tail instead of reparsing the full lifetime on every 30-second sweep.
   if (summary.activeTurnId === undefined) {
