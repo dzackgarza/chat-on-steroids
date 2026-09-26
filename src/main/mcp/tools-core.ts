@@ -1090,7 +1090,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
           const { created, becamePrime, runId } = staged;
           // Browser tabs are a publication side effect, never part of planning. They become
           // visible only after the exact broker revision above is durable.
-          requestWorkerBootstraps(created.map((worker) => worker.id));
+          requestWorkerBootstraps(created.map((worker) => worker.id), runId);
           await adoptAgent(PRIME_ID);
           const invited = created.filter((worker) => worker.state === 'invited');
           const sleeping = created.filter((worker) => worker.state === 'sleeping' && worker.revivable);
@@ -1164,7 +1164,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
           // Reopening a sleeping worker's chat is a browser side effect, so it happens only
           // after the broker revision that reserved its slot is durable — exactly as a spawn's
           // tabs do. Nothing has been typed into that chat yet at this point.
-          if (woken.length > 0) requestWorkerRevivals(woken);
+          if (woken.length > 0) requestWorkerRevivals(woken, staged.runId);
           for (const message of sent) await recordAgentMessage(message, 'sent');
           return {
             content: [
@@ -1240,8 +1240,8 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
 
         // status. Read-only, and deliberately small: it is the run as its own members see it,
         // and `identify` is what decides whether this caller is one of them. An unrelated
-        // workstream is told AGENTS_BUSY and nothing else — not who the prime is, not how many
-        // workers there are, not what any of them are doing.
+        // workstream is told it has no run of its own and nothing else — not who any other prime
+        // is, how many workers it has, or what any of them are doing.
         const caller = await callerNow();
         await measureSleepingWorkers(caller);
         const status = statusForCaller(caller);

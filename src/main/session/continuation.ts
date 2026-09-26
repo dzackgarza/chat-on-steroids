@@ -333,8 +333,8 @@ export function continuationByToken(token: string): ContinuationView | null {
  * Current builds prevent the race before opening the browser, but an installed build can
  * already have created B as a small `origin.kind=resume` session and then aborted the real
  * continuation with {@link RESUME_SHADOW_COLLISION}. That leaves the user in the intended
- * replacement chat while the reusable-worker run is still bound to A, so every `agents` call
- * from B gets AGENTS_BUSY.
+ * replacement chat while the reusable-worker run is still bound to A, so no `agents` call from
+ * B reaches that run.
  *
  * This is intentionally much narrower than a takeover API. The durable recorder must prove
  * that B was app-opened as a resume of source session S, S must still own A, and B's authored

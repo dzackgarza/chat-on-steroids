@@ -59,9 +59,9 @@ prime stays the one stream the steward drives, and it owns what the rule otherwi
   prime's integration lane.
 - The prime integrates and verifies before closing a node; a worker's report is not acceptance.
 
-A second *independent* stream on the same repository still needs its own clone. The app grants
-one active swarm run at a time fleet-wide (AGENTS.md §16), so only one stream can hold this
-width at once.
+A second *independent* stream on the same repository still needs its own clone. Every stream
+may run its own swarm (AGENTS.md §16), but `multiAgent.maxWorkers` is one app-wide pool of
+worker slots, so the streams' widths together cannot exceed it.
 
 **Width is capped by what the control path can actually feed, not by the work
 available.** A stream that cannot be reached is not a stream. Every send opens a command

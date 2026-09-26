@@ -885,8 +885,12 @@ intended session/goal behavior in the running app.
 ## 16. Multi-agent — `agents.ts`
 
 Experimental, enabled on fresh installs while existing configs preserve their stored choice,
-**one global active execution run at a time**, star topology:
-`worker ← prime → worker`. Workers never message each other.
+**one active execution run per prime workstream, concurrently across primes**, star topology
+within each run: `worker ← prime → worker`. Workers never message each other or another
+prime. `multiAgent.maxWorkers` is **app-wide**: slot-holding (invited/active/detached/waking)
+workers of every run share it, first-come, because it bounds the load on ChatGPT. A spawn or
+wake that finds no free slot is refused with `NO_FREE_SLOT`; no caller is ever refused because
+another prime has a run, and none is shown another prime's run.
 
 **Identity.** The prime is the logical workstream that successfully called
 `agents action=spawn`. Every worker receives its own preallocated logical workstream
@@ -907,15 +911,19 @@ while an older one sleeps and still wake that older worker afterwards. The same 
 durable evidence that the worker stopped: a settled final assistant turn, or quiescence
 proven by `activeTurnId`/live-generating state rather than by a page heartbeat.
 
-**Ownership outlives the active run.** When no worker occupies a slot, the active incarnation is
-parked immediately and the one global execution claim is released. Its complete agent map becomes
-a durable history keyed by the prime workstream: sleeping workers, terminal/non-revivable rows,
-their exact ChatGPT conversation bindings, queued prime reports and monotonically allocated
-`worker-N` history all remain. Another prime may now start its own active incarnation, including
-its own same-named `worker-1`, without seeing or mutating the first prime's history. Caller-scoped
-`status` always returns the history owned by that prime, even while somebody else owns the active
-execution slot. A dormant prime may spawn a fresh worker without reviving a sleeper; waking an old
-worker reactivates that owner's history only when the global execution slot is free. Explicit
+**Ownership outlives the active run.** When no worker of a run occupies a slot, that run's active
+incarnation is parked immediately. Its complete agent map becomes a durable history keyed by the
+prime workstream: sleeping workers, terminal/non-revivable rows, their exact ChatGPT conversation
+bindings, queued prime reports and monotonically allocated `worker-N` history all remain. New
+`worker-N` suffixes are unique across every prime's history, active or dormant; histories from
+before per-prime runs can still repeat an id across primes, so browser commands carry their run
+id and the broker resolves a bare worker id only when it is unambiguous. Caller-scoped `status`
+always returns only the history owned by that prime. A dormant prime may spawn a fresh worker
+without reviving a sleeper; waking an old worker reactivates that owner's history whenever an
+app-wide slot is free. Internally every exported broker operation first finds the run it
+concerns (caller workstream, conversation, or command run id) and runs scoped to it. The swarm
+snapshot is version 7 (`runs[]` plus `dormantRuns[]`); a version-6 file, which held one active
+run in top-level fields, is migrated on restore and rewritten as version 7. Explicit
 swarm clear is different from parking: it retires the worker conversation fences and discards the
 retained histories. Turning Multi-agent **off is not Clear**: it stops/withdraws live execution,
 parks the owner history, and keeps that history durable through disabled app restarts so re-enable

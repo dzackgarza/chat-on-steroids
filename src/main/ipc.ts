@@ -613,7 +613,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       if (!(await persistAgentAuthorityNow())) {
         throw new Error('The agent clear could not be made durable. Retry the clear action.');
       }
-      if (outcome.cleared === 'worker') cancelWorkerCommands(outcome.reason, id);
+      if (outcome.cleared === 'worker') cancelWorkerCommands(outcome.reason, id, outcome.runId);
     }
     // The prime's report stays in the main process: the renderer needs the outcome, not
     // the message queued for the prime agent.

@@ -127,7 +127,10 @@ import {
   agentForOwnedConversation,
   bindConversation,
   claimWorkerRevival,
-  currentRunId,
+  runIsActive,
+  activeRunIds,
+  runIdForConversation,
+  swarmStateForRun,
   failAgent,
   failWorkerRevival,
   finishWorkerConversation,
@@ -145,7 +148,6 @@ import {
   sleepSilentDetachedWorkers,
   sleepWorker,
   stageQueuedWorkerRevivals,
-  swarmState,
   swarmTransferActive,
   noteAgentAlive,
   noteAgentContextTokens,
@@ -2184,10 +2186,11 @@ async function handle(
           command.id === reportedCommandId &&
           command.spec.type === "worker" &&
           command.spec.agent === reportedAgent &&
-          command.spec.runId === currentRunId() &&
+          runIsActive(command.spec.runId) &&
           command.claimedAt !== null,
       );
-      if (pending) bindConversation(reportedAgent, id);
+      if (pending?.spec.type === "worker")
+        bindConversation(reportedAgent, id, pending.spec.runId);
     }
     // The page reporting for a conversation is the other half of first-hand liveness, and
     // the reason a worker whose tab is open is never on the silence clock at all. It also
@@ -2296,7 +2299,10 @@ async function handle(
           }
           staged.commit();
           await recordAgentMessage(staged.report, "sent");
-          await wakeQueuedStoppedWorkers([workerAgent]);
+          await wakeQueuedStoppedWorkers(
+            [workerAgent],
+            runIdForConversation(id),
+          );
           // Browser-owned completion has no later MCP call whose dispatcher can run the
           // ordinary quiescent-release hook. If this was the last slot-holder, release/park the
           // active incarnation here; wakeQueuedStoppedWorkers() runs first so already-accepted
@@ -3361,7 +3367,10 @@ async function handle(
       drop(command, "workstream action superseded");
       return json(res, 409, { error: "workstream_action_superseded" }, origin);
     }
-    if (command.spec.type === "revive" && !revivalFor(command.spec.agent)) {
+    if (
+      command.spec.type === "revive" &&
+      !revivalFor(command.spec.agent, command.spec.runId)
+    ) {
       // tidyCommands() above normally retires these. This is the fail-closed twin of that:
       // an empty revival has no message of the prime's to type, and a page must never be
       // handed a command that would put nothing, or scaffolding alone, into a real chat.
@@ -3541,6 +3550,8 @@ async function handle(
     }
     const agent =
       ownedCommand?.spec.type === "worker" ? ownedCommand.spec.agent : null;
+    const agentRunId =
+      ownedCommand?.spec.type === "worker" ? ownedCommand.spec.runId : null;
     // The one moment at which the queued command and the conversation it became are
     // both in hand, and so the only chance to name that chat after the work rather
     // than after the bootstrap prompt about to be typed into it.
@@ -3632,8 +3643,9 @@ async function handle(
           );
         const revive = command.spec;
         const wrongChat = conversation !== revive.conversationId;
-        const staleRun = revive.runId !== currentRunId();
-        const revival = wrongChat || staleRun ? null : revivalFor(revive.agent);
+        const staleRun = !runIsActive(revive.runId);
+        const revival =
+          wrongChat || staleRun ? null : revivalFor(revive.agent, revive.runId);
         const alreadySent =
           !wrongChat &&
           !staleRun &&
@@ -3673,7 +3685,7 @@ async function handle(
           // Only the first two are this revival's to undo. A worker that stopped waking on its
           // own has already been put somewhere by whatever did that, and failWorkerRevival()
           // ignores anything that is not still `waking`, so this cannot invent a failure.
-          failWorkerRevival(revive.agent, why);
+          failWorkerRevival(revive.agent, why, revive.runId);
           receipt = {
             id,
             client: client || command.owner,
@@ -3809,7 +3821,7 @@ async function handle(
         if (!conversation) {
           const why =
             "the chat this app opened for it never said which conversation it was";
-          if (agent) failAgent(agent, why);
+          if (agent) failAgent(agent, why, undefined, { runId: agentRunId });
           receipt = {
             id,
             client: client || command.owner,
@@ -3833,7 +3845,7 @@ async function handle(
           void deliver();
           return json(res, 200, receiptReply(receipt), origin);
         }
-        if (command.spec.runId !== currentRunId()) {
+        if (!runIsActive(command.spec.runId)) {
           // A command id is precise, but it is not immortal. If the broker run changed while
           // this page was opening, the old command must not bind the same friendly worker id
           // in the new run. Normal run teardown removes these commands synchronously; this is
@@ -3851,15 +3863,17 @@ async function handle(
           // This is where a worker starts. Do it only after the post-await command ownership
           // revalidation above; a page cancelled while noteChatOrigin ran must never bind a slot.
           if (agent && /^[a-z0-9-]{1,40}$/i.test(agent)) {
-            bindConversation(agent, conversation);
+            bindConversation(agent, conversation, agentRunId);
           }
           const bound = agent
-            ? !pendingWorkerSpawns().some((worker) => worker.id === agent)
+            ? !pendingWorkerSpawns().some(
+                (worker) => worker.id === agent && worker.runId === agentRunId,
+              )
             : false;
           if (!bound) {
             const why =
               "the chat this app opened for the worker could not be bound to that slot";
-            if (agent) failAgent(agent, why);
+            if (agent) failAgent(agent, why, undefined, { runId: agentRunId });
             receipt = {
               id,
               client: client || command.owner,
@@ -3945,7 +3959,7 @@ async function handle(
       const why = error
         ? `the browser could not reopen the worker's chat — ${error}`
         : "the browser could not reopen the worker's chat";
-      failWorkerRevival(command.spec.agent, why);
+      failWorkerRevival(command.spec.agent, why, command.spec.runId);
       receipt = {
         id,
         client: client || command.owner,
@@ -3959,7 +3973,7 @@ async function handle(
       const why = error
         ? `the browser could not start the chat — ${error}`
         : "the browser could not start the chat";
-      if (agent) failAgent(agent, why);
+      if (agent) failAgent(agent, why, undefined, { runId: agentRunId });
       receipt = {
         id,
         client: client || command.owner,
@@ -4068,8 +4082,13 @@ interface DurableQuiescence {
  * durability barrier and only asks the browser after that exact revision is on disk. Failure is
  * recoverable: rollback leaves the worker sleeping with the original message still unread.
  */
-async function wakeQueuedStoppedWorkers(ids: readonly string[]): Promise<void> {
-  const staged = stageQueuedWorkerRevivals(ids);
+async function wakeQueuedStoppedWorkers(
+  ids: readonly string[],
+  runId: string | null,
+): Promise<void> {
+  // No run id means the worker's run is not active; nothing of its can be woken from here.
+  if (!runId) return;
+  const staged = stageQueuedWorkerRevivals(ids, runId);
   if (staged.waking.length === 0) return;
   try {
     if (!(await persistCriticalSwarmNow())) {
@@ -4080,7 +4099,7 @@ async function wakeQueuedStoppedWorkers(ids: readonly string[]): Promise<void> {
       return;
     }
     staged.commit();
-    requestWorkerRevivals(staged.waking);
+    requestWorkerRevivals(staged.waking, runId);
   } catch (err) {
     staged.rollback();
     logWarn(
@@ -4162,15 +4181,11 @@ async function durableQuiescence(
  * This sweep exists for the abandoned-tail case where no such next call arrives.
  */
 export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
-  const runId = currentRunId();
   // Any fleet-wide in-flight call used to abort the whole sweep, and with four busy
   // workstreams one almost always is, so dead workers were never reconsidered. Freeing one
   // worker's slot only needs that worker's own calls to be settled (checked per worker below);
-  // releasing the whole run still waits for global quiet further down.
-  if (!runId || swarmTransferActive() || observationWritesInFlight > 0) return false;
-
-  let state = swarmState();
-  if (!state.running) return false;
+  // releasing a whole run still waits for global quiet further down.
+  if (activeRunIds().length === 0 || observationWritesInFlight > 0) return false;
 
   // A detached worker has no browser page left to publish a turn boundary. Its dedicated
   // silence clock is therefore the only path that can eventually release the slot when the
@@ -4178,12 +4193,37 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
   // which means the exact worker that became completely silent was never reconsidered. Run it
   // from the bridge's 30-second maintenance loop as well; attached/background workers are
   // explicitly excluded inside sleepSilentDetachedWorkers and still require durable turn proof.
-  const stoppedWorkers: string[] = [];
-  for (const slept of sleepSilentDetachedWorkers(now)) {
-    if (slept.report) await recordAgentMessage(slept.report, "sent");
-    stoppedWorkers.push(slept.info.id);
+  const stoppedByRun = new Map<string, string[]>();
+  if (!swarmTransferActive()) {
+    for (const slept of sleepSilentDetachedWorkers(now)) {
+      if (slept.report) await recordAgentMessage(slept.report, "sent");
+      if (!slept.runId) continue;
+      stoppedByRun.set(slept.runId, [
+        ...(stoppedByRun.get(slept.runId) ?? []),
+        slept.info.id,
+      ]);
+    }
   }
-  if (stoppedWorkers.length > 0) state = swarmState();
+
+  // Every prime's run is swept on its own: one run's transfer, calls or workers say nothing
+  // about another's.
+  let released = false;
+  for (const runId of activeRunIds()) {
+    if (await sweepStaleRun(runId, now, stoppedByRun.get(runId) ?? []))
+      released = true;
+  }
+  return released;
+}
+
+/** {@link sweepStaleSwarm} for one active run. */
+async function sweepStaleRun(
+  runId: string,
+  now: number,
+  stoppedWorkers: string[],
+): Promise<boolean> {
+  if (swarmTransferActive(runId) || observationWritesInFlight > 0) return false;
+  let state = swarmStateForRun(runId);
+  if (!state?.running) return false;
 
   // The one place a worker that never called finish is allowed to stop holding its slot, and
   // the only one entitled to say so: durable quiescence is proof that no turn is running, which
@@ -4217,6 +4257,7 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
       const slept = sleepWorker(
         worker.id,
         `Its chat stopped reporting ${Math.round((now - worker.lastSeenAt) / 60_000)} min ago with no running call; its slot is released so the prime can wake or replace it.`,
+        runId,
       );
       if (slept?.report) {
         await recordAgentMessage(slept.report, "sent");
@@ -4226,8 +4267,8 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
     }
     const proof = await durableQuiescence(worker.conversationId, now);
     if (
-      currentRunId() !== runId ||
-      swarmTransferActive() ||
+      !runIsActive(runId) ||
+      swarmTransferActive(runId) ||
       observationWritesInFlight > 0
     )
       return false;
@@ -4251,6 +4292,7 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
         proof.ended
           ? "Its ChatGPT chat was closed and its work has been durably quiet since."
           : `Its last ChatGPT turn ended ${proof.lastOutcome ?? "without a completed outcome"} and it has been durably quiet since.`,
+        runId,
       );
       if (slept?.report) {
         await recordAgentMessage(slept.report, "sent");
@@ -4259,23 +4301,24 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
     }
   }
 
-  await wakeQueuedStoppedWorkers(stoppedWorkers);
+  await wakeQueuedStoppedWorkers(stoppedWorkers, runId);
 
   if (
-    currentRunId() !== runId ||
-    swarmTransferActive() ||
+    !runIsActive(runId) ||
+    swarmTransferActive(runId) ||
     inFlightMcpRequests() > 0 ||
     observationWritesInFlight > 0
   )
     return false;
-  state = swarmState();
+  state = swarmStateForRun(runId);
+  if (!state) return false;
   const workers = state.agents.filter((agent) => agent.role === "worker");
   // New lifecycle: an active run is capacity currently being consumed, not ownership of every
   // reusable worker chat. The broker decides whether all slot-holders are gone and, when so,
   // parks the owner state while releasing the global active claim. Ask it before the legacy
   // orphan fallback below; under older/terminal-only semantics this simply returns false for a
   // sleeping worker and leaves the existing checks unchanged.
-  if (releaseQuiescentRun()) return true;
+  if (releaseQuiescentRun({ runId })) return true;
   // A sleeping worker is not a finished one, and a run that owns one is not abandoned: its
   // chats are the thing the prime comes back to. Only a run whose every worker has genuinely
   // ended — finished, failed, or past the context ceiling — can be released from here at all;
@@ -4304,14 +4347,15 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
     if (!proof.quiescent) return false;
   }
   if (
-    currentRunId() !== runId ||
-    swarmTransferActive() ||
+    !runIsActive(runId) ||
+    swarmTransferActive(runId) ||
     inFlightMcpRequests() > 0 ||
     observationWritesInFlight > 0
   )
     return false;
   return releaseQuiescentRun({
     allowPendingReports: true,
+    runId,
     reason:
       "all workers are terminal and the run remained durably quiescent past the orphan grace period",
   });
@@ -4520,6 +4564,7 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
             worker.id,
             worker.task,
             worker.workstreamId,
+            worker.runId,
           );
       });
       // The same replay contract for waking a worker that already has a chat. A run restored
@@ -4529,7 +4574,11 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       dropReviveRequestListener = onReviveRequest(
         (revivals: WorkerRevival[]) => {
           for (const revival of revivals)
-            queueWorkerRevival(revival.id, revival.conversationId);
+            queueWorkerRevival(
+              revival.id,
+              revival.conversationId,
+              revival.runId,
+            );
         },
       );
       // When a run ends — cleared in the app, finished, or taken over by another chat —
@@ -4542,13 +4591,13 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
       // previous listener registered and the next run end cancelled commands and typed
       // stop notices once per restart the app had ever done.
       dropSwarmEndListener?.();
-      dropSwarmEndListener = onSwarmEnd((reason) => {
+      dropSwarmEndListener = onSwarmEnd((reason, _retired, runId) => {
         // Cancelling the queue stops the worker chats that have not opened yet. The ones
         // already open are not typed into: driving somebody's conversation to tell it to
         // stop is a second control channel, and the app has no business writing into a chat
         // it did not open for this. A worker whose run is gone finds that out the moment it
         // calls the connector, which is the only place it can act from anyway.
-        cancelWorkerCommands(reason);
+        cancelWorkerCommands(reason, undefined, runId);
       });
       if (staleSwarmTimer) clearInterval(staleSwarmTimer);
       staleSwarmTimer = setInterval(() => {
@@ -5163,7 +5212,7 @@ async function persistRevivalRedeem(
 
     // Re-check after waiting for a prior redeemer. An MCP call is allowed to win only before
     // the browser-owned broker claim is installed.
-    const revival = revivalFor(command.spec.agent);
+    const revival = revivalFor(command.spec.agent, command.spec.runId);
     if (!revival || revival.conversationId !== command.spec.conversationId)
       return "stale";
     if (!claimWorkerRevival(command.spec.agent, command.spec.conversationId))
@@ -5548,12 +5597,12 @@ export async function queueWorkerBootstrap(
   agent: string,
   task: string,
   workstreamId: string,
+  runId: string,
 ): Promise<BridgeCommand | null> {
-  const runId = currentRunId();
   // A worker bootstrap is authority for one concrete broker incarnation. There is no safe
-  // meaning for one outside a run, and manufacturing an unscoped command here is exactly how
-  // stale durable work later becomes somebody else's `worker-1`.
-  if (!runId) return null;
+  // meaning for one outside an active run, and manufacturing an unscoped command here is
+  // exactly how stale durable work later becomes somebody else's `worker-1`.
+  if (!runIsActive(runId)) return null;
   const spec: Extract<CommandSpec, { type: "worker" }> = {
     type: "worker",
     agent,
@@ -5579,6 +5628,8 @@ export async function queueWorkerBootstrap(
     failAgent(
       agent,
       `the worker workstream ${workstreamId} could not be reserved (${reserved.code})`,
+      undefined,
+      { runId },
     );
     return null;
   }
@@ -5599,6 +5650,8 @@ export async function queueWorkerBootstrap(
       failAgent(
         agent,
         `the worker workstream ${workstreamId} could not bind its existing bootstrap (${rebound.code})`,
+        undefined,
+        { runId },
       );
       return null;
     }
@@ -5625,10 +5678,10 @@ export async function queueWorkerBootstrap(
 export function queueWorkerRevival(
   agent: string,
   conversationId: string,
+  runId: string,
 ): BridgeCommand | null {
-  const runId = currentRunId();
-  // Same rule as a bootstrap: authority for one concrete broker incarnation, or nothing.
-  if (!runId || !conversationId) return null;
+  // Same rule as a bootstrap: authority for one concrete active incarnation, or nothing.
+  if (!runIsActive(runId) || !conversationId) return null;
   const command = queue({ type: "revive", agent, conversationId, runId });
   deliver();
   return describe(command, null);
@@ -6267,12 +6320,14 @@ function expire(command: Command): void {
   }
   if (
     spec.type === "worker" &&
-    !pendingWorkerSpawns().some((worker) => worker.id === spec.agent)
+    !pendingWorkerSpawns().some(
+      (worker) => worker.id === spec.agent && worker.runId === spec.runId,
+    )
   ) {
     retire(command, "its worker is bound and running");
     return;
   }
-  if (spec.type === "revive" && !revivalFor(spec.agent)) {
+  if (spec.type === "revive" && !revivalFor(spec.agent, spec.runId)) {
     retire(command, "its worker is no longer waiting to be woken");
     return;
   }
@@ -6518,7 +6573,7 @@ function bootstrapText(spec: CommandSpec, summary: string): string {
     // Written by the broker, out of that worker's own inbox, at the moment the page asks.
     // Empty means the broker no longer considers this worker to be waking, and an empty
     // message is never typed: the redeem route turns that into a stale marker instead.
-    return revivalFor(spec.agent)?.text ?? "";
+    return revivalFor(spec.agent, spec.runId)?.text ?? "";
   }
   if (spec.type === "worker") {
     // The brief, then the shortest protocol that still routes: who you are, where reports go,
@@ -6545,10 +6600,12 @@ function bootstrapText(spec: CommandSpec, summary: string): string {
   return resumeBootstrapText(summary);
 }
 
-/** The broker's current plan for waking one worker, or null once it is no longer waking. */
-function revivalFor(agent: string): WorkerRevival | null {
+/** The broker's current plan for waking one worker of one run, or null once it is not waking. */
+function revivalFor(agent: string, runId: string): WorkerRevival | null {
   return (
-    pendingWorkerRevivals().find((revival) => revival.id === agent) ?? null
+    pendingWorkerRevivals().find(
+      (revival) => revival.id === agent && revival.runId === runId,
+    ) ?? null
   );
 }
 
@@ -6674,12 +6731,15 @@ function drop(command: Command, why: string): boolean {
   // limit, it held the one in-flight agent-bearing bootstrap so the next worker never
   // opened, it kept the run looking alive to takeover, and the prime went on waiting for
   // a report from a chat that does not exist.
-  if (command.spec.type === "worker") failAgent(command.spec.agent, why);
+  if (command.spec.type === "worker")
+    failAgent(command.spec.agent, why, undefined, {
+      runId: command.spec.runId,
+    });
   // A revival that never happened is not a worker that failed. Nothing was typed into its
   // chat, so it goes back to sleeping with its inbox intact and its slot released, and the
   // prime is told the message it sent is still waiting to be delivered.
   if (command.spec.type === "revive")
-    failWorkerRevival(command.spec.agent, why);
+    failWorkerRevival(command.spec.agent, why, command.spec.runId);
   // A dropped local send must leave a receipt, or its caller polls /send/outcome into
   // `unknown_command` and learns nothing. Fold in the one cause the caller cannot see from
   // outside: the in-flight tool-call charge rule, which is the ordinary reason a page
@@ -6745,19 +6805,24 @@ function drop(command: Command, why: string): boolean {
  */
 function tidyCommands(): void {
   const now = Date.now();
-  const runId = currentRunId();
+  // Worker ids repeat across primes' histories; a run id and worker id together name one slot.
+  const slotKey = (runId: string, agent: string): string => `${runId}:${agent}`;
   const pendingWorkers = new Set(
-    pendingWorkerSpawns().map((worker) => worker.id),
+    pendingWorkerSpawns().map((worker) => slotKey(worker.runId, worker.id)),
   );
   const wakingWorkers = new Set(
-    pendingWorkerRevivals().map((revival) => revival.id),
+    pendingWorkerRevivals().map((revival) =>
+      slotKey(revival.runId, revival.id),
+    ),
   );
   for (const command of [...commands]) {
     const workerAgent =
-      command.spec.type === "worker" ? command.spec.agent : null;
+      command.spec.type === "worker"
+        ? slotKey(command.spec.runId, command.spec.agent)
+        : null;
     if (
       (command.spec.type === "worker" || command.spec.type === "revive") &&
-      command.spec.runId !== runId
+      !runIsActive(command.spec.runId)
     ) {
       // Run turnover is an identity boundary. A command from the retired incarnation is not
       // evidence that the same friendly worker id in the current run is already opening.
@@ -6769,7 +6834,7 @@ function tidyCommands(): void {
     }
     if (
       command.spec.type === "revive" &&
-      !wakingWorkers.has(command.spec.agent)
+      !wakingWorkers.has(slotKey(command.spec.runId, command.spec.agent))
     ) {
       // The slot stopped waking while this waited: the worker called in by itself, the prime's
       // send rolled back, or the run cleared it. Retiring rather than dropping is deliberate —
@@ -6888,11 +6953,16 @@ function commandOrigin(id: string): SessionOrigin | null {
  * take the queued tabs of its siblings with it — the whole-run form is what `onSwarmEnd`
  * uses, and pointing it at a single agent is what makes a per-worker clear safe.
  */
-export function cancelWorkerCommands(reason: string, agent?: string): number {
+export function cancelWorkerCommands(
+  reason: string,
+  agent?: string,
+  runId?: string,
+): number {
   const doomed = commands.filter(
     (command) =>
       (command.spec.type === "worker" || command.spec.type === "revive") &&
-      (agent === undefined || command.spec.agent === agent),
+      (agent === undefined || command.spec.agent === agent) &&
+      (runId === undefined || command.spec.runId === runId),
   );
   if (doomed.length === 0) return 0;
   const dead = new Set(doomed.map((command) => command.id));
@@ -7001,13 +7071,13 @@ function restoredCommandSpec(
     ).success
   ) {
     const worker = raw as Extract<CommandSpec, { type: "worker" }>;
-    if (worker.runId !== currentRunId()) return null;
+    if (!runIsActive(worker.runId)) return null;
     // A retained transport may deliberately outlive its live queue entry while broker failure
     // is being fsynced. If restart sees the *newer* broker side first, a terminal/sleeping row is
     // proof this old bootstrap must not be resurrected merely because its run id still matches a
     // sibling's active incarnation. `active` remains valid for the lost-ACK case: the binding may
     // already be durable while the leased browser command is still waiting for its retry.
-    const workerState = swarmState().agents.find(
+    const workerState = swarmStateForRun(worker.runId)?.agents.find(
       (entry) => entry.id === worker.agent && entry.role === "worker",
     )?.state;
     if (workerState !== "invited" && workerState !== "active") return null;
@@ -7033,8 +7103,8 @@ function restoredCommandSpec(
       "string"
   ) {
     const revive = raw as Extract<CommandSpec, { type: "revive" }>;
-    if (revive.runId !== currentRunId()) return null;
-    const revivalState = swarmState().agents.find(
+    if (!runIsActive(revive.runId)) return null;
+    const revivalState = swarmStateForRun(revive.runId)?.agents.find(
       (entry) => entry.id === revive.agent && entry.role === "worker",
     )?.state;
     if (revivalState !== "waking" && revivalState !== "active") return null;
@@ -7332,12 +7402,14 @@ export async function restoreCommands(): Promise<void> {
       const owed = pendingWorkerRevivals().find(
         (entry) =>
           entry.id === revive.agent &&
+          entry.runId === revive.runId &&
           entry.conversationId === revive.conversationId,
       );
       if (!owed) continue;
       failWorkerRevival(
         revive.agent,
         "its durable revival expired while the app was not running",
+        revive.runId,
       );
     }
 
