@@ -11,6 +11,11 @@ import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
 
+/** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
+export function provisionalRoute(conversationId: string): boolean {
+  return /^(?:WEB|local-chatgpt):/i.test(conversationId);
+}
+
 /**
  * Silence that counts as a stall. The managed model rarely thinks for more than two minutes
  * without acting; longer is a backend stall or a spiral, not work. A running tool call holds
@@ -27,7 +32,7 @@ export const WORKSTREAM_LEASE_MS = 2 * 60_000;
 const ATTACH_LEASE_MS = 5 * 60_000;
 
 function leaseFor(row: { phase: string; conversationId: string | null }): number {
-  return row.phase === "opening" || (row.conversationId ?? "").startsWith("WEB:")
+  return row.phase === "opening" || provisionalRoute(row.conversationId ?? "")
     ? ATTACH_LEASE_MS
     : WORKSTREAM_LEASE_MS;
 }
@@ -979,7 +984,7 @@ export async function nextWorkstreamActions(
       // never promoted to a server conversation. There is nothing to revive (reopening the
       // route lands on an empty page) and nothing to archive (the backend rejects the id):
       // retire it and open the replacement directly.
-      if (row.conversationId.startsWith("WEB:")) {
+      if (provisionalRoute(row.conversationId)) {
         if (!row.retiredConversations.includes(row.conversationId))
           row.retiredConversations.push(row.conversationId);
         row.conversationId = null;

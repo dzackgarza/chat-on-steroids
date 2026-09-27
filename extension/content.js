@@ -1746,7 +1746,7 @@
         // the new id is adopted, because from the next line onwards everything emitted
         // carries that id.
         const previousId = conversationId;
-        if (/^WEB:/i.test(previousId) && !/^WEB:/i.test(id)) {
+        if (/^(?:WEB|local-chatgpt):/i.test(previousId) && !/^(?:WEB|local-chatgpt):/i.test(id)) {
           // ChatGPT's own rewrite of a provisional WEB:<uuid> route to the server id is the
           // same chat. Bind the server id while the tab still records the WEB route, so the
           // service worker reports the promotion; `closed` first erased that record and
@@ -2994,7 +2994,7 @@
     // still both say A while the Fiber tree already belongs to B.
     if (askedConversation && CLF_DOM.conversationId() !== askedConversation) return;
     const concreteConversation = (value) =>
-      typeof value === 'string' && /^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(value)
+      typeof value === 'string' && /^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(value)
         ? value
         : null;
     // Capture the one page turn this document owns before filtering by Fiber's own conversation
@@ -8151,7 +8151,7 @@
    */
   const OPENED_CONVERSATION = (() => {
     try {
-      const match = /^\/c\/((?:WEB:)?[0-9a-f-]{8,64})/i.exec(location.pathname);
+      const match = /^\/c\/((?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64})/i.exec(decodeURIComponent(location.pathname));
       return match ? match[1] : null;
     } catch {
       return null;

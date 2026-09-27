@@ -28,6 +28,7 @@
  */
 
 import { noteUsageLimitSignal, sendBlockedUntil } from "./chatgpt-limits.js";
+import { provisionalRoute } from "./workstreams.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   bindCommandConversationKey,
@@ -1216,8 +1217,8 @@ async function workerFinalAcrossBatches(
 
 function conversationId(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  // Current ChatGPT routes are either legacy UUID-shaped ids or WEB:<uuid>.
-  return /^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(value) ? value : null;
+  // Current ChatGPT routes are legacy UUID-shaped ids, WEB:<uuid> or local-chatgpt:<uuid>.
+  return /^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(value) ? value : null;
 }
 
 /**
@@ -6402,7 +6403,8 @@ function tabConversation(url: string): string | null {
   try {
     const parsed = new URL(url);
     if (parsed.hostname !== "chatgpt.com") return null;
-    return conversationId(/^\/c\/([^/?#]+)/.exec(parsed.pathname)?.[1] ?? null);
+    const route = /^\/c\/([^/?#]+)/.exec(parsed.pathname)?.[1] ?? null;
+    return conversationId(route === null ? null : decodeURIComponent(route));
   } catch {
     return null;
   }
@@ -6549,7 +6551,7 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
       const conversation = row.conversationId ? currentBrowserRoute(row.conversationId) : null;
       if (
         !conversation ||
-        conversation.startsWith("WEB:") ||
+        provisionalRoute(conversation) ||
         !["active", "advancing"].includes(row.phase) ||
         kept.has(conversation) ||
         tabs.some((tab) => {

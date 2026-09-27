@@ -261,10 +261,12 @@ var CLF_DOM = (() => {
   /** The conversation this tab is on, or null for a chat that has not been sent yet. */
   function conversationId() {
     return safe(() => {
-      // ChatGPT now uses both legacy UUID routes and WEB:<uuid> routes for real authored
-      // conversations. The WEB prefix is part of the conversation id and must survive intact
-      // through recording/controller routing.
-      const match = /^\/c\/((?:WEB:)?[0-9a-f-]{8,64})/i.exec(location.pathname);
+      // ChatGPT now uses legacy UUID routes, WEB:<uuid> routes and (since 2026-09-27)
+      // local-chatgpt:<uuid> routes, percent-encoded in the path, for real authored
+      // conversations. The prefix is part of the conversation id and must survive intact
+      // through recording/controller routing. An unrecognised route left every fresh chat
+      // unbound, so the app replaced working chats every two minutes.
+      const match = /^\/c\/((?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64})/i.exec(decodeURIComponent(location.pathname));
       return match ? match[1] : null;
     }, null);
   }

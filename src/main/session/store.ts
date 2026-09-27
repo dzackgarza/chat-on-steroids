@@ -1954,7 +1954,7 @@ export async function rebindSession(
     // Browser conversation ids are UUID-like or WEB:<uuid>. A handful of store unit tests deliberately
     // use short symbolic ids and reuse them across retained temp sessions; ownership safety
     // applies to the real identity domain rather than manufacturing a test-only collision.
-    if (/^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
+    if (/^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
       const target = await findSessionByConversation(toConversationId, { requireUnique: true });
       if (target && target.id !== id) {
         logWarn(`session ${id} cannot move to ${toConversationId}: that chat already belongs to ${target.id}`);

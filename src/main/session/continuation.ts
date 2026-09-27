@@ -788,7 +788,7 @@ async function reconcileCommitting(entry: Continuation, toConversationId: string
     return { status: 'rejected', reason };
   }
 
-  if (/^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
+  if (/^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
     let target;
     try {
       target = await findSessionByConversation(toConversationId, { requireUnique: true });

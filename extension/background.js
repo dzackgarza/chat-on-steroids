@@ -1608,7 +1608,7 @@ async function markTerminal(id) {
 
 function cleanConversationId(value) {
   const id = typeof value === 'string' ? value.trim() : '';
-  return /^(?:WEB:)?[0-9a-f-]{8,64}$/i.test(id) ? id : null;
+  return /^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(id) ? id : null;
 }
 
 /** Records a tab's current conversation without writing storage on every poll. */
@@ -1623,7 +1623,8 @@ async function noteTabConversation(source, value) {
   tabConversations[key] = conversationId;
   await persistLive();
   if (!ownsDocument(source)) return false;
-  if (/^WEB:/i.test(conversationId)) void resolveWebRoute(id, conversationId).catch(() => undefined);
+  // WEB:<uuid> and local-chatgpt:<uuid> are client-only routes resolved to the server id below.
+  if (/^(?:WEB|local-chatgpt):/i.test(conversationId)) void resolveWebRoute(id, conversationId).catch(() => undefined);
   let promoted = false;
   if (previous && previous !== conversationId) {
     try {
@@ -1679,7 +1680,7 @@ async function resolveWebRoute(tabId, webId) {
       const execution = chrome.scripting.executeScript({
         target: { tabId }, world: 'MAIN', args: [webId],
         func: async (id) => {
-          if (location.pathname !== `/c/${id}`) return { moved: true };
+          if (decodeURIComponent(location.pathname) !== `/c/${id}`) return { moved: true };
           const ids = [...document.querySelectorAll('[data-message-id]')]
             .filter((node) => node.getAttribute('data-message-author-role') === 'user')
             .map((node) => node.getAttribute('data-message-id'))
@@ -1709,7 +1710,7 @@ async function resolveWebRoute(tabId, webId) {
       const result = (await Promise.race([execution, sleep(45_000).then(() => null)]).catch(() => null))?.[0]?.result;
       if (result?.moved) return;
       const serverId = cleanConversationId(result?.serverId);
-      if (serverId && !serverId.startsWith('WEB:')) {
+      if (serverId && !/^(?:WEB|local-chatgpt):/i.test(serverId)) {
         await call('/workstreams/routes', {
           method: 'POST',
           body: JSON.stringify({ promotions: [{ from: webId, to: serverId }] })
@@ -1822,7 +1823,7 @@ function conversationFromUrl(value) {
   try {
     const url = new URL(String(value || ''));
     if (url.protocol !== 'https:' || (url.hostname !== 'chatgpt.com' && url.hostname !== 'chat.openai.com')) return null;
-    const match = /^\/c\/((?:WEB:)?[0-9a-f-]{8,64})/i.exec(url.pathname);
+    const match = /^\/c\/((?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64})/i.exec(decodeURIComponent(url.pathname));
     return match ? match[1] : null;
   } catch {
     return null;
