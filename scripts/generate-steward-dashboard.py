@@ -418,6 +418,21 @@ def process_rows(repo: Path) -> list[dict[str, object]]:
 
 def lean_progress(repo: Path, dag: list[dict[str, object]]) -> dict[str, object]:
     """Report the current Sweep-III source, not the already-closed mapping phase."""
+    todo = (repo / "TODO.md").read_text(errors="replace")
+    if "First ready node — `realization-stub-audit`" in todo:
+        population = run(repo, "python3", "scripts/stub_population.py")
+        if not population.strip():
+            return {
+                "headline": "The construction-confirmation audit is clear",
+                "detail": "The repository's current first-ready definition gate has no remaining rows; later definition work remains governed by the TODO dependency graph.",
+                "remaining": 0,
+            }
+        remaining = len([line for line in population.splitlines() if line.strip()])
+        return {
+            "headline": f"{remaining:,} definitions still need construction confirmation",
+            "detail": "This is the repository's current first-ready definition gate. The count is recomputed from scripts/stub_population.py rather than copied from a source-level frontier section.",
+            "remaining": remaining,
+        }
     current = next(
         (
             str(node["id"])
