@@ -2552,7 +2552,7 @@ async function handle(
             },
           ];
         case "chat_error":
-          noteUsageLimitSignal(event.message.text);
+          noteUsageLimitSignal(event.message.text, event.time);
           return [{ ...base, kind: "chat_error", text: event.message.text }];
         case "turn_start":
           return [{ ...base, kind: "turn_start" }];
@@ -5928,7 +5928,7 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           continue;
         }
         if (row.phase === "opening" && receipt && !receipt.committed) {
-          noteUsageLimitSignal(receipt.error);
+          noteUsageLimitSignal(receipt.error, receipt.completedAt);
           if (foreignComposerDraft(receipt.error)) {
             // The extension keeps text it cannot prove the app typed (it may be the user's), so
             // every fresh chat would fail the same way. Retrying hid this for good (2026-09-27).

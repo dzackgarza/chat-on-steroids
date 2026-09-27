@@ -10,15 +10,14 @@
  * (2026-09-26 20:34 → 2026-09-27 06:45:27 UTC). Now the first sign of a limit makes the app
  * read the deadline and hold every workstream send until it passes.
  *
- * The read runs inside the managed Chrome over its DevTools port, in a chatgpt.com page (an
- * existing one when available, otherwise a short-lived tab), with the page's own session.
+ * The read is a direct backend call with the owner-provisioned session (see readSendBlock).
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { logError, logInfo, logWarn } from "./logger.js";
 
-const DEVTOOLS = `http://127.0.0.1:${process.env.CHROME_DEVTOOLS_PORT || "9222"}`;
 /** Signals arrive in bursts (one per chat); one read answers them all for a while. */
 const READ_INTERVAL_MS = 2 * 60_000;
 /** Resume a little after the published reset, not on the millisecond. */
@@ -41,6 +40,8 @@ let lastStrikeAt = 0;
 /** First hold, doubling per strike up to the cap. */
 const FIRST_HOLD_MS = 15 * 60_000;
 const MAX_HOLD_MS = 4 * 60 * 60_000;
+/** An observation older than this describes a past episode, not the account now. */
+const SIGNAL_FRESH_MS = 2 * 60_000;
 /** One burst of warnings (every chat reporting the same limit) is one strike, not dozens. */
 const STRIKE_DEBOUNCE_MS = 5 * 60_000;
 /** A quiet day resets the escalation. */
@@ -65,9 +66,13 @@ export function isUsageLimitText(text: string | null | undefined): boolean {
  * the limit 91 more times in 25 minutes. A hold is never shortened by a read; a published
  * resets_after only extends it.
  */
-export function noteUsageLimitSignal(text: string | null | undefined): void {
+export function noteUsageLimitSignal(text: string | null | undefined, observedAt: number): void {
   if (!isUsageLimitText(text)) return;
   const now = Date.now();
+  // Only a fresh observation describes the account now. The extension re-posts buffered page
+  // events (after a reload or when a chat binds); on 2026-09-27 the 20:34-20:55 notices from the
+  // night before were replayed at 15:36 and opened a false hold.
+  if (now - observedAt > SIGNAL_FRESH_MS) return;
   if (now - lastStrikeAt > STRIKE_RESET_MS) strikes = 0;
   if (now - lastStrikeAt >= STRIKE_DEBOUNCE_MS) {
     strikes++;
@@ -97,69 +102,46 @@ export function noteUsageLimitSignal(text: string | null | undefined): void {
     });
 }
 
-interface Target {
-  id: string;
-  type: string;
-  url: string;
-  webSocketDebuggerUrl?: string;
+/**
+ * The owner-provisioned ChatGPT browser session (mode 600). On the current frontend the page's
+ * own /api/auth/session answers 403 to scripts, so the backend is read with this credential
+ * directly: no browser tab, and so no race with the tab reaper.
+ */
+const SESSION_FILE = `${process.env.HOME}/.config/chat-on-steroids/chatgpt-session.json`;
+
+function sessionHeaders(): Record<string, string> {
+  const session = JSON.parse(readFileSync(SESSION_FILE, "utf8")) as {
+    accessToken: string;
+    accountId: string;
+    cookies: Record<string, string>;
+    expires: string;
+  };
+  assert(typeof session.accessToken === "string", `${SESSION_FILE} carries an accessToken`);
+  assert(Date.parse(session.expires) > Date.now(), `${SESSION_FILE} has not expired (${session.expires})`);
+  return {
+    Authorization: `Bearer ${session.accessToken}`,
+    "ChatGPT-Account-Id": session.accountId,
+    Cookie: Object.entries(session.cookies).map(([name, value]) => `${name}=${value}`).join("; "),
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+    Origin: "https://chatgpt.com",
+    Referer: "https://chatgpt.com/",
+  };
 }
 
-/** The `send` block's reset time (epoch ms), null when sends are not blocked. */
+/** The `send` block's reset time (epoch ms), null when sends are open. */
 export async function readSendBlock(): Promise<number | null> {
-  const targets = (await (await fetch(`${DEVTOOLS}/json/list`)).json()) as Target[];
-  let page = targets.find((t) => t.type === "page" && t.url.startsWith("https://chatgpt.com/"));
-  let temporary: Target | null = null;
-  if (!page) {
-    temporary = (await (await fetch(`${DEVTOOLS}/json/new?https://chatgpt.com/`, { method: "PUT" })).json()) as Target;
-    page = temporary;
-  }
-  try {
-    const ws = new WebSocket(page.webSocketDebuggerUrl!);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener("open", resolve, { once: true });
-      ws.addEventListener("error", reject, { once: true });
-    });
-    let id = 0;
-    const call = (method: string, params: Record<string, unknown>) =>
-      new Promise<{ result?: { result?: { value?: unknown } } }>((resolve) => {
-        const mine = ++id;
-        const onMessage = (event: MessageEvent) => {
-          const message = JSON.parse(String(event.data)) as { id?: number };
-          if (message.id !== mine) return;
-          ws.removeEventListener("message", onMessage);
-          resolve(message as never);
-        };
-        ws.addEventListener("message", onMessage);
-        ws.send(JSON.stringify({ id: mine, method, params }));
-      });
-    const expression = `(async () => {
-      for (let i = 0; i < 30 && location.origin !== 'https://chatgpt.com'; i++) await new Promise(r => setTimeout(r, 500));
-      const session = await fetch('/api/auth/session').then(r => r.json());
-      const response = await fetch('/backend-api/conversation/init', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + session.accessToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gizmo_id: null, requested_default_model: null, conversation_id: null, timezone_offset_min: 0 }),
-      });
-      const body = await response.json();
-      return JSON.stringify({ status: response.status, blocked: body.blocked_features });
-    })()`;
-    if (temporary) await new Promise((resolve) => setTimeout(resolve, 8000));
-    const reply = await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-    ws.close();
-    const value = reply.result?.result?.value;
-    assert(typeof value === "string", `conversation/init read did not complete: ${JSON.stringify(reply).slice(0, 300)}`);
-    const read = JSON.parse(value) as { status: number; blocked: unknown };
-    assert.equal(read.status, 200, "conversation/init answers 200");
-    assert(Array.isArray(read.blocked), "conversation/init carries a blocked_features list");
-    const send = (read.blocked as Array<{ name: string; resets_after: string }>).find((feature) => feature.name === "send");
-    if (send === undefined) return null; // the send feature is not blocked: sends are open
-    const resetsAt = Date.parse(send.resets_after);
-    assert(!Number.isNaN(resetsAt), `resets_after is a timestamp: ${send.resets_after}`);
-    return resetsAt;
-  } finally {
-    if (temporary) {
-      const closed = await fetch(`${DEVTOOLS}/json/close/${temporary.id}`);
-      assert(closed.ok, `the temporary chatgpt.com tab closes (HTTP ${closed.status})`);
-    }
-  }
+  const response = await fetch("https://chatgpt.com/backend-api/conversation/init", {
+    method: "POST",
+    headers: sessionHeaders(),
+    body: JSON.stringify({ gizmo_id: null, requested_default_model: null, conversation_id: null, timezone_offset_min: 0 }),
+  });
+  assert.equal(response.status, 200, "conversation/init answers 200");
+  const body = (await response.json()) as { blocked_features?: unknown };
+  assert(Array.isArray(body.blocked_features), "conversation/init carries a blocked_features list");
+  const send = (body.blocked_features as Array<{ name: string; resets_after: string }>).find((feature) => feature.name === "send");
+  if (send === undefined) return null; // the send feature is not blocked: sends are open
+  const resetsAt = Date.parse(send.resets_after);
+  assert(!Number.isNaN(resetsAt), `resets_after is a timestamp: ${send.resets_after}`);
+  return resetsAt;
 }
