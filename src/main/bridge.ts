@@ -6748,20 +6748,13 @@ function drop(command: Command, why: string): boolean {
       const pages = await tabs.list();
       const tab = pages.find((entry) => entry.id === target);
       if (!tab) return;
-      const shown = tabConversation(tab.url);
-      // A failed send into an existing chat did nothing in its tab, while another tab of that
-      // chat may be the one observing its running turn. Leaving both for the reaper let it keep
-      // this newer, idle copy and close the observer (lean-categories, 2026-09-25 05:42). Close
-      // this copy whenever the chat has another tab; keep it only as that chat's last tab.
-      const route = shown ? currentBrowserRoute(shown) : null;
-      const chatHasOtherTab =
-        route !== null &&
-        pages.some((entry) => {
-          if (entry.id === target) return false;
-          const other = tabConversation(entry.url);
-          return other !== null && currentBrowserRoute(other) === route;
-        });
-      if (!shown || chatHasOtherTab) await tabs.close(target);
+      // A failed send's tab is always closed. It did nothing, and keeping it as "the chat's last
+      // tab" left a document holding the dead command's marker and a delivery attempt stuck in
+      // revival custody. The extension then preferred that tab for every later revival of the
+      // chat, and each new reopen waited behind it until its own deadline: research replaced
+      // its chat at every turn end, retiring 220+ conversations (2026-09-27). A managed chat
+      // that needs a tab gets a clean one from reapBrowserTabs().
+      await tabs.close(target);
     })().catch((err: Error) =>
       logWarn(`bridge: could not close the tab opened for ${specKey(command.spec)} — ${err.message}`),
     );

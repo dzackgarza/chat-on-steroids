@@ -8301,6 +8301,23 @@
    * worker may be revived; it does not say ChatGPT has finished rendering the assistant turn
    * that contains that tool call. The recorder's conservative generation state is the latter.
    */
+  /** What currently keeps a revival from submitting, by name (empty when it may submit). */
+  function revivalBlockers(target, allowDraft = false) {
+    const blockers = [];
+    if (!commandReadinessInitialized) blockers.push('readiness-uninitialized');
+    if (!alive) blockers.push('document-not-alive');
+    if (CLF_DOM.conversationId() !== target) blockers.push(`conversation=${CLF_DOM.conversationId()}`);
+    if (generating) blockers.push('generating-flag');
+    if (CLF_DOM.generating()) blockers.push('stop-button');
+    if (pendingTools > 0) blockers.push(`pending-tools=${pendingTools}`);
+    if (nativeBusy) blockers.push('native-busy');
+    if (goalBusy) blockers.push('goal-busy');
+    if (compactCapture) blockers.push('compact-capture');
+    if (job && job.busy) blockers.push('job-busy');
+    if (!(CLF_DOM.composerSubmitReady && CLF_DOM.composerSubmitReady(allowDraft === true))) blockers.push('composer-not-submit-ready');
+    return blockers;
+  }
+
   function revivalSubmitReady(target, allowDraft = false) {
     if (!commandReadinessInitialized || !alive || CLF_DOM.conversationId() !== target) return false;
     if (generating || CLF_DOM.generating()) return false;
@@ -8342,6 +8359,7 @@
        * and keeps its absolute protection: the wait continues untouched.
        */
       const readyEnough = () => {
+        document.documentElement.setAttribute('data-clf-delivery-wait', revivalBlockers(target).join(' ') || 'ready');
         if (revivalSubmitReady(target)) return true;
         if (!revivalSubmitReady(target, true)) return false;
         const box = CLF_DOM.composer();
@@ -8415,6 +8433,7 @@
     const handBackAt = Date.now() + CUSTODY_HANDBACK_MS;
     while (!attempt?.cancelled && alive && CLF_DOM.conversationId() === target) {
       const reply = await ask({ type: 'defer_revival', id, conversationId: target });
+      document.documentElement.setAttribute('data-clf-delivery-wait', `custody:${JSON.stringify(reply)}`);
       if (attempt?.cancelled) return false;
       if (reply && reply.ok === true && reply.deferred === true && reply.preferredElsewhere !== true) return true;
       if (attempt?.cancelled || !alive || CLF_DOM.conversationId() !== target) return false;
