@@ -14,7 +14,8 @@
  * each app restart was pure load on the account, and ChatGPT flagged it as unusual activity.
  */
 
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 import { readDurable, writeDurableSoon } from "./durable.js";
 import { currentCall } from "./mcp/call-context.js";
@@ -88,7 +89,7 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
   const call = currentCall();
   if (!call?.workstreamId || last < first || !realPath.endsWith("/AGENTS.md")) return;
   await load();
-  const path = (await realpath(realPath).catch(() => null)) ?? realPath;
+  const path = await realpath(realPath);
   const key = readerKey(call.workstreamId, call.workstreamClaimId, path);
   const prior = coverage.get(key) ?? { path, totalLines, read: [] };
   coverage.set(key, {
@@ -102,22 +103,31 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
 /**
  * Null when the calling workstream may act; otherwise the refusal text, naming what is unread.
  *
- * `resolveRules` maps the virtual rules path to its real path, or null when the workspace has
- * no AGENTS.md (then there is nothing to gate on).
+ * `resolveWorkspace` maps the workstream's virtual workspace to its real directory and throws
+ * when it cannot. A workspace without an AGENTS.md (ENOENT) has no rules to gate on; any other
+ * failure to establish the rules file propagates, so the call fails loudly instead of running
+ * ungated.
  */
 export async function rulesGateRefusal(
   tool: string,
-  resolveRules: (virtualPath: string) => Promise<string | null>,
+  resolveWorkspace: (virtualWorkspace: string) => Promise<string>,
 ): Promise<string | null> {
   if (RULES_EXEMPT_TOOLS.has(tool)) return null;
   const call = currentCall();
   if (!call?.workstreamId) return null;
   const virtual = rulesVirtualPath(call.workstreamId);
-  if (!virtual) return null;
-  const resolved = await resolveRules(virtual);
-  if (!resolved) return null;
+  const workspace = workstreamWorkspace(call.workstreamId);
+  // A workstream with no workspace has no repository and therefore no rules file.
+  if (!virtual || !workspace) return null;
+  const candidate = join(await resolveWorkspace(workspace), "AGENTS.md");
+  try {
+    await stat(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
   await load();
-  const real = (await realpath(resolved).catch(() => null)) ?? resolved;
+  const real = await realpath(candidate);
   const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, real)) ?? {
     path: real,
     totalLines: null,

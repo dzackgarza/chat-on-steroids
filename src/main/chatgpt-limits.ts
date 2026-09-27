@@ -14,7 +14,7 @@
  * existing one when available, otherwise a short-lived tab), with the page's own session.
  */
 
-import { logInfo, logWarn } from "./logger.js";
+import { logError, logInfo, logWarn } from "./logger.js";
 
 const DEVTOOLS = `http://127.0.0.1:${process.env.CHROME_DEVTOOLS_PORT || "9222"}`;
 /** Signals arrive in bursts (one per chat); one read answers them all for a while. */
@@ -87,7 +87,8 @@ export function noteUsageLimitSignal(text: string | null | undefined): void {
         logInfo("ChatGPT usage-limit signal: conversation/init publishes no send block; the escalating hold stands");
       }
     })
-    .catch((error: unknown) => logWarn(`could not read ChatGPT's usage limit (hold stands): ${String(error)}`))
+    // The hold above is already in force and is not touched here: a failed read leaves it closed.
+    .catch((error: unknown) => logError(`could not read ChatGPT's usage limit; the escalating hold stands: ${String(error)}`))
     .finally(() => {
       reading = null;
     });
@@ -136,16 +137,27 @@ export async function readSendBlock(): Promise<number | null> {
         headers: { Authorization: 'Bearer ' + session.accessToken, 'Content-Type': 'application/json' },
         body: JSON.stringify({ gizmo_id: null, requested_default_model: null, conversation_id: null, timezone_offset_min: 0 }),
       });
+      if (!response.ok) return JSON.stringify({ error: 'conversation/init HTTP ' + response.status });
       const body = await response.json();
-      const send = (body.blocked_features || []).find(f => f.name === 'send');
-      return send ? send.resets_after : null;
+      if (!Array.isArray(body.blocked_features)) return JSON.stringify({ error: 'conversation/init has no blocked_features list' });
+      const send = body.blocked_features.find(f => f.name === 'send');
+      return JSON.stringify({ resetsAfter: send ? send.resets_after : null });
     })()`;
     if (temporary) await new Promise((resolve) => setTimeout(resolve, 8000));
     const reply = await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
     ws.close();
     const value = reply.result?.result?.value;
-    return typeof value === "string" ? Date.parse(value) : null;
+    if (typeof value !== "string") throw new Error(`conversation/init read did not complete: ${JSON.stringify(reply).slice(0, 300)}`);
+    const parsed = JSON.parse(value) as { error?: string; resetsAfter?: string | null };
+    if (parsed.error) throw new Error(parsed.error);
+    if (parsed.resetsAfter === null || parsed.resetsAfter === undefined) return null;
+    const resetsAt = Date.parse(parsed.resetsAfter);
+    if (Number.isNaN(resetsAt)) throw new Error(`unparseable resets_after ${parsed.resetsAfter}`);
+    return resetsAt;
   } finally {
-    if (temporary) await fetch(`${DEVTOOLS}/json/close/${temporary.id}`).catch(() => undefined);
+    if (temporary) {
+      const closed = await fetch(`${DEVTOOLS}/json/close/${temporary.id}`);
+      if (!closed.ok) throw new Error(`could not close the temporary chatgpt.com tab: HTTP ${closed.status}`);
+    }
   }
 }

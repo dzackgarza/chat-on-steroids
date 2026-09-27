@@ -174,7 +174,7 @@ export async function reuseGateRefusal(
   const done = accounted.get(key);
   let minted = mintedNames(hunks).filter((name) => !done?.has(name));
   if (root && minted.length > 0) {
-    const existing = await alreadyDefined(root, "HEAD", minted).catch(() => new Set<string>());
+    const existing = await alreadyDefined(root, "HEAD", minted);
     minted = minted.filter((name) => !existing.has(name));
   }
   if (minted.length === 0) return null;
@@ -237,8 +237,9 @@ export async function alreadyDefined(root: string, rev: string, candidates: read
     let out = "";
     try {
       out = await git(top, ["grep", "-h", "-o", "-E", pattern, rev, "--"]);
-    } catch {
-      continue; // git grep exits 1 when nothing matches
+    } catch (error) {
+      // git grep exits 1 when nothing matches: that is the answer "none defined", not a failure.
+      if ((error as { code?: unknown }).code !== 1) throw error;
     }
     for (const name of batch) if (new RegExp(`\\s${escapeRegex(name)}([^A-Za-z0-9_'.]|$)`).test(out)) found.add(name);
   }
@@ -270,7 +271,7 @@ export async function worktreeMinted(root: string, base: string): Promise<Set<st
     if (!CODE_FILE.test(file) || TEST_FILE.test(file)) continue;
     minted.add(file);
     const pattern = definitionPattern(file);
-    const text = pattern ? await readFile(`${root}/${file}`, "utf8").catch(() => "") : "";
+    const text = pattern ? await readFile(`${root}/${file}`, "utf8") : "";
     if (pattern) for (const name of names(text.slice(0, 1_000_000).split("\n"), pattern)) if (!exempt(name)) minted.add(name);
   }
   return minted;
@@ -279,28 +280,20 @@ export async function worktreeMinted(root: string, base: string): Promise<Set<st
 /** Taken before a shell command runs in a workstream. Null when there is nothing to watch. */
 export async function snapshotBeforeCommand(root: string | null): Promise<Snapshot | null> {
   const key = readerKey();
+  // No claimed workstream (the emergency recovery path) or no workspace: nothing to watch.
   if (!key || !root) return null;
-  try {
-    const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
-    const base = (await git(top, ["rev-parse", "HEAD"])).trim();
-    return { key, root: top, base, before: await worktreeMinted(top, base) };
-  } catch {
-    return null;
-  }
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const base = (await git(top, ["rev-parse", "HEAD"])).trim();
+  return { key, root: top, base, before: await worktreeMinted(top, base) };
 }
 
 /** After the command: names it minted with no record become pending for this conversation. */
 export async function noteCommandMinted(snapshot: Snapshot | null): Promise<string[]> {
   if (!snapshot) return [];
-  let after: Set<string>;
-  try {
-    after = await worktreeMinted(snapshot.root, snapshot.base);
-  } catch {
-    return [];
-  }
+  const after = await worktreeMinted(snapshot.root, snapshot.base);
   const done = accounted.get(snapshot.key);
   let fresh = [...after].filter((name) => !snapshot.before.has(name) && !done?.has(name));
-  const existing = await alreadyDefined(snapshot.root, snapshot.base, fresh).catch(() => new Set<string>());
+  const existing = await alreadyDefined(snapshot.root, snapshot.base, fresh);
   fresh = fresh.filter((name) => !existing.has(name));
   for (const name of fresh) setFor(pending, snapshot.key).add(name);
   return fresh;

@@ -892,28 +892,20 @@ export function createRegistrar(
           admitted.sessionId,
           async () => {
             // A chat acts only after it has read its repository's rules (rules-gate.ts).
-            const unread = await rulesGateRefusal(name, async (virtual) => {
-              try {
-                return (await resolvePath(ctx.roots, virtual)).real;
-              } catch {
-                return null;
-              }
-            });
+            const unread = await rulesGateRefusal(
+              name,
+              async (virtualWorkspace) => (await resolvePath(ctx.roots, virtualWorkspace)).real,
+            );
             if (unread) return fail(unread);
             const reusePending = reusePendingRefusal(name, args);
             if (reusePending) return fail(reusePending);
             noteSearch(name, args);
             if (name !== "exec_command" && name !== "write_stdin") return handler(args as never);
             // Shell commands can mint definitions without apply_patch; see reuse-gate.ts.
+            // No workspace: the workstream has no repository to watch. A workspace that fails
+            // to resolve is an error for this call, never an unwatched command.
             const workspace = workstreamWorkspace(admitted.id);
-            let root: string | null = null;
-            if (workspace) {
-              try {
-                root = (await resolvePath(ctx.roots, workspace)).real;
-              } catch {
-                root = null;
-              }
-            }
+            const root = workspace ? (await resolvePath(ctx.roots, workspace)).real : null;
             const snapshot = await snapshotBeforeCommand(root);
             const result = await handler(args as never);
             const minted = await noteCommandMinted(snapshot);
