@@ -330,9 +330,18 @@ anything else with a protocol-level unknown-tool error; there is no merged list 
 hidden acceptance. A deliberate reconnect is the clean boundary for changing the shape.
 2026-09-26: publishing one new Core tool (`reuse_record`) while fleet chats ran was followed
 within minutes by every chat reporting that the `workstream` operation was "not available in
-the current tool surface", and 35 minutes of no progress until the tool was withdrawn. New
-capability goes through optional arguments of existing tools; a new tool waits for an
-owner-planned reconnect.
+the current tool surface", and 35 minutes of no progress until the tool was withdrawn. A new
+tool waits for an owner-planned reconnect.
+
+**A schema change is not deployed until the ChatGPT app is refreshed.** ChatGPT holds its own
+snapshot of each connector's tool schemas. Any change to what `tools/list` serves (a new
+tool, a new or changed argument, even an optional one, or a changed description) reaches chats
+only after the custom app is refreshed in ChatGPT (Settings → Apps → the app → Refresh) and a
+new chat starts. Until then chats call the old shape. After d002ef1 added the optional
+`reuse_search` to `apply_patch`, only 9 of 48 patches carried it, while the reuse gate
+demanded it of every minting patch. Committing and restarting the daemon is half the change:
+the author of a schema change arranges the refresh in the same step, and checks a new chat's
+calls for the new field before any gate relies on it.
 
 **Acceptance.** Connector discovery/schema behavior is accepted only against the live ChatGPT
 connector. Typechecking can catch implementation errors but is not protocol proof.
