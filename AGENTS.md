@@ -3556,8 +3556,12 @@ Consult when an instrument is about to change what you do. None of it is the job
   2026-09-26: blocked 20:34 to exactly 06:45:27 UTC. Resume the fleet as soon as `resets_after`
   passes; do not guess cool-downs, probe blindly, or blame concurrency (all three were done that
   night, and all three were wrong).
+  The app now does this itself (`chatgpt-limits.ts`): the first limit signal reads the deadline
+  and holds every workstream send until it passes, with a log line naming the reset time.
 - Never leave text in chatgpt.com's new-chat composer. ChatGPT keeps it as a draft, and every
-  fresh chat the app opens then fails terminally with `initial-host-not-empty`.
+  fresh chat the app opens then fails terminally with `initial-host-not-empty`. The extension keeps
+  such text on purpose (it may be the user's). The app blocks the workstream with
+  `fresh_chat_blocked_by_foreign_draft` and tells you to clear it.
 - Most chat death strings are ChatGPT's, not this app's. Only "No visible progress for ten
   minutes" is ours.
 - A chat's title names the repository it started on, not the one it is working now. Attribute
