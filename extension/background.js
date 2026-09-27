@@ -1077,6 +1077,9 @@ async function redeemCommand(id, client, conversationId = null) {
   if (typeof conversationId === 'string' && conversationId) body.conversationId = conversationId;
   const result = await call('/commands/redeem', { method: 'POST', body: JSON.stringify(body) });
   if (result.status === 404) return { ok: true, command: null, gone: true };
+  // The app is holding every send for a ChatGPT usage limit. Nothing to type now, and nothing
+  // to report: the command stays queued and is redeemed after the hold.
+  if (result.status === 503 && result.data && result.data.error === 'usage_limit_hold') return { ok: true, command: null, held: true };
   // Another page already owns this command. Not an error to report: this page simply is not
   // the one the app is talking to, and it must type nothing.
   if (result.status === 409) return { ok: true, command: null, gone: true };

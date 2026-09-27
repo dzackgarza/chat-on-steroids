@@ -33,8 +33,18 @@ const LIMIT_PHRASES = [
 let blockedUntil = 0;
 let lastReadAt = 0;
 let reading: Promise<void> | null = null;
+/** Escalation: consecutive limit episodes hold longer. */
+let strikes = 0;
+let lastStrikeAt = 0;
+/** First hold, doubling per strike up to the cap. */
+const FIRST_HOLD_MS = 15 * 60_000;
+const MAX_HOLD_MS = 4 * 60 * 60_000;
+/** One burst of warnings (every chat reporting the same limit) is one strike, not dozens. */
+const STRIKE_DEBOUNCE_MS = 5 * 60_000;
+/** A quiet day resets the escalation. */
+const STRIKE_RESET_MS = 6 * 60 * 60_000;
 
-/** Until when every workstream send is held (epoch ms); 0 when sends are open. */
+/** Until when every send is held (epoch ms); 0 when sends are open. */
 export function sendBlockedUntil(now = Date.now()): number {
   return blockedUntil > now ? blockedUntil : 0;
 }
@@ -45,24 +55,39 @@ export function isUsageLimitText(text: string | null | undefined): boolean {
   return LIMIT_PHRASES.some((phrase) => lower.includes(phrase));
 }
 
-/** A sign of a limit was seen; read the published deadline unless one was read just now. */
+/**
+ * A sign of a limit was seen: hold every send now, then read the published deadline.
+ *
+ * The hold does not wait for a reset time. On 2026-09-26 ChatGPT published none during its
+ * "unusual activity" episode, the old handler therefore held nothing, and the app sent into
+ * the limit 91 more times in 25 minutes. A hold is never shortened by a read; a published
+ * resets_after only extends it.
+ */
 export function noteUsageLimitSignal(text: string | null | undefined): void {
   if (!isUsageLimitText(text)) return;
   const now = Date.now();
+  if (now - lastStrikeAt > STRIKE_RESET_MS) strikes = 0;
+  if (now - lastStrikeAt >= STRIKE_DEBOUNCE_MS) {
+    strikes++;
+    lastStrikeAt = now;
+    const hold = Math.min(MAX_HOLD_MS, FIRST_HOLD_MS * 2 ** (strikes - 1));
+    blockedUntil = Math.max(blockedUntil, now + hold);
+    logWarn(
+      `ChatGPT usage limit (strike ${strikes}): holding every send until ${new Date(blockedUntil).toISOString()}`,
+    );
+  }
   if (reading || now - lastReadAt < READ_INTERVAL_MS) return;
   lastReadAt = now;
   reading = readSendBlock()
     .then((resetsAt) => {
-      if (resetsAt && resetsAt > Date.now()) {
+      if (resetsAt && resetsAt + RESET_MARGIN_MS > blockedUntil) {
         blockedUntil = resetsAt + RESET_MARGIN_MS;
-        logWarn(
-          `ChatGPT usage limit: sends are blocked until ${new Date(resetsAt).toISOString()}; holding every workstream send until then`,
-        );
+        logWarn(`ChatGPT published a send-block reset at ${new Date(resetsAt).toISOString()}; hold extended to it`);
       } else if (resetsAt === null) {
-        logInfo("ChatGPT usage-limit signal seen, but conversation/init reports no send block");
+        logInfo("ChatGPT usage-limit signal: conversation/init publishes no send block; the escalating hold stands");
       }
     })
-    .catch((error: unknown) => logWarn(`could not read ChatGPT's usage limit: ${String(error)}`))
+    .catch((error: unknown) => logWarn(`could not read ChatGPT's usage limit (hold stands): ${String(error)}`))
     .finally(() => {
       reading = null;
     });

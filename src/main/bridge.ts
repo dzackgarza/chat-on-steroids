@@ -3328,10 +3328,16 @@ async function handle(
   // loss and close stale app-opened fresh tabs without guessing from age.
   if (route === "/commands/live" && req.method === "GET") {
     tidyCommands();
+    // Under a usage-limit hold the browser is shown no send or revival to open a tab for.
+    const held = sendBlockedUntil() > 0;
     return json(
       res,
       200,
-      { ids: commands.map((command) => command.id) },
+      {
+        ids: commands
+          .filter((command) => !held || (command.spec.type !== "send" && command.spec.type !== "revive"))
+          .map((command) => command.id),
+      },
       origin,
     );
   }
@@ -3365,6 +3371,12 @@ async function handle(
       // Cancelled, superseded, already sent, or from a previous run of the app. The page
       // does nothing, which is the point: a stale marker must never type anything.
       return json(res, 404, { error: "no_such_command" }, origin);
+    }
+    // Every typed message passes through here. While a usage-limit hold stands nothing is
+    // typed; the command stays queued and is redeemed after the hold (chatgpt-limits.ts).
+    const heldUntil = sendBlockedUntil();
+    if (heldUntil && (command.spec.type === "send" || command.spec.type === "revive")) {
+      return json(res, 503, { error: "usage_limit_hold", retryAt: heldUntil }, origin);
     }
     if (!workstreamCommandCurrent(command)) {
       drop(command, "workstream action superseded");
