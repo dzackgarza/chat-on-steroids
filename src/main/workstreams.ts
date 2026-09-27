@@ -10,6 +10,7 @@ import { runningToolCallsForWorkstream } from "./mcp/call-context.js";
 import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
+import { workerOwnsWorkstream } from "./agents.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -867,6 +868,8 @@ export async function nextWorkstreamActions(
   return exclusive(async () => {
     ready();
     for (const row of rows.values()) {
+      // Swarm workers are driven by agents.ts alone (see workerOwnsWorkstream).
+      if (workerOwnsWorkstream(row.id)) continue;
       // A durable five-minute failure remains a failure until a real new model/tool action
       // begins. Controller restart/resume must not convert it back into a fresh active lease.
       if (
@@ -1009,6 +1012,7 @@ export async function nextWorkstreamActions(
     return workstreamStatus().filter(
       (row) =>
         row.actionId !== null &&
+        !workerOwnsWorkstream(row.id) &&
         ["advancing", "recovering", "archiving", "opening"].includes(row.phase) &&
         // An opening row whose replacement chat already bound has been delivered; it waits for
         // that chat's `continue` (or the lease above), never for another fresh chat.

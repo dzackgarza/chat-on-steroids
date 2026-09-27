@@ -3713,6 +3713,24 @@ export function dormantWorkerNotice(conversationId: string | null | undefined): 
   );
 }
 
+/**
+ * Whether a swarm worker, live or dormant, owns this logical workstream.
+ *
+ * A worker's lifecycle (spawn, sleep, revive, finish) belongs to this module. Workstream
+ * recovery must never drive such a row: it re-opened parked workers' chats with a
+ * "Continue workstream … RECOVERY NOTICE" prompt, every tool there was then refused with
+ * WORKER_SLEEPING, and the fleet accumulated dozens of near-empty chats (2026-09-27).
+ */
+export function workerOwnsWorkstream(workstreamId: string): boolean {
+  for (const run of runs.values())
+    for (const agent of run.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId) return true;
+  for (const dormant of dormantRuns.values())
+    for (const agent of dormant.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId) return true;
+  return false;
+}
+
 export function dormantWorkerNoticeForWorkstream(
   workstreamId: string | null | undefined,
 ): string | null {
