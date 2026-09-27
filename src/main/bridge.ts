@@ -27,6 +27,7 @@
  * message into a chat. It cannot read a file, run anything, or change a permission.
  */
 
+import { noteUsageLimitSignal, sendBlockedUntil } from "./chatgpt-limits.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   bindCommandConversationKey,
@@ -2550,6 +2551,7 @@ async function handle(
             },
           ];
         case "chat_error":
+          noteUsageLimitSignal(event.message.text);
           return [{ ...base, kind: "chat_error", text: event.message.text }];
         case "turn_start":
           return [{ ...base, kind: "turn_start" }];
@@ -5731,6 +5733,12 @@ function freshChatThrottled(error: string | null | undefined): boolean {
   );
 }
 
+/** A fresh chat refused because the composer already held text the app cannot prove it typed. */
+function foreignComposerDraft(error: string | null | undefined): boolean {
+  const text = error ?? "";
+  return text.includes("initial-host-not-empty") || text.includes("something the user was writing");
+}
+
 function strikeFreshChatBackoff(now: number): number {
   freshChatBackoff.strikes += 1;
   const delay = Math.min(
@@ -5907,6 +5915,22 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           continue;
         }
         if (row.phase === "opening" && receipt && !receipt.committed) {
+          noteUsageLimitSignal(receipt.error);
+          if (foreignComposerDraft(receipt.error)) {
+            // The extension keeps text it cannot prove the app typed (it may be the user's), so
+            // every fresh chat would fail the same way. Retrying hid this for good (2026-09-27).
+            logWarn(
+              `workstream ${row.id}: the new-chat composer holds a draft this app did not write; every fresh chat fails until it is cleared`,
+            );
+            await blockWorkstreamAction(
+              row.id,
+              actionId,
+              "fresh_chat_blocked_by_foreign_draft: the chatgpt.com new-chat composer holds text this app did not type, " +
+                "so no fresh chat can start. Clear that draft in the managed browser (or have the owner confirm it can go), " +
+                "then resume the workstream.",
+            );
+            continue;
+          }
           if (actionId.startsWith("replace-")) {
             if (row.autoAdvance) {
               const rateLimited = freshChatThrottled(receipt.error);
@@ -5980,6 +6004,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           command.spec.type === "send" && command.spec.nonce === actionId,
       );
       if (!existing && row.phase === "opening" && now < freshChatBackoff.until) continue;
+      // A published usage-limit deadline holds every send, recovery included (chatgpt-limits.ts).
+      if (!existing && now < sendBlockedUntil(now)) continue;
       if (!existing && row.phase !== "opening" && row.conversationId)
         workstreamPushAt.set(currentBrowserRoute(row.conversationId), now);
       const command =
