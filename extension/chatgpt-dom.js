@@ -25,6 +25,17 @@
 
 var CLF_DOM = (() => {
   const TURN = 'section[data-testid^="conversation-turn"]';
+  /**
+   * ChatGPT's 2026-09-27 frontend (html[data-codex-window-type]) has no turn sections. One
+   * `[data-turn-key]` block holds an exchange, and each role is a unit keyed
+   * `<turn>:<n>:user|assistant` by the page's own search index. Message ids live on
+   * `data-chatgpt-search-message-ids` (user) and `data-chatgpt-selection-message-id`
+   * (assistant); the assistant node also names the server conversation id.
+   */
+  const UNIT = '[data-turn-key] [data-chatgpt-search-unit-key], [data-turn-key] [data-content-search-unit-key]';
+  const unitKey = (node) =>
+    node.getAttribute('data-chatgpt-search-unit-key') || node.getAttribute('data-content-search-unit-key') || '';
+  const ASSISTANT_PROSE = '.markdown, [data-markdown-text-style="assistant-message"]';
   // ChatGPT has used both shapes in the live renderer: the older tool-message span
   // and, as of 2026-08-15, a display-contents row wrapping the visible tool label.
   // Keep both explicit structural anchors; hashed CSS-module names remain off limits.
@@ -49,7 +60,8 @@ var CLF_DOM = (() => {
   const CONNECTOR = '[aria-label="Open tool call list" i]';
   const STOP =
     'button[data-testid="stop-button"], button[data-testid="composer-stop-button"], ' +
-    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"]';
+    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], ' +
+    'form[data-chatgpt-composer] button[aria-label^="Stop" i]';
   const SEND = 'button[data-testid="send-button"], form button[aria-label^="Send" i]';
   /** The composer's own trailing controls, where the send and dictation buttons live. */
   const TRAILING =
@@ -67,7 +79,10 @@ var CLF_DOM = (() => {
    * recent renderers also used the explicit test id below.
    */
   const COMPLETION_ACTION =
-    'button[data-testid="copy-turn-action-button"], button[aria-label="Copy message" i]';
+    'button[data-testid="copy-turn-action-button"], button[aria-label="Copy message" i]' +
+    // 2026-09-27 frontend: the assistant action bar's copy button is labelled plain "Copy";
+    // "Copy message" there belongs to the user message.
+    ', .turn-action-controls button[aria-label="Copy" i]';
 
   const safe = (fn, fallback) => {
     try {
@@ -165,7 +180,7 @@ var CLF_DOM = (() => {
         if (parts.length > 0) return parts.join('\n');
       }
       if (role === 'assistant') {
-        const parts = [...node.querySelectorAll('.markdown')]
+        const parts = [...node.querySelectorAll(ASSISTANT_PROSE)]
           .filter((part) => !(part.closest && part.closest('[data-interrupted]')))
           .filter((part) => !(part.closest && part.closest(TOOL)))
           .map((part) => text(part))
@@ -267,7 +282,16 @@ var CLF_DOM = (() => {
       // through recording/controller routing. An unrecognised route left every fresh chat
       // unbound, so the app replaced working chats every two minutes.
       const match = /^\/c\/((?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64})/i.exec(decodeURIComponent(location.pathname));
-      return match ? match[1] : null;
+      if (!match) return null;
+      // A local-chatgpt:<uuid> route is never rewritten in the URL; the page names the server
+      // conversation on its rendered assistant messages instead. Reporting it is the
+      // provisional -> server promotion that WEB: routes get from their URL rewrite.
+      if (/^local-chatgpt:/i.test(match[1])) {
+        const named = document.querySelector('[data-chatgpt-selection-conversation-id]');
+        const server = named && named.getAttribute('data-chatgpt-selection-conversation-id');
+        if (server && /^[0-9a-f-]{8,64}$/i.test(server)) return server;
+      }
+      return match[1];
     }, null);
   }
 
@@ -292,8 +316,32 @@ var CLF_DOM = (() => {
    * Group only sections that explicitly share role + id; id-less sections stay
    * independent because merging those would be a guess.
    */
+  /** Role units of the 2026-09-27 layout, newest last, one per unit key. */
+  function unitTurns() {
+    const out = [];
+    const byKey = new Set();
+    for (const node of document.querySelectorAll(UNIT)) {
+      const key = unitKey(node);
+      const role = /:(user|assistant)$/.exec(key)?.[1];
+      // The same unit key appears on nested wrappers; document order puts the outermost first.
+      if (!role || byKey.has(key)) continue;
+      byKey.add(key);
+      const idNode =
+        role === 'assistant'
+          ? node.querySelector('[data-chatgpt-selection-message-id]')
+          : node.closest('[data-chatgpt-search-message-ids]') || node.querySelector('[data-chatgpt-search-message-ids]');
+      const id =
+        (role === 'assistant'
+          ? idNode && idNode.getAttribute('data-chatgpt-selection-message-id')
+          : idNode && (idNode.getAttribute('data-chatgpt-search-message-ids') || '').split(/\s+/)[0]) || key;
+      out.push({ node, nodes: [node], id, role, unitKey: key });
+    }
+    return out;
+  }
+
   function turns() {
     return safe(() => {
+      if (document.querySelector('[data-turn-key]')) return unitTurns();
       const out = [];
       const byKey = new Map();
       for (const node of document.querySelectorAll(TURN)) {
@@ -328,6 +376,7 @@ var CLF_DOM = (() => {
    */
   function presentationTurns() {
     return safe(() => {
+      if (document.querySelector('[data-turn-key]')) return unitTurns();
       const out = [];
       let previous = null;
       for (const node of document.querySelectorAll(TURN)) {
@@ -381,6 +430,18 @@ var CLF_DOM = (() => {
       const out = [];
       const nodes = turnNodes(turn);
       let explicit = 0;
+      if (turn.unitKey && turn.id && turn.id !== turn.unitKey && !seen.has(turn.id)) {
+        seen.add(turn.id);
+        explicit++;
+        out.push({
+          id: turn.id,
+          role: turn.role,
+          text: messageText(turn.node, turn.role),
+          turnId: turn.id,
+          node: turn.node,
+          interrupted: interrupted(turn)
+        });
+      }
       for (const section of nodes) {
         for (const node of section.querySelectorAll('[data-message-id]')) {
           const id = node.getAttribute('data-message-id');
@@ -409,7 +470,7 @@ var CLF_DOM = (() => {
       if (turn.role === 'assistant' && explicit === 0) {
         const parts = [];
         for (const section of nodes) {
-          for (const markdown of section.querySelectorAll('.markdown')) {
+          for (const markdown of section.querySelectorAll(ASSISTANT_PROSE)) {
             if (markdown.closest && markdown.closest('[data-interrupted]')) continue;
             if (markdown.closest && markdown.closest(TOOL)) continue;
             if (markdown.closest && markdown.closest(OWN_SURFACES)) continue;
@@ -451,6 +512,15 @@ var CLF_DOM = (() => {
    */
   function completionAction(turn) {
     return safe(() => {
+      if (turn && turn.unitKey && turn.node) {
+        // The 2026-09-27 layout puts the action bar beside the assistant unit, inside the
+        // exchange's [data-turn-key] block: take the first action that follows this unit.
+        const block = turn.node.closest('[data-turn-key]');
+        for (const action of block ? block.querySelectorAll(COMPLETION_ACTION) : []) {
+          if (turn.node.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING) return action;
+        }
+        return null;
+      }
       for (const section of turnNodes(turn)) {
         const action = section && section.querySelector ? section.querySelector(COMPLETION_ACTION) : null;
         if (action) return action;
@@ -1082,7 +1152,7 @@ var CLF_DOM = (() => {
       for (const turn of turns()) {
         if (turn.role !== 'assistant') continue;
         for (const section of turnNodes(turn)) {
-          for (const markdown of section.querySelectorAll('.markdown')) {
+          for (const markdown of section.querySelectorAll(ASSISTANT_PROSE)) {
             const value = text(markdown, 500).replace(/\s+/g, ' ').trim();
             if (!value || !transportFailure(value) || texts.has(value)) continue;
             texts.add(value);
@@ -1288,6 +1358,11 @@ var CLF_DOM = (() => {
   function firstUserMessage() {
     return safe(() => {
       for (const turn of turns()) {
+        if (turn.unitKey) {
+          if (turn.role === 'assistant') return null;
+          if (turn.role === 'user') return turn.node;
+          continue;
+        }
         for (const section of turnNodes(turn)) {
           for (const node of section.querySelectorAll('[data-message-id]')) {
             const role = node.getAttribute('data-message-author-role') || turn.role;
