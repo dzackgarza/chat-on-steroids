@@ -22,7 +22,11 @@ import { createHash } from "node:crypto";
 import { readDurable, writeDurableSoon } from "./durable.js";
 import { logInfo, logWarn } from "./logger.js";
 
-type Fetch = { fingerprint: string; at: number };
+type Fetch = {
+  fingerprint: string;
+  at: number;
+  via: "tunnel-tools-list";
+};
 
 export type SchemaState =
   | { kind: "unknown" }
@@ -49,7 +53,13 @@ function fingerprint(result: unknown): string {
  */
 export async function trackCoreSchema(list: () => Promise<unknown>): Promise<void> {
   listCore = list;
-  fetched = await readDurable<Fetch>(DURABLE);
+  const restored = await readDurable<Partial<Fetch>>(DURABLE);
+  fetched =
+    restored?.via === "tunnel-tools-list" &&
+    typeof restored.fingerprint === "string" &&
+    typeof restored.at === "number"
+      ? (restored as Fetch)
+      : null;
   served = fingerprint(await list());
   const state = schemaState();
   logWarn(`connector schema: serving Core ${served}; ${describe(state)}`);
@@ -59,7 +69,7 @@ export async function trackCoreSchema(list: () => Promise<unknown>): Promise<voi
 export async function noteChatGptListing(): Promise<void> {
   assert(listCore, "trackCoreSchema ran before the first request");
   served = fingerprint(await listCore());
-  fetched = { fingerprint: served, at: Date.now() };
+  fetched = { fingerprint: served, at: Date.now(), via: "tunnel-tools-list" };
   writeDurableSoon(DURABLE, fetched);
   if (staleSince !== null) logWarn(`connector schema: ChatGPT fetched Core ${served}; workstream sends resume`);
   else logInfo(`connector schema: ChatGPT fetched Core ${served}`);

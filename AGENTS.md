@@ -343,7 +343,9 @@ demanded it of every minting patch. Committing and restarting the daemon is half
 the author of a schema change arranges the refresh in the same step, and checks a new chat's
 calls for the new field before any gate relies on it. `connector-schema.ts` enforces this. It
 fingerprints the Core `tools/list` the handler serves and records the fingerprint whenever
-ChatGPT (a request through the tunnel, carrying `cf-connecting-ip`) fetches `tools/list`. While
+ChatGPT fetches `tools/list` through the managed connector path. Self-tests and the tunnel
+client's marked startup probes are excluded; do not key this proof on a provider-specific
+forwarding header. While
 the two differ, it holds every new workstream send and logs the refresh it needs. GET
 `/workstreams` reports the state as `connectorSchema`. A steward reads it before resuming any
 workstream.

@@ -524,14 +524,16 @@ export async function startMcpServer(
         else logInfo(diagnostic);
       }
     }
-    // ChatGPT's tools/list through the public tunnel is the moment its schema snapshot changes
-    // (connector-schema.ts). Local requests (probes, self-tests) never carry cf-connecting-ip.
+    // ChatGPT's tools/list through the managed tunnel is the moment its schema snapshot changes
+    // (connector-schema.ts). The OpenAI tunnel is outbound and does not supply a Cloudflare
+    // forwarding header. The same boundary used above for requestSeenAt is the evidence here:
+    // exclude this process's self-test and tunnel-client's marked startup probe; any remaining
+    // request to the secret Core MCP endpoint arrived through the configured connector path.
     const chatGptCore =
       req.method === "POST" &&
       route.id === "core" &&
       !selfTest &&
-      !tunnelProbe &&
-      typeof req.headers["cf-connecting-ip"] === "string";
+      !tunnelProbe;
     if (req.method === "POST" && (declaredHeader === undefined || chatGptCore)) {
       void readBoundedJsonBody(req).then((parsed) => {
         if (parsed.error === "payload_too_large") {
