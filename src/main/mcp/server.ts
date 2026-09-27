@@ -17,6 +17,7 @@
  * protected-resource metadata request properly and never emits a non-JSON body.
  */
 
+import assert from "node:assert/strict";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   connectorSessionFromHeader,
@@ -36,6 +37,7 @@ import { buildServer, resetToolClock, type ToolContext } from "./tools.js";
 import { SURFACE_IDS, surfaceDefinition, type SurfaceId } from "./surfaces.js";
 import { restoreConversationKeys } from "../session/conversation-key.js";
 import { restoreWorkstreams } from "../workstreams.js";
+import { noteChatGptListing, trackCoreSchema } from "../connector-schema.js";
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -106,6 +108,47 @@ function jsonError(
  * header guard advertises, answer immediately, and drain the remaining socket bytes without
  * keeping them in memory.
  */
+/** Whether a JSON-RPC body (single or batch) asks for tools/list. */
+function listsTools(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some(
+    (message) =>
+      message !== null &&
+      typeof message === "object" &&
+      (message as { method?: unknown }).method === "tools/list",
+  );
+}
+
+/** The handler's own tools/list answer, asked for exactly as a client would ask. */
+async function listTools(
+  mcp: ReturnType<typeof createMcpHandler>,
+  url: string,
+): Promise<unknown> {
+  const response = await mcp.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }),
+  );
+  assert.equal(response.status, 200, "tools/list answers 200");
+  const text = await response.text();
+  const payload = text.startsWith("{")
+    ? text
+    : text
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+  assert(payload, `tools/list answered a JSON-RPC message: ${text.slice(0, 200)}`);
+  const message = JSON.parse(payload) as { result?: unknown };
+  assert(message.result !== undefined, `tools/list answered a result: ${payload.slice(0, 200)}`);
+  return message.result;
+}
+
 function readBoundedJsonBody(
   req: http.IncomingMessage,
 ): Promise<{ body?: unknown; error?: "payload_too_large" | "invalid_json" }> {
@@ -340,20 +383,24 @@ export async function startMcpServer(
   // advertised: the Core handler has no `computer` registered at all, so a call for it
   // fails as an unknown tool inside the protocol layer, with nothing here to "helpfully"
   // forward it to the other surface.
-  const routes = surfacePaths.map((surface) => ({
+  const routes = surfacePaths.map((surface) => {
+    const mcp = createMcpHandler(() =>
+      buildServer(stableContext(surface.id), surface.id),
+    );
+    return {
     ...surface,
     prmPath: `${PRM_PREFIX}${surface.basePath}`,
     url: "",
+    mcp,
     handler: toNodeHandler(
-      createMcpHandler(() =>
-        buildServer(stableContext(surface.id), surface.id),
-      ),
+      mcp,
       {
         onerror: (error) =>
           logError(`MCP handler error (${surface.id}): ${error.message}`),
       },
     ),
-  }));
+    };
+  });
   const checkHost = localhostHostValidation();
   const checkOrigin = localhostOriginValidation();
   const identityDiagnostics = new Set<string>();
@@ -477,7 +524,15 @@ export async function startMcpServer(
         else logInfo(diagnostic);
       }
     }
-    if (req.method === "POST" && declaredHeader === undefined) {
+    // ChatGPT's tools/list through the public tunnel is the moment its schema snapshot changes
+    // (connector-schema.ts). Local requests (probes, self-tests) never carry cf-connecting-ip.
+    const chatGptCore =
+      req.method === "POST" &&
+      route.id === "core" &&
+      !selfTest &&
+      !tunnelProbe &&
+      typeof req.headers["cf-connecting-ip"] === "string";
+    if (req.method === "POST" && (declaredHeader === undefined || chatGptCore)) {
       void readBoundedJsonBody(req).then((parsed) => {
         if (parsed.error === "payload_too_large") {
           jsonError(res, 413, "payload_too_large");
@@ -487,6 +542,8 @@ export async function startMcpServer(
           jsonError(res, 400, "invalid_json");
           return;
         }
+        if (chatGptCore && listsTools(parsed.body))
+          res.on("finish", () => void noteChatGptListing());
         withInboundIdentity(
           identity,
           () => void route.handler(req, res, parsed.body),
@@ -517,6 +574,9 @@ export async function startMcpServer(
   if (address === null || typeof address === "string") {
     throw new Error("Could not determine the local server port");
   }
+  const core = routes.find((surface) => surface.id === "core");
+  assert(core, "the Core surface is served");
+  await trackCoreSchema(() => listTools(core.mcp, `http://127.0.0.1:${address.port}${core.basePath}`));
 
   server.on("error", (err) => logError(`Local server error: ${err.message}`));
   logInfo(`server started on 127.0.0.1:${address.port}`);

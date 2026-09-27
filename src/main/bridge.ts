@@ -28,6 +28,7 @@
  */
 
 import { noteUsageLimitSignal, sendBlockedUntil } from "./chatgpt-limits.js";
+import { schemaState, workstreamSendsHeldBySchema } from "./connector-schema.js";
 import { provisionalRoute } from "./workstreams.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
@@ -1440,6 +1441,7 @@ async function handle(
               expiresAt: row.lastActivity + WORKSTREAM_LEASE_MS,
             }),
           ),
+          connectorSchema: schemaState(),
         },
         origin,
       );
@@ -6019,6 +6021,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
       if (!existing && row.phase === "opening" && now < freshChatBackoff.until) continue;
       // A published usage-limit deadline holds every send, recovery included (chatgpt-limits.ts).
       if (!existing && now < sendBlockedUntil(now)) continue;
+      // A chat started on an old tool schema cannot do what the gates ask (connector-schema.ts).
+      if (!existing && workstreamSendsHeldBySchema(now)) continue;
       if (!existing && row.phase !== "opening" && row.conversationId)
         workstreamPushAt.set(currentBrowserRoute(row.conversationId), now);
       const command =

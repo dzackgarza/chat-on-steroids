@@ -341,7 +341,12 @@ new chat starts. Until then chats call the old shape. After d002ef1 added the op
 `reuse_search` to `apply_patch`, only 9 of 48 patches carried it, while the reuse gate
 demanded it of every minting patch. Committing and restarting the daemon is half the change:
 the author of a schema change arranges the refresh in the same step, and checks a new chat's
-calls for the new field before any gate relies on it.
+calls for the new field before any gate relies on it. `connector-schema.ts` enforces this. It
+fingerprints the Core `tools/list` the handler serves and records the fingerprint whenever
+ChatGPT (a request through the tunnel, carrying `cf-connecting-ip`) fetches `tools/list`. While
+the two differ, it holds every new workstream send and logs the refresh it needs. GET
+`/workstreams` reports the state as `connectorSchema`. A steward reads it before resuming any
+workstream.
 
 **Acceptance.** Connector discovery/schema behavior is accepted only against the live ChatGPT
 connector. Typechecking can catch implementation errors but is not protocol proof.
