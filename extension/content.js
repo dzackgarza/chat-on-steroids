@@ -8359,7 +8359,7 @@
        * and keeps its absolute protection: the wait continues untouched.
        */
       const readyEnough = () => {
-        document.documentElement.setAttribute('data-clf-delivery-wait', revivalBlockers(target).join(' ') || 'ready');
+        markDelivery('data-clf-delivery-wait', revivalBlockers(target).join(' ') || 'ready');
         if (revivalSubmitReady(target)) return true;
         if (!revivalSubmitReady(target, true)) return false;
         const box = CLF_DOM.composer();
@@ -8433,7 +8433,7 @@
     const handBackAt = Date.now() + CUSTODY_HANDBACK_MS;
     while (!attempt?.cancelled && alive && CLF_DOM.conversationId() === target) {
       const reply = await ask({ type: 'defer_revival', id, conversationId: target });
-      document.documentElement.setAttribute('data-clf-delivery-wait', `custody:${JSON.stringify(reply)}`);
+      markDelivery('data-clf-delivery-wait', `custody:${JSON.stringify(reply)}`);
       if (attempt?.cancelled) return false;
       if (reply && reply.ok === true && reply.deferred === true && reply.preferredElsewhere !== true) return true;
       if (attempt?.cancelled || !alive || CLF_DOM.conversationId() !== target) return false;
@@ -8556,7 +8556,7 @@
     try {
       await deliverCommand(id, fromUrl, reportClaim, attempt);
     } finally {
-      document.documentElement.setAttribute('data-clf-delivery-step', `${attempt.id}:ended-at:${attempt.step}`);
+      markDelivery('data-clf-delivery-step', `${attempt.id}:ended-at:${attempt.step}`);
       reportClaim(false);
       if (commandAttempt === attempt) commandAttempt = null;
       if (gateJournal) commandJournalGate = false;
@@ -8571,7 +8571,18 @@
    */
   function markDeliveryStep(attempt, step) {
     attempt.step = step;
-    document.documentElement.setAttribute('data-clf-delivery-step', `${attempt.id}:${step}`);
+    markDelivery('data-clf-delivery-step', `${attempt.id}:${step}`);
+  }
+
+  /**
+   * Writes a delivery attribute on <html> only when its value changes. Every setAttribute queues
+   * a mutation record even for an unchanged value, and the revival readiness wait observes
+   * attributes on the whole document and re-renders this marker on every record. Writing
+   * unconditionally from there fed the observer its own write: an endless microtask loop that
+   * froze the page's main thread at revival-submit-ready (2026-09-27, every existing-chat send).
+   */
+  function markDelivery(name, value) {
+    if (document.documentElement.getAttribute(name) !== value) document.documentElement.setAttribute(name, value);
   }
 
   async function deliverCommand(id, fromUrl = true, reportClaim = () => undefined, attempt = null) {
@@ -8620,6 +8631,15 @@
       !preallocatedFreshConversation
     )
       return;
+    // runCommand gated the journal while this page could still have been a fresh chat, which is
+    // what an app-opened /c/<id> page looks like until its transcript renders. It is now known to
+    // be a revival of an authored chat, and a revival must not be gated: its readiness fence below
+    // waits for exactly these observations to flush. Left gated, flush() refused forever and every
+    // existing-chat send waited at revival-submit-ready until the app gave up (2026-09-27).
+    if (fromUrl && openedConversation && commandJournalGate) {
+      commandJournalGate = false;
+      void flush();
+    }
 
     // A same-chat command is a revival. Do not cross the per-document redeem boundary merely
     // because its composer exists: ChatGPT keeps that composer mounted while the worker's final

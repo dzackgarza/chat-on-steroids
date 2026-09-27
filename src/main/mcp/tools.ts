@@ -38,6 +38,9 @@ function rulesNotice(id: string): string {
   const rules = `${workspace.replace(/\/+$/, "")}/AGENTS.md`;
   return (
     `\nYour next call, now, in this turn: read with paths=["${rules}"], continuing until every line is read; then follow it and carry on. ` +
+    "`read` is a tool of this same connector, beside `workstream`, `exec_command` and `apply_patch`. If it is not " +
+    "among the tools you have loaded, look it up in this connector by the name `read` and call it; a tool you have not " +
+    "looked up yet is not a missing tool. " +
     "Until this chat has read every line of it, the app refuses every tool except read, find and view_image. " +
     "Reading it is a step to do, not a blocker to report: never end your turn on it."
   );
