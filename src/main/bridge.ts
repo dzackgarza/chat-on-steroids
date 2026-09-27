@@ -5704,7 +5704,9 @@ const WORKSTREAM_ACTION_MAX_MS = 5 * 60_000;
  */
 const WORKSTREAM_RATE_LIMIT_BACKOFF_MS = 45_000;
 const WORKSTREAM_RATE_LIMIT_JITTER_MS = 30_000;
-const FRESH_CHAT_BACKOFF_MAX_MS = 5 * 60_000;
+// A flagged account ("unusual activity", 2026-09-26) stayed throttled for hours; a 5-minute
+// cap kept a fresh-chat attempt going every few minutes the whole time.
+const FRESH_CHAT_BACKOFF_MAX_MS = 60 * 60_000;
 /**
  * Fleet-wide hold on opening fresh chats after ChatGPT throttles one. Per-workstream holds let
  * three stalled workstreams retry in turn every ~26 s and keep the account at 429 for 15+
@@ -5721,7 +5723,11 @@ function freshChatThrottled(error: string | null | undefined): boolean {
     // Under a 429 the new composer accepts the click and silently keeps the text: no notice,
     // no navigation, send button enabled.
     text.includes("did not accept the bootstrap send") ||
-    text.includes("never exposed a usable composer")
+    text.includes("never exposed a usable composer") ||
+    // Once ChatGPT has throttled, a fresh chat that accepts the text but never becomes a
+    // conversation is the same backpressure. Without this it retried every two minutes with
+    // no strike (2026-09-26 23:55-00:24, strikes stuck at 5 between).
+    (text.includes(SENT_WAITING_FOR_CONVERSATION) && freshChatBackoff.strikes > 0)
   );
 }
 
