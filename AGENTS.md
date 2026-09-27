@@ -328,11 +328,35 @@ because it was visible earlier) and *live* (the operation is allowed now).
 and the live guards are. A server registers only tools its surface declares and answers
 anything else with a protocol-level unknown-tool error; there is no merged list and no
 hidden acceptance. A deliberate reconnect is the clean boundary for changing the shape.
+2026-09-26: publishing one new Core tool (`reuse_record`) while fleet chats ran was followed
+within minutes by every chat reporting that the `workstream` operation was "not available in
+the current tool surface", and 35 minutes of no progress until the tool was withdrawn. New
+capability goes through optional arguments of existing tools; a new tool waits for an
+owner-planned reconnect.
 
 **Acceptance.** Connector discovery/schema behavior is accepted only against the live ChatGPT
 connector. Typechecking can catch implementation errors but is not protocol proof.
 
 ## 7. One MCP call, end to end
+
+Two gates run inside every admitted workstream call, before the handler (`kernel.ts`
+registrar):
+
+- **Rules gate** (`rules-gate.ts`): until the `read` tool has returned every line of
+  `<workspace>/AGENTS.md` to this conversation, every tool except `read`, `find` and
+  `view_image` is refused with `RULES_UNREAD`, naming the unread ranges and the exact next read.
+  Coverage is per conversation and durable (`rules-coverage` state), so restarts do not force
+  re-reads. The notice is imperative ("your next call, now, in this turn") because a chat that
+  was told the rule descriptively ended its turn calling it a blocker.
+- **Reuse gate** (`reuse-gate.ts`): a patch that adds a new code file or a definition name that
+  no tracked file already defines must carry `reuse_search`. Per name, it gives the searches
+  run, what they found, and why none is reused. Each search must match a `find` call or
+  rg/grep/fd/ast-grep/probe command this conversation actually ran, and a search for the
+  invented name does not count. Around every `exec_command`/`write_stdin` the workspace is
+  diffed against the pre-command HEAD, so shell-written definitions become pending, and every
+  tool except reading ones is refused until an `apply_patch` carries a covering `reuse_search`.
+  Names already defined elsewhere (Sage's `one()`, `zero()`, `_repr_`) are overrides, not
+  mints; before that rule, a new `one()` locked research out for half an hour.
 
 ```text
 tunnel request
@@ -3194,6 +3218,11 @@ not exempt; it is the one for which semantic sampling matters most.
 
 ### The tick
 
+The tick is a session-only cron job (`13,43 * * * *`) whose prompt is saved verbatim in
+`steward-dashboard/tick-prompt.md`. A session continuation silently drops it, and on
+2026-09-26 ticks stopped twice unnoticed. After any continuation, check that the job exists
+and recreate it from that file.
+
 Run these steps in order. Skipping the early ones and starting from chat liveness is the failure
 mode that produced most of the incidents in this section.
 
@@ -3518,8 +3547,17 @@ Consult when an instrument is about to change what you do. None of it is the job
 - Never scan a recording with `jq`; an invalid surrogate escape aborts it mid-file and a
   healthy chat looks frozen for hours. Use `grep` and `sed`.
 - Give `just say` the full conversation id. A prefix opens a new chat and types into that.
-- Do not open several chats at once; that burst earns the rate limit. Retry a limited
-  dispatch at 30s, 1m, 2m, 5m before deferring.
+- ChatGPT enforces subscription usage limits with a fixed reset time. When sends stop working
+  (the page says "Our systems have detected unusual activity coming from your system", "You've
+  hit your rate limit", or fresh chats will not open), read the state from a chatgpt.com page:
+  `POST /backend-api/conversation/init` returns `blocked_features: [{name: "send",
+  resets_after}]` plus `limits_progress` quotas. The deadline is fixed; it does not slide, and
+  the page removes the send button while it holds, so attempts never reach the server.
+  2026-09-26: blocked 20:34 to exactly 06:45:27 UTC. Resume the fleet as soon as `resets_after`
+  passes; do not guess cool-downs, probe blindly, or blame concurrency (all three were done that
+  night, and all three were wrong).
+- Never leave text in chatgpt.com's new-chat composer. ChatGPT keeps it as a draft, and every
+  fresh chat the app opens then fails terminally with `initial-host-not-empty`.
 - Most chat death strings are ChatGPT's, not this app's. Only "No visible progress for ten
   minutes" is ours.
 - A chat's title names the repository it started on, not the one it is working now. Attribute
@@ -3541,6 +3579,13 @@ Consult when an instrument is about to change what you do. None of it is the job
   The declared beta10 runtime and integrated semantic static projection are closed.
   Exact-current-head behavioral acceptance is the current completion frontier, followed by
   final framework delivery. Publication remains independent of these completion nodes.
+
+Owner decisions as of 2026-09-27: `lean-categories` and `new-qual-site` are **paused** to give
+their capacity to sage and research. new-qual's `audited-deployment` checkpoint is deployed
+(087e3b595) and its audit rounds resume from it. sage's milestones A and B are closed. Its only
+open node, `framework-complete`, is publication and waits for the owner. Leaves in sage are
+probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
+`placement-audit`.
 
 One stream per repository; width is across repositories, never within one. The exception is a
 stream's own subagents: workers its prime spawns through `agents action=spawn`, dispatched with
