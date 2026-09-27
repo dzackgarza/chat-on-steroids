@@ -14,6 +14,8 @@
  * existing one when available, otherwise a short-lived tab), with the page's own session.
  */
 
+import assert from "node:assert/strict";
+
 import { logError, logInfo, logWarn } from "./logger.js";
 
 const DEVTOOLS = `http://127.0.0.1:${process.env.CHROME_DEVTOOLS_PORT || "9222"}`;
@@ -87,7 +89,8 @@ export function noteUsageLimitSignal(text: string | null | undefined): void {
         logInfo("ChatGPT usage-limit signal: conversation/init publishes no send block; the escalating hold stands");
       }
     })
-    // The hold above is already in force and is not touched here: a failed read leaves it closed.
+    // The one owned boundary of this background task: a broken read is reported as an error and
+    // the hold above, already in force, is left closed.
     .catch((error: unknown) => logError(`could not read ChatGPT's usage limit; the escalating hold stands: ${String(error)}`))
     .finally(() => {
       reading = null;
@@ -137,27 +140,26 @@ export async function readSendBlock(): Promise<number | null> {
         headers: { Authorization: 'Bearer ' + session.accessToken, 'Content-Type': 'application/json' },
         body: JSON.stringify({ gizmo_id: null, requested_default_model: null, conversation_id: null, timezone_offset_min: 0 }),
       });
-      if (!response.ok) return JSON.stringify({ error: 'conversation/init HTTP ' + response.status });
       const body = await response.json();
-      if (!Array.isArray(body.blocked_features)) return JSON.stringify({ error: 'conversation/init has no blocked_features list' });
-      const send = body.blocked_features.find(f => f.name === 'send');
-      return JSON.stringify({ resetsAfter: send ? send.resets_after : null });
+      return JSON.stringify({ status: response.status, blocked: body.blocked_features });
     })()`;
     if (temporary) await new Promise((resolve) => setTimeout(resolve, 8000));
     const reply = await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
     ws.close();
     const value = reply.result?.result?.value;
-    if (typeof value !== "string") throw new Error(`conversation/init read did not complete: ${JSON.stringify(reply).slice(0, 300)}`);
-    const parsed = JSON.parse(value) as { error?: string; resetsAfter?: string | null };
-    if (parsed.error) throw new Error(parsed.error);
-    if (parsed.resetsAfter === null || parsed.resetsAfter === undefined) return null;
-    const resetsAt = Date.parse(parsed.resetsAfter);
-    if (Number.isNaN(resetsAt)) throw new Error(`unparseable resets_after ${parsed.resetsAfter}`);
+    assert(typeof value === "string", `conversation/init read did not complete: ${JSON.stringify(reply).slice(0, 300)}`);
+    const read = JSON.parse(value) as { status: number; blocked: unknown };
+    assert.equal(read.status, 200, "conversation/init answers 200");
+    assert(Array.isArray(read.blocked), "conversation/init carries a blocked_features list");
+    const send = (read.blocked as Array<{ name: string; resets_after: string }>).find((feature) => feature.name === "send");
+    if (send === undefined) return null; // the send feature is not blocked: sends are open
+    const resetsAt = Date.parse(send.resets_after);
+    assert(!Number.isNaN(resetsAt), `resets_after is a timestamp: ${send.resets_after}`);
     return resetsAt;
   } finally {
     if (temporary) {
       const closed = await fetch(`${DEVTOOLS}/json/close/${temporary.id}`);
-      if (!closed.ok) throw new Error(`could not close the temporary chatgpt.com tab: HTTP ${closed.status}`);
+      assert(closed.ok, `the temporary chatgpt.com tab closes (HTTP ${closed.status})`);
     }
   }
 }

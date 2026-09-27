@@ -22,9 +22,9 @@
  * published shape, which ChatGPT does not re-discover mid-conversation).
  */
 
-import { execFile } from "node:child_process";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { promisify } from "node:util";
 
 import { currentCall } from "./mcp/call-context.js";
 import type { Hunk } from "./codex/apply-patch/index.js";
@@ -41,7 +41,6 @@ export interface ReuseSearchEntry {
   why_new: string;
 }
 
-const run = promisify(execFile);
 /** Per conversation: names covered by an accepted record, and names minted by a command with none. */
 const accounted = new Map<string, Set<string>>();
 const pending = new Map<string, Set<string>>();
@@ -209,9 +208,30 @@ interface Snapshot {
   before: Set<string>;
 }
 
+/** A git invocation's outcome as data: its exit status is the answer, not an exception. */
+interface GitOutcome {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+function runGit(root: string, args: string[]): Promise<GitOutcome> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["-C", root, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+    child.on("error", (error) => resolve({ status: null, stdout, stderr: String(error) }));
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/** A git command that must succeed: every fleet workspace is a git repository. */
 async function git(root: string, args: string[]): Promise<string> {
-  const { stdout } = await run("git", ["-C", root, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 });
-  return stdout;
+  const outcome = await runGit(root, args);
+  assert.equal(outcome.status, 0, `git ${args.join(" ")} in ${root} failed: ${outcome.stderr.trim()}`);
+  return outcome.stdout;
 }
 
 const ANY_DEFINITION =
@@ -234,13 +254,10 @@ export async function alreadyDefined(root: string, rev: string, candidates: read
   for (let i = 0; i < names.length; i += 40) {
     const batch = names.slice(i, i + 40);
     const pattern = `${ANY_DEFINITION}\\s+(${batch.map(escapeRegex).join("|")})([^A-Za-z0-9_'.]|$)`;
-    let out = "";
-    try {
-      out = await git(top, ["grep", "-h", "-o", "-E", pattern, rev, "--"]);
-    } catch (error) {
-      // git grep exits 1 when nothing matches: that is the answer "none defined", not a failure.
-      if ((error as { code?: unknown }).code !== 1) throw error;
-    }
+    // git grep's exit status is the domain answer: 0 = some are defined, 1 = none are.
+    const outcome = await runGit(top, ["grep", "-h", "-o", "-E", pattern, rev, "--"]);
+    assert(outcome.status === 0 || outcome.status === 1, `git grep in ${top} failed: ${outcome.stderr.trim()}`);
+    const out = outcome.stdout;
     for (const name of batch) if (new RegExp(`\\s${escapeRegex(name)}([^A-Za-z0-9_'.]|$)`).test(out)) found.add(name);
   }
   return found;

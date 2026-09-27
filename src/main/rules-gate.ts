@@ -14,7 +14,8 @@
  * each app restart was pure load on the account, and ChatGPT flagged it as unusual activity.
  */
 
-import { realpath, stat } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { readDurable, writeDurableSoon } from "./durable.js";
@@ -89,7 +90,8 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
   const call = currentCall();
   if (!call?.workstreamId || last < first || !realPath.endsWith("/AGENTS.md")) return;
   await load();
-  const path = await realpath(realPath);
+  // readOne() hands over resolvePath()'s canonical real path; no further resolution is needed.
+  const path = realPath;
   const key = readerKey(call.workstreamId, call.workstreamClaimId, path);
   const prior = coverage.get(key) ?? { path, totalLines, read: [] };
   coverage.set(key, {
@@ -100,13 +102,29 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
   save();
 }
 
+/** What rules a workstream works under. Each variant is a case observed in the fleet. */
+type RulesFile =
+  | { kind: "no-workspace" } // e.g. the read-size probes: no repository at all
+  | { kind: "no-rules-file"; workspace: string } // an approved root that carries no AGENTS.md
+  | { kind: "rules"; virtual: string; path: string };
+
+async function rulesFileFor(
+  workstreamId: string,
+  resolveWorkspace: (virtualWorkspace: string) => Promise<string>,
+): Promise<RulesFile> {
+  const workspace = workstreamWorkspace(workstreamId);
+  if (workspace === null) return { kind: "no-workspace" };
+  const path = join(await resolveWorkspace(workspace), "AGENTS.md");
+  const entry = statSync(path, { throwIfNoEntry: false });
+  if (entry === undefined) return { kind: "no-rules-file", workspace };
+  assert(entry.isFile(), `${path} exists but is not a file`);
+  return { kind: "rules", virtual: rulesVirtualPath(workstreamId)!, path };
+}
+
 /**
  * Null when the calling workstream may act; otherwise the refusal text, naming what is unread.
- *
- * `resolveWorkspace` maps the workstream's virtual workspace to its real directory and throws
- * when it cannot. A workspace without an AGENTS.md (ENOENT) has no rules to gate on; any other
- * failure to establish the rules file propagates, so the call fails loudly instead of running
- * ungated.
+ * `resolveWorkspace` is resolvePath() on an app-owned, approved workspace: its failure is a
+ * broken contract and propagates.
  */
 export async function rulesGateRefusal(
   tool: string,
@@ -114,20 +132,20 @@ export async function rulesGateRefusal(
 ): Promise<string | null> {
   if (RULES_EXEMPT_TOOLS.has(tool)) return null;
   const call = currentCall();
-  if (!call?.workstreamId) return null;
-  const virtual = rulesVirtualPath(call.workstreamId);
-  const workspace = workstreamWorkspace(call.workstreamId);
-  // A workstream with no workspace has no repository and therefore no rules file.
-  if (!virtual || !workspace) return null;
-  const candidate = join(await resolveWorkspace(workspace), "AGENTS.md");
-  try {
-    await stat(candidate);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+  assert(call, "rulesGateRefusal runs inside a tool call's context");
+  // The emergency recovery credential carries no claimed workstream; it is exempt by design.
+  if (call.workstreamId === null) return null;
+  const rules = await rulesFileFor(call.workstreamId, resolveWorkspace);
+  switch (rules.kind) {
+    case "no-workspace":
+    case "no-rules-file":
+      return null;
+    case "rules":
+      break;
   }
+  const virtual = rules.virtual;
   await load();
-  const real = await realpath(candidate);
+  const real = rules.path;
   const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, real)) ?? {
     path: real,
     totalLines: null,
