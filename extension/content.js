@@ -8537,11 +8537,22 @@
     try {
       await deliverCommand(id, fromUrl, reportClaim, attempt);
     } finally {
+      document.documentElement.setAttribute('data-clf-delivery-step', `${attempt.id}:ended-at:${attempt.step}`);
       reportClaim(false);
       if (commandAttempt === attempt) commandAttempt = null;
       if (gateJournal) commandJournalGate = false;
       void flush();
     }
+  }
+
+  /**
+   * Records a delivery's progress where the steward can read it (html[data-clf-delivery-step],
+   * via the DevTools port). A revival that never redeems used to leave no trace at all: the app
+   * saw only "did not report back", and nothing said which wait or fence stopped it.
+   */
+  function markDeliveryStep(attempt, step) {
+    attempt.step = step;
+    document.documentElement.setAttribute('data-clf-delivery-step', `${attempt.id}:${step}`);
   }
 
   async function deliverCommand(id, fromUrl = true, reportClaim = () => undefined, attempt = null) {
@@ -8567,7 +8578,7 @@
     // slow revival look like a preallocated empty chat and fail as "a different conversation".
     // A genuinely preallocated fresh chat stays empty, so it only pays this bounded wait.
     if (fromUrl && openingRoute && CLF_DOM.messages && CLF_DOM.messages().length === 0) {
-      if (attempt) attempt.step = 'waiting-transcript';
+      if (attempt) markDeliveryStep(attempt, 'waiting-transcript');
       await waitUntil(() => alive && CLF_DOM.messages().length > 0, TRANSCRIPT_RENDER_WAIT_MS);
     }
     const openingHasAuthoredConversation =
@@ -8596,13 +8607,13 @@
     // assistant answer is still streaming. Busy is a waiting state, not a failed revival, and
     // waiting must leave both the durable command and the user's composer untouched.
     if (openedConversation) {
-      if (attempt) attempt.step = 'revival-custody';
+      if (attempt) markDeliveryStep(attempt, 'revival-custody');
       // Persist only the inert marker/conversation correlation before waiting. If this document,
       // its MV3 service worker, or the whole browser disappears, the replacement browser process
       // can put the same marker back in front of this exact chat. The prime's text stays solely in
       // the app-side command until the later redeem succeeds.
       if (!(await waitForDeferredRevivalCustody(id, openedConversation, attempt))) return;
-      if (attempt) attempt.step = 'revival-submit-ready';
+      if (attempt) markDeliveryStep(attempt, 'revival-submit-ready');
       if (!(await waitForRevivalSubmitReady(openedConversation, attempt))) return;
     }
     if (attempt?.cancelled) return;
@@ -8613,7 +8624,7 @@
     // From here onward a competing fresh wake must not supersede this attempt: the bridge may
     // persist this document as owner before the response gets back to us.
     if (attempt) attempt.phase = 'redeeming';
-    if (attempt) attempt.step = 'redeeming';
+    if (attempt) markDeliveryStep(attempt, 'redeeming');
     const reply = await ask({
       type: 'redeem',
       id,
@@ -8634,7 +8645,7 @@
       reportClaim(false);
       return;
     }
-    if (attempt) attempt.step = 'redeemed';
+    if (attempt) markDeliveryStep(attempt, 'redeemed');
 
     // What this command is for, as the app states it. A revival names the conversation and
     // will not be typed anywhere else; fresh worker/resume/send commands name none.
@@ -8664,7 +8675,7 @@
     // attempt was started. If the fallback got there first, `boot` is null and the false path
     // above leaves that winning tab alive.
     if (attempt) attempt.phase = 'claimed';
-    if (attempt) attempt.step = 'claimed';
+    if (attempt) markDeliveryStep(attempt, 'claimed');
     reportClaim(true);
 
     const fail = (why) =>
@@ -8693,7 +8704,7 @@
     if (fromUrl && target && !openedConversation && openingRoute === target) {
       openedConversation = target;
       preallocatedFreshConversation = null;
-      if (attempt) attempt.step = 'revival-submit-ready';
+      if (attempt) markDeliveryStep(attempt, 'revival-submit-ready');
       if (!(await waitForRevivalSubmitReady(target, attempt))) return;
     }
     if (target && openedConversation !== target) {
@@ -8761,9 +8772,9 @@
     // that then blocks every later push into this chat. Activate the tab before driving the
     // composer, every time. Best-effort — an unfocusable window still gets the attempt, and a
     // failed send below now rolls its own inserted text back instead of manufacturing a wedge.
-    if (attempt) attempt.step = 'activating-tab';
+    if (attempt) markDeliveryStep(attempt, 'activating-tab');
     await ask({ type: 'activate_tab' }).catch(() => undefined);
-    if (attempt) attempt.step = 'activated-tab';
+    if (attempt) markDeliveryStep(attempt, 'activated-tab');
     if (await failIfRetargeted()) return;
 
     // Compared with whitespace squeezed out of both sides. The composer is a rich-text
@@ -8798,18 +8809,18 @@
     // The composer is the readiness signal. Page-level `readyState` says whether every
     // resource finished loading, not whether this editing host is usable, and waiting on it
     // is what turned a fresh resume tab into a blank tab for a minute on a throttled page.
-    if (attempt) attempt.step = 'waiting-composer';
+    if (attempt) markDeliveryStep(attempt, 'waiting-composer');
     const readyComposer = await waitForComposer();
     if (!readyComposer) {
       if (rateLimitError()) return void (await fail('chatgpt_rate_limited'));
       return void (await fail('ChatGPT never exposed a usable composer for bootstrap'));
     }
     if (await failIfRetargeted()) return;
-    if (attempt) attempt.step = 'composer-ready';
+    if (attempt) markDeliveryStep(attempt, 'composer-ready');
 
     if (rateLimitError()) return void (await fail('chatgpt_rate_limited'));
 
-    if (attempt) attempt.step = 'inserting';
+    if (attempt) markDeliveryStep(attempt, 'inserting');
     if (!alreadyTyped) {
       let inserted = CLF_DOM.insertPrompt(boot.text);
       if (!inserted) {
@@ -8876,7 +8887,7 @@
     }
     if (await failIfRetargeted()) return;
     if (boot.workstreamActionId) {
-      if (attempt) attempt.step = 'action-fence';
+      if (attempt) markDeliveryStep(attempt, 'action-fence');
       const current = await ask({ type: 'redeem', id: boot.id, client: RUN_ID,
         ...(target ? { conversationId: target } : {}) });
       if (!current?.ok || current.command?.workstreamActionId !== boot.workstreamActionId) {
@@ -8884,10 +8895,10 @@
         if (draft && squeeze(draft.textContent) === expectedText) CLF_DOM.clearComposer();
         return;
       }
-      if (attempt) attempt.step = 'action-fence-ok';
+      if (attempt) markDeliveryStep(attempt, 'action-fence-ok');
       if (await failIfRetargeted()) return;
     }
-    if (attempt) attempt.step = 'sending';
+    if (attempt) markDeliveryStep(attempt, 'sending');
     if (!(await CLF_DOM.send())) {
       // The click ran and nothing on the page accepted it — the background-tab silent no-op
       // shape. The composer's text was proven to be exactly this command's own just above, so
@@ -8912,7 +8923,7 @@
         : 'no send diagnostic';
       return void (await fail(`ChatGPT did not accept the bootstrap send: ${diagnostic}`));
     }
-    if (attempt) attempt.step = 'sent';
+    if (attempt) markDeliveryStep(attempt, 'sent');
     agent = boot.agent || null;
     agentCommandId = agent && typeof boot.id === 'string' ? boot.id : null;
 
@@ -8945,7 +8956,7 @@
         agent,
         client: RUN_ID
       });
-      if (attempt) attempt.step = 'ack-queued';
+      if (attempt) markDeliveryStep(attempt, 'ack-queued');
       return;
     }
 
