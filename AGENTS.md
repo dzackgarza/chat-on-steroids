@@ -3605,9 +3605,11 @@ Consult when an instrument is about to change what you do. None of it is the job
 
 Owner decisions as of 2026-09-27: `lean-categories` and `new-qual-site` are **paused** to give
 their capacity to sage and research. new-qual's `audited-deployment` checkpoint is deployed
-(087e3b595) and its audit rounds resume from it. sage's milestones A and B are closed. Its only
-open node, `framework-complete`, is publication and waits for the owner. Leaves in sage are
-probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
+(087e3b595) and its audit rounds resume from it. sage's live `TODO.md` has reopened current-head
+Milestone-A/B obligations after the historical acceptance revisions; its dependency graph currently
+selects `core-functor-cell-calculus` before the downstream A/B and `framework-complete` delivery
+nodes. Publication remains downstream of those substantive acceptance obligations. Leaves in sage
+are probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
 `placement-audit`.
 
 One stream per repository; width is across repositories, never within one. The exception is a
