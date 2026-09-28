@@ -686,8 +686,9 @@ state chat:
 # POST one message to the running app's bridge. Empty chat means a fresh one.
 #
 # `mode` is what the send may do to a turn already running: `refuse` never interrupts one and
-# is what every ordinary push uses; `stop_first` presses Stop first. `reload` reloads the page
-# holding the chat once before typing. Both extras need a named chat.
+# refuses immediately when the recorder already knows that chat is generating; it is what every
+# ordinary push uses. `stop_first` presses Stop first. `reload` reloads the page holding the
+# chat once before typing. Both extras need a named chat.
 _send $chat $text mode="refuse" reload="false":
     #!/usr/bin/env bash
     set -euo pipefail

@@ -1586,12 +1586,13 @@ async function handle(
     if (text.trim().length > MAX_SEND_CHARS) return tooLarge(res, origin);
     // What this send is allowed to do to a turn that is already running.
     //
-    // `refuse` is the default and is exactly what this route has always done: it never
-    // interrupts, the page will not type while a turn is in flight, and a send into a chat
-    // that never finishes its turn ends as `expired` rather than as a message typed over
-    // somebody's working agent. `stop_first` is the explicit opposite and must be asked for
-    // at the call site every time — a mid-turn stream is producing work, and destroying it
-    // is a deliberate act, never something a default does by accident.
+    // `refuse` is the default: it never interrupts a running turn and, when the recorder
+    // already knows that turn is generating, it does not queue a browser command at all.
+    // Opening a second tab and waiting for submit-ready is not a harmless queue: when that
+    // command later expires, its document can become the observer whose disappearance makes a
+    // healthy managed workstream look detached. `stop_first` is the explicit opposite and
+    // must be asked for at the call site every time — a mid-turn stream is producing work,
+    // and destroying it is a deliberate act, never something a default does by accident.
     const rawMode = body["ifGenerating"];
     const ifGenerating =
       rawMode === undefined || rawMode === null ? "refuse" : rawMode;
@@ -1644,6 +1645,24 @@ async function handle(
     // decides whether a turn should be interrupted, and a refusal or an acceptance that does
     // not say what state the chat was in forces it to guess or to go round the app.
     const state = target ? conversationTurnState(target) : null;
+    if (target && ifGenerating === "refuse" && state?.generating) {
+      return json(
+        res,
+        409,
+        {
+          state: "refused",
+          error: "conversation_generating",
+          reason: "generating",
+          conversationId: target,
+          activeTurnId: state.activeTurnId,
+          generatingForMs: state.generatingForMs,
+          noProgressForMs: state.noProgressForMs,
+          message:
+            "That chat is already generating. No send was queued and no browser tab was opened. Wait for the current turn to finish, or explicitly use ifGenerating:'stop_first' to interrupt it.",
+        },
+        origin,
+      );
+    }
     const command = queueSend(target, text, {
       stopFirst: ifGenerating === "stop_first",
       reloadFirst,
