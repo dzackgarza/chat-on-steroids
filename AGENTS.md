@@ -3612,6 +3612,10 @@ nodes. Publication remains downstream of those substantive acceptance obligation
 are probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
 `placement-audit`.
 
+**2026-09-28 06:33 UTC: the owner paused `sage-categories`.** Only research has active fleet
+capacity. Do not resume sage (no `/workstreams/resume`, no dispatch) until a later explicit owner
+instruction; sage's `core-functor-cell-calculus` frontier above is its cold-resume point.
+
 One stream per repository; width is across repositories, never within one. The exception is a
 stream's own subagents: workers its prime spawns through `agents action=spawn`, dispatched with
 disjoint path ownership and one integration lane, are that stream's lanes rather than second
