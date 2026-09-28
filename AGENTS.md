@@ -3232,6 +3232,39 @@ source-backed content it means comparing the actual source statement. For runtim
 it means exercising the public consumer or reading the exact regression. A productive stream is
 not exempt; it is the one for which semantic sampling matters most.
 
+### Fleet state: the entrypoint for every steward and orchestrator
+
+Any agent that acts on the fleet (a steward session, the `orchestrator` workstream, a one-off
+helper) starts here. No agent can see another agent's chat, so everything one agent does to the
+fleet has to be recorded in these files for the others to see.
+
+| Surface | What it holds | Authority |
+| --- | --- | --- |
+| `GET /workstreams` (bridge, port 8765) | every workstream row: `phase` (including `paused`), conversation, retired chats; `connectorSchema` | live truth for what is running |
+| "Owner decisions" under "The managed workstreams" below, and `FANOUT-SCHEDULE.md` | which streams the owner has running or paused, and each stream's current frontier | the owner's standing instructions |
+| `steward-dashboard/journal.md` (local, gitignored, never committed) | dated entries: each action taken on the fleet, each owner instruction received, and what the next tick must verify | the running log; read its last entries before acting |
+| `steward-dashboard/tick-prompt.md` | the steward's tick prompt, verbatim | recreate the tick cron from it |
+
+Before acting: read `GET /workstreams`, the owner-decision paragraph, and the tail of the journal.
+After acting: append a journal entry that names its author (`steward`, `orchestrator`, ...), what
+was done, and what must be verified next. An owner instruction that changes which streams run
+also goes into the owner-decision paragraph and `FANOUT-SCHEDULE.md` in the same commit. The
+journal alone does not bind agents that never read it.
+
+**A paused stream stays paused.** Only the owner resumes a stream. Neither the running docs, a
+stream's own TODO frontier, nor a stale "has fleet capacity" line counts as a resume. On
+2026-09-28 the orchestrator resumed `sage-categories` eleven minutes after the owner paused it,
+because the pause was recorded only in the steward's chat.
+
+Verbs, authenticated with `Authorization: Bearer $(cat ~/.config/chat-on-steroids/state/local-token)`
+(never print the token):
+
+- pause or resume: `POST /workstreams/pause` or `/workstreams/resume` with `{"id": "<workstream>"}`;
+- send a chat a pointer: `just say <conversation-id> "<text>"`;
+- refresh ChatGPT's copy of the Core tool schema when `connectorSchema` is not `current`:
+  `node steward-dashboard/tools/refresh-core-app.mjs <screenshot.png>` (the plugin page, then "…",
+  Manage, Refresh). Do this yourself; never wait on the owner for it.
+
 ### The tick
 
 The tick is a session-only cron job (`13,43 * * * *`) whose prompt is saved verbatim in
