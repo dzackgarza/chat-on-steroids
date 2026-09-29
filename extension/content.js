@@ -109,8 +109,14 @@
    */
   const PRESENTATION_SCROLL_IDLE_MS = 240;
   const STATUS_MS = 15_000;
-  /** Longer than any acceptable managed action: past this a silent turn is stalled. */
+  /**
+   * A turn that has made no tool call for this long is stalled. Only tool calls reset it:
+   * streamed prose, thinking and other page activity are exactly what a stalled agent does
+   * instead of working.
+   */
   const STALL_MS = 5 * 60 * 1000;
+  /** How often the stalled-turn check may re-read ChatGPT's conversation record. */
+  const TOOL_CLOCK_READ_MS = 30 * 1000;
   /** What a stalled chat is restarted with. It already holds everything it was doing. */
   const STALL_RESTART_TEXT = 'Continue';
   /**
@@ -629,6 +635,17 @@
   const pageTurnIds = new Map();
   let turnStartedAt = 0;
   let lastChangeAt = 0;
+  /**
+   * When the running turn last called a tool, or when it started if it has called none.
+   * Read from ChatGPT's own conversation record by refreshToolClock(); page activity never
+   * moves it.
+   */
+  let lastToolCallAt = 0;
+  /** A connector call the record shows without its result yet: the turn waits on a tool. */
+  let toolCallOpen = false;
+  let toolClockReadAt = 0;
+  /** When a record read last succeeded. A stall is declared only from a read past the deadline. */
+  let toolClockVerifiedAt = 0;
   let stallReported = false;
   /** When this document last tried to restart a stalled turn. Reset with the turn itself. */
   let stallRestartAt = 0;
@@ -1112,6 +1129,8 @@
     priorMarks = baselineMarks;
     turnStartedAt = Date.now();
     lastChangeAt = Date.now();
+    lastToolCallAt = Date.now();
+    toolCallOpen = false;
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
@@ -1891,6 +1910,8 @@
       priorMarks = baselineMarks;
       turnStartedAt = Date.now();
       lastChangeAt = Date.now();
+      lastToolCallAt = Date.now();
+      toolCallOpen = false;
       // "Wait for this turn to finish" was about a turn that has now been replaced. Keeping
       // it would make the composer explain, after the fact, a refusal that no longer applies.
       localError = '';
@@ -1988,7 +2009,46 @@
     }
 
   /**
-   * Restarts a turn that has stopped producing output, once the stall check above proves it.
+   * Moves the stall clock to this chat's newest tool call in ChatGPT's conversation record.
+   *
+   * The record is the one exact source: it holds every connector call of this conversation,
+   * live while the turn runs, whatever the page renders. An assistant message addressed to a
+   * tool is a call; a message authored by a tool is its result. A call with no result after
+   * it is still running, and a turn waiting on a tool is not stalled.
+   */
+  async function refreshToolClock() {
+    const chat = CLF_DOM.conversationId();
+    if (!chat) return;
+    try {
+      const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
+      if (!session.ok) return;
+      const { accessToken } = await session.json();
+      const response = await fetch(`/backend-api/conversation/${chat}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        credentials: 'include',
+        signal: AbortSignal.timeout(15_000)
+      });
+      if (!response.ok) return;
+      const record = await response.json();
+      let newest = null;
+      for (const node of Object.values(record.mapping || {})) {
+        const message = node && node.message;
+        if (!message || typeof message.create_time !== 'number') continue;
+        const call = message.author.role === 'assistant' && message.recipient && message.recipient !== 'all';
+        if (!call && message.author.role !== 'tool') continue;
+        if (!newest || message.create_time > newest.create_time) newest = { create_time: message.create_time, call };
+      }
+      if (!alive || CLF_DOM.conversationId() !== chat || !generating || !newest) return;
+      lastToolCallAt = Math.max(lastToolCallAt, newest.create_time * 1000);
+      toolCallOpen = newest.call;
+      toolClockVerifiedAt = Date.now();
+    } catch (error) {
+      console.warn('[CLF] tool clock read failed', error);
+    }
+  }
+
+  /**
+   * Restarts a turn that has stopped calling tools, once the stall check proves it.
    *
    * Reporting the stall is what the user sees, and on its own it changes nothing: ChatGPT is
    * still showing a running turn, so the composer stays refused and the chat cannot be reached
@@ -2090,10 +2150,14 @@
       // messages keyed by ChatGPT's own message id. Do not emit a second progress stream.
       // Native activity is emitted by refreshFiber() from ChatGPT's stable thought-message
       // identity. DOM rows alone are presentation and never mint durable page_tool ids.
-      if (Date.now() - lastChangeAt > STALL_MS) {
+      if (Date.now() - lastToolCallAt > STALL_MS && Date.now() - toolClockReadAt > TOOL_CLOCK_READ_MS) {
+        toolClockReadAt = Date.now();
+        void refreshToolClock();
+      }
+      if (!toolCallOpen && toolClockVerifiedAt - lastToolCallAt > STALL_MS) {
         if (!stallReported) {
           stallReported = true;
-          emit({ kind: 'chat_error', text: 'No visible progress for five minutes. The turn is still marked as generating.', turnId });
+          emit({ kind: 'chat_error', text: 'No tool call for five minutes. The turn is still marked as generating.', turnId });
         }
         // Managed workstreams leave the page observer running but delegate the actual Stop +
         // continuation to the controller, whose prompt explains the five-minute failure.
