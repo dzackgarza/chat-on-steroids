@@ -599,14 +599,23 @@
   display: none;
 }
 
-/* The running turn's tool clock. Quiet text, not a pill: it changes every second and must not
-   pull the eye the way a status does. Fixed-width digits keep it from shaking as it counts. */
+/* The app's tool clock for this chat: the bound workstream and the time since its last call.
+   Quiet text, not a pill: it changes every second and must not pull the eye the way a status
+   does. Fixed-width digits keep it from shaking as it counts. */
 .clf-tool-clock {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
   white-space: nowrap;
   opacity: 0.6;
+}
+
+.clf-tool-clock[data-clf-bound='0'] {
+  opacity: 0.45;
+  font-style: italic;
 }
 
 .clf-tool-clock[hidden] {

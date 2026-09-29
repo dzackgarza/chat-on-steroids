@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 13;
+  const RECORDER_VERSION = 14;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -643,10 +643,6 @@
   let lastToolCallAt = 0;
   /** A connector call the record shows without its result yet: the turn waits on a tool. */
   let toolCallOpen = false;
-  /** Whether lastToolCallAt names a real tool call or result, rather than the turn start. */
-  let toolCallSeen = false;
-  /** ChatGPT's time for the newest tool call or result reported this turn; 0 before one. */
-  let toolEntryAt = 0;
   let toolClockReadAt = 0;
   /** When a record read last succeeded. A stall is declared only from a read past the deadline. */
   let toolClockVerifiedAt = 0;
@@ -715,6 +711,12 @@
   let pendingTools = 0;
   /** Controller-managed repository workstream; its controller owns five-minute recovery. */
   let managedWorkstream = false;
+  /**
+   * The app's own tool timing for this chat, from `/activity`: the workstream bound to it,
+   * the calls the app is running for it, and the newest call it finished. Null until the app
+   * answers for this chat.
+   */
+  let toolClock = null;
   /** The owner's Home switch: when false, this page types nothing into any chat on its own. */
   let autoContinue = false;
   /**
@@ -1137,8 +1139,6 @@
     lastChangeAt = Date.now();
     lastToolCallAt = Date.now();
     toolCallOpen = false;
-    toolCallSeen = false;
-    toolEntryAt = 0;
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
@@ -1255,6 +1255,7 @@
     job = null;
     pendingTools = 0;
     managedWorkstream = false;
+    toolClock = null;
     autoContinue = false;
     staleDraftHints = [];
     autoCompactReady = false;
@@ -1921,8 +1922,6 @@
       lastChangeAt = Date.now();
       lastToolCallAt = Date.now();
       toolCallOpen = false;
-      toolCallSeen = false;
-      toolEntryAt = 0;
       // "Wait for this turn to finish" was about a turn that has now been replaced. Keeping
       // it would make the composer explain, after the fact, a refusal that no longer applies.
       localError = '';
@@ -2020,23 +2019,6 @@
     }
 
   /**
-   * Takes one sighting of the running turn's newest tool call or result.
-   *
-   * Two sources report it: the conversation record, read only when the turn nears a stall,
-   * and the mounted turn's Fiber props, read on every scan. Only a sighting at least as new
-   * as the last one moves the clock, so a slow record read cannot undo a newer Fiber scan.
-   * `inTurn` is true when the source proves the entry belongs to this turn. The record does
-   * not, so its entry counts as this turn's only when it is newer than the turn start.
-   */
-  function moveToolClock(at, open, inTurn) {
-    if (at < toolEntryAt) return;
-    toolEntryAt = at;
-    toolCallOpen = open;
-    lastToolCallAt = Math.max(lastToolCallAt, at);
-    if (inTurn || at >= turnStartedAt) toolCallSeen = true;
-  }
-
-  /**
    * Moves the stall clock to this chat's newest tool call in ChatGPT's conversation record.
    *
    * The record is the one exact source: it holds every connector call of this conversation,
@@ -2067,7 +2049,8 @@
         if (!newest || message.create_time > newest.create_time) newest = { create_time: message.create_time, call };
       }
       if (!alive || CLF_DOM.conversationId() !== chat || !generating || !newest) return;
-      moveToolClock(newest.create_time * 1000, newest.call, false);
+      lastToolCallAt = Math.max(lastToolCallAt, newest.create_time * 1000);
+      toolCallOpen = newest.call;
       toolClockVerifiedAt = Date.now();
     } catch (error) {
       console.warn('[CLF] tool clock read failed', error);
@@ -2575,8 +2558,7 @@
   // 6: adds request-id ownership evidence used by deterministic MCP attribution.
   // 7: keys streaming commentary and native activity by ChatGPT thought/message identity,
   //    so React row replacement, raw text UUID rotation and refresh cannot mint duplicates.
-  // 11: adds each turn's newest tool call or result time, for the live tool clock.
-  const FIBER_VERSION = 11;
+  const FIBER_VERSION = 10;
   const FIBER_TIMEOUT_MS = 1500;
   const FIBER_MAX_ROWS = 400;
   /** Assistant turns whose per-call evidence is accepted from one scan. */
@@ -2813,18 +2795,7 @@
       if (activities[priorAt].label !== label) conflictingActivities.add(messageId);
     }
     const keptActivities = activities.filter((activity) => !conflictingActivities.has(activity.messageId));
-    const clock = raw.toolClock && typeof raw.toolClock === 'object' ? raw.toolClock : null;
-    const toolClock =
-      clock && typeof clock.at === 'number' && Number.isFinite(clock.at) && clock.at > 0
-        ? { at: clock.at, open: clock.open === true }
-        : null;
-    if (
-      kept.length === 0 &&
-      requests.length === 0 &&
-      keptMessages.length === 0 &&
-      keptActivities.length === 0 &&
-      toolClock === null
-    ) {
+    if (kept.length === 0 && requests.length === 0 && keptMessages.length === 0 && keptActivities.length === 0) {
       return null;
     }
     return {
@@ -2836,8 +2807,7 @@
       calls: kept,
       requests,
       messages: keptMessages,
-      activities: keptActivities,
-      toolClock
+      activities: keptActivities
     };
   }
 
@@ -3211,9 +3181,6 @@
     const activeLocalTurnId = generating ? turnId : settled?.localTurnId || null;
     const activeTurnIndex =
       ownedPageTurn && activeLocalTurnId ? answer.turns.indexOf(ownedPageTurn) : -1;
-    if (generating && ownedPageTurn && ownedPageTurn.toolClock) {
-      moveToolClock(ownedPageTurn.toolClock.at, ownedPageTurn.toolClock.open, true);
-    }
     if (askedConversation) {
       // Ownership evidence is no longer gated on `activeTurnIndex`.
       //
@@ -5443,6 +5410,7 @@
       job = data.job || null;
       pendingTools = Number.isFinite(Number(data.pendingTools)) ? Number(data.pendingTools) : 0;
       managedWorkstream = data.managedWorkstream === true;
+      toolClock = readToolClock(data.toolClock);
       autoContinue = data.autoContinue === true;
       if (Array.isArray(data.staleDrafts)) {
         const hints = data.staleDrafts.filter((draft) => typeof draft === 'string' && draft);
@@ -6094,6 +6062,25 @@
     return { root, clock, pill, text, button, cancel, meter, meterFill };
   }
 
+  /** The `/activity` tool clock, checked field by field, or null when it is malformed. */
+  function readToolClock(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const time = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+    const name = (value) => typeof value === 'string' && value.length > 0 && value.length <= 100;
+    const bound = raw.workstream;
+    if (bound !== null && !(bound && name(bound.id) && name(bound.phase))) return null;
+    if (!Array.isArray(raw.running) || !raw.running.every((call) => call && name(call.tool) && time(call.startedAt))) {
+      return null;
+    }
+    const last = raw.lastCall;
+    if (last !== null && !(last && name(last.tool) && time(last.endedAt))) return null;
+    return {
+      workstream: bound && { id: bound.id, phase: bound.phase },
+      running: raw.running.map((call) => ({ tool: call.tool, startedAt: call.startedAt })),
+      lastCall: last && { tool: last.tool, endedAt: last.endedAt }
+    };
+  }
+
   /** `m:ss`, or `h:mm:ss` from one hour, for an elapsed time in milliseconds. */
   function durationText(ms) {
     const total = Math.max(0, Math.floor(ms / 1000));
@@ -6104,24 +6091,36 @@
   }
 
   /**
-   * The running turn's tool clock: the time since its newest tool call or result, or since
-   * the turn started when it has made no call yet. Null when no turn runs.
+   * The composer's tool clock: which workstream this chat is bound to, and how long since
+   * the app last ran a tool for it, or how long the call it is running now has taken.
    *
-   * This is the stall watchdog's clock, shown. Thinking and streamed prose do not move it,
-   * so a value that keeps growing is a turn that is not calling tools.
+   * Every value comes from the app's own call record. The oldest running call is the one
+   * shown, because a call that is taking long is the one a reader needs to see.
    */
   function toolClockView() {
-    if (!generating) return null;
+    if (!toolClock) return null;
     const now = Date.now();
-    const turn = `Turn running for ${durationText(now - turnStartedAt)}.`;
-    if (!toolCallSeen) {
-      return { text: `no tool · ${durationText(now - turnStartedAt)}`, tip: `${turn} No tool call yet.` };
+    const { workstream, running, lastCall } = toolClock;
+    const binding = workstream ? workstream.id : 'unbound';
+    const tip = [
+      workstream
+        ? `Bound to workstream ${workstream.id} (${workstream.phase}).`
+        : 'No workstream is bound to this chat.'
+    ];
+    let clock = 'no tool call';
+    if (running.length > 0) {
+      const oldest = running.reduce((first, call) => (call.startedAt < first.startedAt ? call : first));
+      clock = `${oldest.tool} ${durationText(now - oldest.startedAt)}`;
+      tip.push(
+        running.length === 1
+          ? `${oldest.tool} has run for ${durationText(now - oldest.startedAt)}.`
+          : `${running.length} calls running; the oldest, ${oldest.tool}, for ${durationText(now - oldest.startedAt)}.`
+      );
+    } else if (lastCall) {
+      clock = `last tool ${durationText(now - lastCall.endedAt)} ago`;
     }
-    const since = durationText(now - toolEntryAt);
-    if (toolCallOpen) {
-      return { text: `tool running · ${since}`, tip: `${turn} The newest tool call started ${since} ago and has no result yet.` };
-    }
-    return { text: `last tool · ${since} ago`, tip: `${turn} The newest tool call or result was ${since} ago.` };
+    if (lastCall) tip.push(`The last finished call was ${lastCall.tool}, ${durationText(now - lastCall.endedAt)} ago.`);
+    return { text: `${binding} · ${clock}`, tip: tip.join(' '), bound: Boolean(workstream) };
   }
 
   function currentState() {
@@ -6682,6 +6681,7 @@
     if (clock) {
       if (control.clock.textContent !== clock.text) control.clock.textContent = clock.text;
       if (control.clock.getAttribute('data-clf-tip') !== clock.tip) control.clock.setAttribute('data-clf-tip', clock.tip);
+      control.clock.dataset.clfBound = clock.bound ? '1' : '0';
     }
     // Never disabled any more: it opens a sheet, and a sheet that explains why compaction is
     // unavailable is exactly what somebody clicking a dead button wanted to be told.

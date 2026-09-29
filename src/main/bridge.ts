@@ -68,6 +68,7 @@ import {
   WORKSTREAM_CLAIM_LINE,
   workstreamPrompt,
   workstreamStatus,
+  type Workstream,
 } from "./workstreams.js";
 import { unifiedExecManager } from "./codex/manager.js";
 import { execOwner } from "./codex/ownership.js";
@@ -241,6 +242,56 @@ function inFlightCallsFor(
     limit,
     mayOwnUnattributedWorkstreamCall,
   );
+}
+
+/**
+ * What the composer's tool clock shows for one chat, from this app's own call record.
+ *
+ * `workstream` is the row bound to this chat, or null while no row is. `running` is every
+ * call this app is executing for the row or for this exact chat. `lastCall` is the newest
+ * finished call in the row's recorder session and in this chat's own session. All times are
+ * this machine's epoch milliseconds; the page reading them runs on the same machine.
+ */
+interface ToolClock {
+  workstream: { id: string; phase: Workstream["phase"] } | null;
+  running: { tool: string; startedAt: number }[];
+  lastCall: { tool: string; endedAt: number } | null;
+}
+
+async function newestFinishedCall(
+  sessionId: string,
+): Promise<ToolClock["lastCall"]> {
+  const [event] = await readRecentEvents(sessionId, 1, { kinds: ["tool_call"] });
+  if (event?.kind !== "tool_call") return null;
+  return { tool: event.call.tool, endedAt: event.time + event.call.durationMs };
+}
+
+async function toolClockFor(
+  conversationId: string,
+  sessionId: string,
+): Promise<ToolClock> {
+  const row = workstreamStatus().find(
+    (candidate) => candidate.conversationId === conversationId,
+  );
+  const now = Date.now();
+  const calls = [
+    ...(row ? inFlightCallsForWorkstream(row.id) : []),
+    ...inFlightCallsFor(conversationId).filter(
+      (call) => call.attribution === "exact" && call.workstreamId !== row?.id,
+    ),
+  ];
+  const finished = await Promise.all(
+    [...new Set([sessionId, row?.sessionId ?? sessionId])].map(newestFinishedCall),
+  );
+  const lastCall = finished.reduce<ToolClock["lastCall"]>(
+    (newest, call) => (call && (!newest || call.endedAt > newest.endedAt) ? call : newest),
+    null,
+  );
+  return {
+    workstream: row ? { id: row.id, phase: row.phase } : null,
+    running: calls.map((call) => ({ tool: call.tool, startedAt: now - call.ageMs })),
+    lastCall,
+  };
 }
 
 /**
@@ -2714,6 +2765,7 @@ async function handle(
         managedWorkstream: managedWorkstreamForConversation(
           live.conversationId,
         ),
+        toolClock: await toolClockFor(live.conversationId, live.sessionId),
         // Whitespace-squeezed texts this app itself asked to be typed into this chat. The
         // page's revival/send waiter compares a blocking composer draft against these: a
         // match is the app's own wedge (a background-tab send click that silently no-oped)

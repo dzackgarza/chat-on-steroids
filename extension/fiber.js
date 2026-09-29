@@ -37,7 +37,7 @@
   'use strict';
 
   /** Bumped when the descriptor shape changes, so a stale pair cannot half-understand. */
-  const VERSION = 11;
+  const VERSION = 10;
   // The MAIN world survives an extension reload because the ChatGPT document survives it.
   // Recovery may therefore execute this file again in a page that still has an older helper
   // listener. Keep at most one listener for this protocol version; content.js rejects older
@@ -873,31 +873,6 @@
     return out;
   }
 
-  /**
-   * The newest tool call or tool result in this turn, by ChatGPT's own clock.
-   *
-   * The same reading content.js refreshToolClock() applies to the whole conversation record,
-   * taken from the mounted turn instead so it is current on every scan. Every tool counts,
-   * not only this app's connector: a turn waiting on web search is waiting on a tool too.
-   * `open` means the newest entry is a call whose result has not arrived yet.
-   */
-  function toolClockOf(messages) {
-    if (!Array.isArray(messages)) return null;
-    let newest = null;
-    for (let at = 0; at < messages.length; at++) {
-      const message = messages[at];
-      if (!message || typeof message !== 'object') continue;
-      const role = message.author && typeof message.author === 'object' ? message.author.role : null;
-      const recipient = str(message.recipient);
-      const call = role === 'assistant' && recipient !== null && recipient !== 'all';
-      if (!call && role !== 'tool') continue;
-      const time = authoredTime(message);
-      if (time === null) continue;
-      if (!newest || time > newest.at) newest = { at: time, open: call };
-    }
-    return newest;
-  }
-
   /** "/Chat On Steroids Core/link_…/read" -> "read", or null if that is not a name. */
   function toolName(value) {
     if (typeof value !== 'string' || value.length === 0) return null;
@@ -1152,13 +1127,11 @@
         const renderedMessages = renderedMessagesOf(group.sections, messages, turnBudget);
         responseBudget.remaining -= before - turnBudget.remaining;
         const activities = nativeActivitiesOf(group.sections, messages);
-        const toolClock = toolClockOf(messages);
         if (
           calls.length === 0 &&
           requests.length === 0 &&
           renderedMessages.length === 0 &&
-          activities.length === 0 &&
-          toolClock === null
+          activities.length === 0
         ) continue;
         const index = out.length;
         const conversation = conversationEvidenceOf(fiber);
@@ -1171,8 +1144,7 @@
           calls,
           requests,
           messages: renderedMessages,
-          activities,
-          toolClock
+          activities
         };
         // The isolated-world renderer needs to know which visible section this exact Fiber
         // turn descriptor came from. Remember the desired ephemeral scan index now and apply
