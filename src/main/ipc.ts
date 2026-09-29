@@ -90,6 +90,7 @@ const settingsPatch = z.object({
       .string()
       .max(128)
       .refine((v) => v === '' || TUNNEL_ID_PATTERN.test(v), 'Expected tunnel_ followed by 32 hex characters'),
+    connectorName: z.string().max(64),
     binaryPath: z.string().max(4096)
   }),
   ui: z.object({
@@ -167,6 +168,7 @@ function mergeSettings(current: Config, base: SettingsSnapshot, wanted: Settings
         base.tunnel.desktopTunnelId,
         wanted.tunnel.desktopTunnelId
       ),
+      connectorName: pick(current.tunnel.connectorName, base.tunnel.connectorName, wanted.tunnel.connectorName),
       binaryPath: pick(current.tunnel.binaryPath, base.tunnel.binaryPath, wanted.tunnel.binaryPath)
     },
     ui: {
@@ -448,6 +450,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   handle('connection:disconnect', async () => {
     await disconnect();
+    return buildState();
+  });
+
+  handle('workstreams:autoContinue', async (payload) => {
+    const enabled = z.object({ enabled: z.boolean() }).parse(payload).enabled;
+    await updateConfig((config) => ({ ...config, autoContinue: enabled }));
+    logInfo(`workstream auto-continuation ${enabled ? 'on' : 'off'}`);
     return buildState();
   });
 

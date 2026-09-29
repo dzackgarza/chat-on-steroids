@@ -39,7 +39,7 @@ import {
 } from "./session/conversation-key.js";
 import {
   autoAdvancingWorkstreamForCommand,
-  autoAdvancingWorkstreamForConversation,
+  bindWorkstreamConversation,
   bindWorkstreamReplacement,
   blockWorkstreamAction,
   configureWorkstream,
@@ -47,8 +47,7 @@ import {
   finishWorkstreamArchive,
   invalidateWorkstreamConversation,
   nextWorkstreamActions,
-  noteWorkstreamChatActivity,
-  observeWorkstreamMessages,
+  managedWorkstreamForConversation,
   pauseWorkstream,
   promoteWorkstreamConversation,
   recordWorkstreamCommand,
@@ -66,6 +65,7 @@ import {
   RECOVERY_BACKOFF_MS,
   WORKSTREAM_LEASE_MS,
   workstreamIdSchema,
+  workstreamClaimPending,
   workstreamPrompt,
   workstreamStatus,
 } from "./workstreams.js";
@@ -346,10 +346,6 @@ const RATE_LIMIT = 900;
  * after everybody had stopped expecting them.
  */
 const COMMAND_DEADLINE_MS = 90_000;
-/** conversation -> when the app last queued a workstream advance/recovery push into it. */
-const workstreamPushAt = new Map<string, number>();
-/** A turn_start this soon after the app's own workstream push is that push's echo. */
-const WORKSTREAM_PUSH_ECHO_MS = 2 * 60_000;
 /** A page that has reported within this window is alive; older silence means it is broken. */
 const PAGE_REPORTING_MS = 60_000;
 
@@ -1000,6 +996,8 @@ const OBSERVATION_KINDS = new Set([
   // Not stored as transcript content. These request records populate the exact
   // requestId -> conversationId correlation registry.
   "tool_evidence",
+  // Not stored. The workstream locks this chat's own ChatGPT record holds (bridge binds them).
+  "workstream_claim",
 ]);
 // Deliberately excludes `observer_lost`: only the app may append that outcome. An observer
 // cannot report its own absence, so a page claiming it would be fabricating a closure the
@@ -1966,6 +1964,7 @@ async function handle(
         actions: workstreamStatus()
           .filter(
             (row) =>
+              getConfig().autoContinue &&
               row.phase === "archiving" &&
               row.conversationId &&
               runningToolCallsForWorkstream(row.id) === 0,
@@ -2230,16 +2229,14 @@ async function handle(
         await bindWorkstreamFrontend("", id);
       }
     }
-    observeWorkstreamMessages(id, observations);
-    // A turn the worker started is movement even before it writes a row. research began one at
-    // 10:18:35 on 2026-09-25; the lease ignored it, fired at ~10:20, pushed Stop+reload into
-    // the live turn and replaced the chat. A start within WORKSTREAM_PUSH_ECHO_MS of the app's
-    // own workstream push is that push's echo and must not renew the lease that sent it.
+    // The page read its own ChatGPT record and reports the workstream locks it holds. Only the
+    // current lock of a row matches, and only the claiming chat's record carries it.
     for (const item of observations) {
-      if (item.kind !== "turn_start" || typeof item.time !== "number") continue;
-      const pushedAt = workstreamPushAt.get(currentBrowserRoute(id));
-      if (pushedAt !== undefined && item.time - pushedAt < WORKSTREAM_PUSH_ECHO_MS) continue;
-      noteWorkstreamChatActivity(id, item.time);
+      if (item.kind !== "workstream_claim" || !item.text) continue;
+      for (const lock of item.text.split(" ")) {
+        const bound = await bindWorkstreamConversation(lock, id);
+        if (bound) logInfo(`workstream ${bound}: held by chat ${id}`);
+      }
     }
     observationWritesInFlight += 1;
     try {
@@ -2713,7 +2710,9 @@ async function handle(
         // REQUEST_ID_GRACE_MS to file its history cannot change the workspace and must not add
         // a cross-chat 15-second tax to the machine-settle barrier.
         pendingTools: pendingToolsFor(live.conversationId),
-        managedWorkstream: autoAdvancingWorkstreamForConversation(
+        claimPending: workstreamClaimPending(),
+        autoContinue: getConfig().autoContinue,
+        managedWorkstream: managedWorkstreamForConversation(
           live.conversationId,
         ),
         // Whitespace-squeezed texts this app itself asked to be typed into this chat. The
@@ -3757,7 +3756,7 @@ async function handle(
         // the sleep sequence. Inert while sleepWake is disabled.
         if (
           !autoAdvancingWorkstreamForCommand(id) &&
-          !autoAdvancingWorkstreamForConversation(conversation)
+          !managedWorkstreamForConversation(conversation)
         ) {
           notePushTyped(conversation, receipt.completedAt, sendVerifyHorizon(id));
         }
@@ -5886,15 +5885,23 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         );
     }
     const actions = await nextWorkstreamActions(now);
+    const injecting = getConfig().autoContinue;
     for (const command of [...commands]) {
       if (
         command.spec.type === "send" &&
         /^(advance|revive|replace)-wl_/.test(command.spec.nonce) &&
-        !workstreamCommandCurrent(command)
+        (!injecting || !workstreamCommandCurrent(command))
       ) {
-        drop(command, "workstream activity or takeover superseded recovery");
+        drop(
+          command,
+          injecting
+            ? "workstream activity or takeover superseded recovery"
+            : "auto-continuation is off",
+        );
       }
     }
+    // Off: the state machine above still runs, but nothing reaches a conversation.
+    if (!injecting) return;
     if (await browserDisconnected()) return;
     for (const row of actions) {
       const actionId = row.actionId!;
@@ -6042,14 +6049,21 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
       if (!existing && now < sendBlockedUntil(now)) continue;
       // A chat started on an old tool schema cannot do what the gates ask (connector-schema.ts).
       if (!existing && workstreamSendsHeldBySchema(now)) continue;
-      if (!existing && row.phase !== "opening" && row.conversationId)
-        workstreamPushAt.set(currentBrowserRoute(row.conversationId), now);
+      const connector = getConfig().tunnel.connectorName;
+      if (!existing && !connector) {
+        await blockWorkstreamAction(
+          row.id,
+          actionId,
+          "connector_name_unset: set this connector's ChatGPT name in Settings, so workstream messages can name it",
+        );
+        continue;
+      }
       const command =
         existing ??
         queue({
           type: "send",
           conversationId: row.phase === "opening" ? null : row.conversationId,
-          text: workstreamPrompt(row),
+          text: workstreamPrompt(row, connector),
           nonce: actionId,
           stopFirst: row.phase === "recovering",
           // Two different stalls. A live page whose model has gone quiet is thinking or

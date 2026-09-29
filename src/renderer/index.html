@@ -94,6 +94,15 @@
       <main>
         <!-- ============================================================ Home -->
         <section class="panel is-active" data-panel="home">
+          <section class="card autocontinue">
+            <div class="setting">
+              <span class="setting-text">
+                <b>Auto-continuation</b>
+                <em>On: the app stops and continues a workstream chat that made no tool call for five minutes. Off: the app types nothing into a chat on its own: no workstream continuation, no stall or error restart, no Goal Mode reply and no automatic compaction.</em>
+              </span>
+              <span class="sw"><input type="checkbox" id="autoContinue" /><i></i></span>
+            </div>
+          </section>
           <div class="top">
             <!-- ------------------------------------------------- permissions -->
             <section class="card">
@@ -234,6 +243,14 @@
                       spellcheck="false"
                       placeholder="tunnel_0123456789abcdef0123456789abcdef"
                     />
+                  </div>
+                  <div class="field">
+                    <label for="connectorName">Connector name in ChatGPT</label>
+                    <input id="connectorName" type="text" spellcheck="false" placeholder="Laptop" />
+                    <p class="hint">
+                      The name you gave this connector in ChatGPT. Workstream messages name it, so
+                      a chat with several connectors calls this one.
+                    </p>
                   </div>
                   <!-- Desktop is a second connector in ChatGPT, so on this method it needs a
                        second tunnel of its own. Hidden unless desktop permissions are on, so

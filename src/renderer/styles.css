@@ -300,7 +300,7 @@ main {
 
 /* Home: three cards over a deliberately compact recent-activity strip. */
 [data-panel='home'] {
-  grid-template-rows: 300px minmax(0, 1fr);
+  grid-template-rows: auto 300px minmax(0, 1fr);
   gap: 12px;
   padding: 12px 14px 14px;
 }
@@ -2309,4 +2309,12 @@ nav button.is-sel::after {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The auto-continuation switch leads Home: it decides whether the app types into chats. */
+.autocontinue {
+  padding: 10px 14px;
+}
+.autocontinue .setting-text b {
+  font-size: 15px;
 }

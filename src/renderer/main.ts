@@ -368,6 +368,7 @@ function save(over: { readOnly?: boolean; theme?: 'light' | 'dark' } = {}): Prom
       kind: $<HTMLSelectElement>('tunnelKind').value as 'openai' | 'cloudflared' | 'manual',
       tunnelId: $<HTMLInputElement>('tunnelId').value.trim(),
       desktopTunnelId: $<HTMLInputElement>('desktopTunnelId').value.trim(),
+      connectorName: $<HTMLInputElement>('connectorName').value.trim(),
       binaryPath: $<HTMLInputElement>('binaryPath').value.trim()
     },
     ui: {
@@ -697,6 +698,8 @@ function apply(next: AppState): void {
   paintClock();
   $('facts').replaceChildren(...facts(next));
 
+  $<HTMLInputElement>('autoContinue').checked = config.autoContinue;
+
   // ---- permissions
   $('readOnlyBtn').classList.toggle('is-on', config.readOnly);
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-cap]')) {
@@ -737,6 +740,11 @@ function apply(next: AppState): void {
     $<HTMLInputElement>('desktopTunnelId'),
     config.tunnel.desktopTunnelId,
     previousState?.config.tunnel.desktopTunnelId
+  );
+  applyValue(
+    $<HTMLInputElement>('connectorName'),
+    config.tunnel.connectorName,
+    previousState?.config.tunnel.connectorName
   );
   applyValue($<HTMLInputElement>('binaryPath'), config.tunnel.binaryPath, previousState?.config.tunnel.binaryPath);
   applyChecked($<HTMLInputElement>('autoConnect'), config.ui.autoConnect, previousState?.config.ui.autoConnect);
@@ -1307,6 +1315,11 @@ $('themeBtn').addEventListener('click', () => {
   // Applied immediately so the click feels instant; the save confirms it.
   document.documentElement.dataset.theme = next;
   void save({ theme: next });
+});
+
+$<HTMLInputElement>('autoContinue').addEventListener('change', async (event) => {
+  const next = await run(api.setAutoContinue((event.target as HTMLInputElement).checked));
+  if (next) apply(next);
 });
 
 $('readOnlyBtn').addEventListener('click', () => {

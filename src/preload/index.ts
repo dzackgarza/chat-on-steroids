@@ -64,6 +64,7 @@ export interface SessionDetail {
 const api = {
   getState: () => call<AppState>('state:get'),
   saveSettings: (patch: SettingsPatch, base: SettingsPatch) => call<AppState>('settings:save', { patch, base }),
+  setAutoContinue: (enabled: boolean) => call<AppState>('workstreams:autoContinue', { enabled }),
   addRoot: () => call<AppState>('roots:add'),
   removeRoot: (name: string) => call<AppState>('roots:remove', { name }),
   renameRoot: (name: string, newName: string) => call<AppState>('roots:rename', { name, newName }),

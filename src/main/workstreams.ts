@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { durableRoot, writeDurableNow, writeDurableSoon } from "./durable.js";
+import { durableRoot, writeDurableNow } from "./durable.js";
 import { unifiedExecManager } from "./codex/manager.js";
 import { execOwner } from "./codex/ownership.js";
 import { runningToolCallsForWorkstream } from "./mcp/call-context.js";
@@ -18,32 +18,12 @@ export function provisionalRoute(conversationId: string): boolean {
 }
 
 /**
- * Silence that counts as a stall. The managed model rarely thinks for more than two minutes
- * without acting; longer is a backend stall or a spiral, not work. A running tool call holds
- * the lease open (the separate five-minute action ceiling bounds it), and thought-summary rows
- * do not renew it, so a model narrating its own spiral still reads as stalled.
+ * The lock's lifetime: five minutes after the last tool call the app received under it. Only
+ * an admitted tool call renews it. Page activity (thinking, prose, turn boundaries) never does,
+ * because a model that thinks or talks without calling tools is the stall. A running tool call
+ * holds the lock open; the separate five-minute action ceiling bounds it.
  */
-export const WORKSTREAM_LEASE_MS = 2 * 60_000;
-/**
- * A fresh chat spends its first minutes reading and thinking before any tool call, and a
- * provisional WEB: route cannot take a push at all. Judging those by the two-minute stall window
- * tore every replacement down before it attached (2026-09-25 17:51-17:57: five successive chats
- * per workstream, a new one each minute), so a frontend still attaching keeps the old window.
- */
-const ATTACH_LEASE_MS = 5 * 60_000;
-
-function leaseFor(row: { phase: string; conversationId: string | null }): number {
-  return row.phase === "opening" || provisionalRoute(row.conversationId ?? "")
-    ? ATTACH_LEASE_MS
-    : WORKSTREAM_LEASE_MS;
-}
-/** A setup/reclaim is administrative, not substantive work. Give the model only enough time
- * to make its first ordinary claimed call before stale-work recovery remains eligible. */
-const WORKSTREAM_CLAIM_GRACE_MS = 30_000;
-/** Tool activity this recent proves a worker alive when only the observation of its turn ended. */
-const OBSERVATION_LOSS_ACTIVITY_MS = 2 * 60_000;
-/** Row error marking a turn whose end the app did not observe while the worker looked alive. */
-const UNOBSERVED_TURN_END = "turn_end_unobserved";
+export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
 const REVIVE_RESPONSE_MS = 2 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
@@ -56,7 +36,6 @@ const rowSchema = z
     id: workstreamIdSchema,
     context: z.string().max(40_000),
     workspace: z.string().nullable(),
-    observations: z.record(z.string(), z.string()),
     ownerKey: z.string(),
     conversationId: z.string().nullable(),
     sessionId: z.string().nullable().default(null),
@@ -173,16 +152,26 @@ export function workstreamWorkspace(logicalWorkstream: string): string | null {
   return rows.get(logicalWorkstream)?.workspace ?? null;
 }
 
-/** Whether this exact conversation belongs to a controller-driven workstream. */
-export function autoAdvancingWorkstreamForConversation(
+/** Whether this exact conversation holds a workstream, which the controller manages. */
+export function managedWorkstreamForConversation(
   conversationId: string,
 ): boolean {
   ready();
   return [...rows.values()].some(
     (row) =>
       row.conversationId === conversationId &&
-      row.autoAdvance &&
       !["paused", "blocked", "archiving", "opening"].includes(row.phase),
+  );
+}
+
+/** Whether a live claim has no chat bound yet, so generating pages should report their locks. */
+export function workstreamClaimPending(now = Date.now()): boolean {
+  ready();
+  return [...rows.values()].some(
+    (row) =>
+      row.phase === "active" &&
+      row.conversationId === null &&
+      now < row.lastActivity + WORKSTREAM_LEASE_MS,
   );
 }
 
@@ -301,9 +290,13 @@ export type WorkstreamSetupResult =
       ok: false;
       code:
         | "WORKSTREAM_ALREADY_EXISTS"
+        | "WORKSTREAM_PATH_TAKEN"
+        | "WORKSTREAM_HELD"
         | "WORKSTREAM_NOT_FOUND"
         | "WORKSTREAM_UNAVAILABLE"
         | "WORKSTREAM_PAUSED";
+      /** The workstream that already owns the requested path. */
+      holder?: string;
     };
 
 export type WorkstreamAdmitResult =
@@ -321,12 +314,12 @@ function freshWorkstreamId(): string {
 
 /**
  * Model-facing setup, `action=start`: register and claim a brand-new named logical
- * workstream and issue its opaque attachment id. The logical name is supplied by the
- * model so the identity names the repository/task it is claiming rather than an invented
- * transport identifier.
+ * workstream on the path it declares, and issue its opaque attachment id. The path is fixed
+ * for the life of the workstream, and one path has at most one workstream.
  */
 export async function startWorkstream(
   logicalWorkstream: string,
+  workspace: string,
   now = Date.now(),
 ): Promise<WorkstreamSetupResult> {
   return exclusive(async () => {
@@ -334,12 +327,14 @@ export async function startWorkstream(
     workstreamIdSchema.parse(logicalWorkstream);
     if (rows.has(logicalWorkstream))
       return { ok: false, code: "WORKSTREAM_ALREADY_EXISTS" };
+    const holder = [...rows.values()].find((row) => row.workspace === workspace);
+    if (holder)
+      return { ok: false, code: "WORKSTREAM_PATH_TAKEN", holder: holder.id };
     const workstreamId = freshWorkstreamId();
     rows.set(logicalWorkstream, {
       id: logicalWorkstream,
       context: "",
-      workspace: null,
-      observations: {},
+      workspace,
       ownerKey: logicalWorkstream,
       conversationId: null,
       sessionId: null,
@@ -363,16 +358,14 @@ export async function startWorkstream(
 }
 
 /**
- * Model-facing setup, `action=continue`: claim an existing logical workstream and issue a
- * FRESH opaque attachment id. The previously issued id becomes invalid immediately — old
- * ids from replaced owners stay fenced because only the current `lock` admits a call.
+ * Model-facing setup, `action=continue`: claim an existing logical workstream whose lock has
+ * expired, and issue a FRESH opaque attachment id. The previously issued id becomes invalid
+ * immediately — only the current `lock` admits a call. A lock renewed by a tool call within
+ * WORKSTREAM_LEASE_MS, or held open by a running call, refuses the claim.
  *
- * A row reserved by the controller in `opening` phase is activated here; this is the
- * transition that issues the model-visible attachment id. Re-attaching an already-bound
- * workstream rotates only the opaque token. The setup call deliberately has no browser
- * identity, so it must not guess that the row's current conversation is some other owner
- * and retire it. Genuine browser replacements are retired in bindWorkstreamReplacement(),
- * where both the old and new conversation ids are known exactly.
+ * The claim is itself a received tool call, so it starts the new holder's lease. The holder's
+ * conversation is unknown until workstream-binding.ts finds the chat whose record holds the
+ * new id; a row reserved in `opening` keeps the replacement chat its command ACK bound.
  */
 export async function continueWorkstream(
   logicalWorkstream: string,
@@ -383,6 +376,12 @@ export async function continueWorkstream(
     workstreamIdSchema.parse(logicalWorkstream);
     const prior = rows.get(logicalWorkstream);
     if (!prior) return { ok: false, code: "WORKSTREAM_NOT_FOUND" };
+    if (
+      ["active", "advancing"].includes(prior.phase) &&
+      (now < prior.lastActivity + WORKSTREAM_LEASE_MS ||
+        runningToolCallsForWorkstream(prior.id) > 0)
+    )
+      return { ok: false, code: "WORKSTREAM_HELD" };
     // Setup has no browser-provenance dependency. A `blocked` row is a controller-side
     // delivery failure (e.g. the app-opened chat's conversation never bound); the model's own
     // explicit `continue` is the attach that reclaims it. Only an in-flight replacement
@@ -400,22 +399,17 @@ export async function continueWorkstream(
       id: logicalWorkstream,
       context: prior.context,
       workspace: prior.workspace,
-      observations: prior.observations,
       ownerKey: logicalWorkstream,
-      conversationId: prior.conversationId,
+      conversationId: prior.phase === "opening" ? prior.conversationId : null,
       sessionId: prior.sessionId,
       lock: newLock,
-      // Claim rotation is not repository/model progress. Preserve the last substantive
-      // activity timestamp; the first ordinary call admitted under this fresh claim renews it.
-      lastActivity: prior.lastActivity,
+      lastActivity: now,
       phase: "active",
       autoAdvance: prior.autoAdvance,
       lastAdvancedTurnId: prior.lastAdvancedTurnId,
       lastAdvancedTurnTime: prior.lastAdvancedTurnTime,
       attempts: 0,
-      // Avoid a maintenance-sweep race between the setup result and the model's immediate first
-      // ordinary call without granting another five-minute lease to a no-op claimant.
-      nextCheck: now + WORKSTREAM_CLAIM_GRACE_MS,
+      nextCheck: 0,
       // Keep the controller's commandId only while the row is still `opening`, so a late
       // browser ACK can fill the conversation without rotating the issued attachment id.
       commandId: prior.phase === "opening" ? prior.commandId : null,
@@ -455,7 +449,6 @@ export async function reserveWorkstream(
       id: logicalWorkstream,
       context,
       workspace: prior?.workspace ?? null,
-      observations: prior?.observations ?? {},
       ownerKey: logicalWorkstream,
       conversationId,
       sessionId: prior?.sessionId ?? null,
@@ -502,7 +495,7 @@ export async function admitWorkstreamCall(
     const row = [...rows.values()].find(
       (candidate) =>
         candidate.lock === workstreamId &&
-        ["active", "recovering"].includes(candidate.phase),
+        ["active", "advancing", "recovering"].includes(candidate.phase),
     );
     if (!row) return { ok: false, code: "WORKSTREAM_ID_NOT_CURRENT" };
     // Re-attachment fenced the former opaque claim. Execution waits for calls already
@@ -538,9 +531,7 @@ export async function admitWorkstreamCall(
     row.nextCheck = 0;
     if (!pendingReplacementBind) row.commandId = null;
     row.actionId = null;
-    // Tool calls in a turn the page no longer observes keep it alive, but they cannot end the
-    // blindness: only an observed message or turn boundary clears the unobserved-end marker.
-    if (row.error !== UNOBSERVED_TURN_END) row.error = null;
+    row.error = null;
     await save();
     return {
       ok: true,
@@ -587,91 +578,37 @@ export async function setWorkstreamRecordingSession(
   });
 }
 
-/** Only changed, freshly observed messages count. Polls, backfills and our own recovery text do not. */
-export function noteWorkstreamChatActivity(
+/**
+ * Binds a workstream to the one chat whose ChatGPT record holds its current lock. The lock is
+ * a 256-bit secret that only the claim's own tool result carries, so the match is exact. A
+ * chat holds one workstream: a row previously bound to this chat loses the binding.
+ */
+export async function bindWorkstreamConversation(
+  lock: string,
   conversationId: string,
-  time: number,
-  now = Date.now(),
-): void {
-  if (loadedRoot !== durableRoot() || time > now + 5_000 || time < now - 60_000)
-    return;
-  for (const row of rows.values()) {
-    if (
-      row.conversationId !== conversationId ||
-      !["active", "recovering"].includes(row.phase)
-    )
-      continue;
-    row.lastActivity = Math.max(row.lastActivity, time);
-    row.phase = "active";
-    row.attempts = 0;
-    row.nextCheck = 0;
-    row.commandId = null;
-    row.actionId = null;
-    if (row.error === UNOBSERVED_TURN_END) row.error = null;
-    writeDurableSoon("workstreams", snapshot());
-  }
-}
-
-/** Liveness is independent of optional transcript retention. Keep bounded fingerprints,
- * not message contents, so journal replay and history hydration cannot renew a lease. */
-export function observeWorkstreamMessages(
-  conversationId: string,
-  observations: readonly ChatObservation[],
-  now = Date.now(),
-): void {
-  if (loadedRoot !== durableRoot()) return;
-  const row = [...rows.values()].find(
-    (candidate) =>
-      candidate.conversationId === conversationId &&
-      ["active", "recovering"].includes(candidate.phase),
-  );
-  if (!row) return;
-  for (const item of observations) {
-    if (
-      !["user_message", "assistant_message", "page_tool"].includes(item.kind) ||
-      !item.messageId ||
-      !item.text
-    )
-      continue;
-    if (
-      item.kind === "user_message" &&
-      item.text.startsWith("Continue workstream ")
-    )
-      continue;
-    // Thought summaries are the model narrating, not acting: a spiral produces them steadily.
-    if (item.kind === "page_tool" && item.messageId.startsWith("thought-")) continue;
-    const id = `${item.kind}:${item.messageId}`;
-    const digest = createHash("sha256").update(item.text).digest("hex");
-    const previous = row.observations[id];
-    if (previous === digest) continue;
-    delete row.observations[id];
-    row.observations[id] = digest;
-    const keys = Object.keys(row.observations);
-    for (const old of keys.slice(0, Math.max(0, keys.length - 64)))
-      delete row.observations[old];
-    // The fingerprint map is deliberately bounded, so an old DOM row can fall out of it
-    // and later be observed again during history hydration. A page-tool row has no authored
-    // timestamp: after a reload its `time` is merely the new observation time, so treating an
-    // unknown first sight as fresh lets a static history with >64 rows continually evict and
-    // re-add itself, renew the lease, and cancel recovery forever. First sight may renew the
-    // lease only when ChatGPT supplied a stable authored timestamp. Otherwise the row must
-    // already be in the bounded map and actually change before it counts as progress.
-    if (
-      item.time > row.lastActivity &&
-      (previous !== undefined || item.authoredTime === true) &&
-      item.time >= now - 60_000 &&
-      item.time <= now + 5_000
-    ) {
-      noteWorkstreamChatActivity(conversationId, item.time, now);
-    }
-    writeDurableSoon("workstreams", snapshot());
-  }
+): Promise<string | null> {
+  return exclusive(async () => {
+    ready();
+    const row = [...rows.values()].find((candidate) => candidate.lock === lock);
+    if (!row) return null;
+    if (row.conversationId === conversationId) return row.id;
+    for (const other of rows.values())
+      if (other.id !== row.id && other.conversationId === conversationId)
+        other.conversationId = null;
+    row.conversationId = conversationId;
+    row.retiredConversations = row.retiredConversations.filter(
+      (id) => id !== conversationId,
+    );
+    await save();
+    return row.id;
+  });
 }
 
 /**
  * Turns a freshly observed managed turn boundary into the next controller action.
- * Completed work advances immediately. An observed abnormal end recovers immediately;
- * silent/wedged turns still use the five-minute lease path in nextWorkstreamActions().
+ * Completed work advances immediately. An observed abnormal end recovers immediately.
+ * An outcome that only says the page lost sight of the turn changes nothing: the lease,
+ * renewed by received tool calls alone, decides whether the holder stalled.
  */
 export async function scheduleWorkstreamAfterTurn(
   conversationId: string,
@@ -694,26 +631,10 @@ export async function scheduleWorkstreamAfterTurn(
       (row.lastAdvancedTurnId === turnId && time <= row.lastAdvancedTurnTime)
     )
       return false;
-    // These outcomes say the app lost sight of the turn (a tab closed or reloaded, another tab
-    // took over observing it, or the page could not classify the boundary), not that ChatGPT
-    // ended it badly. While the worker is visibly working, recovering would press Stop on a
-    // live turn; a real stall still surfaces through the five-minute lease.
-    if (
-      ["stalled", "observer_lost", "unknown"].includes(outcome) &&
-      (runningToolCallsForWorkstream(row.id) > 0 ||
-        now - row.lastActivity < OBSERVATION_LOSS_ACTIVITY_MS)
-    ) {
-      // Deferring to the full lease left lean-categories idle from 09:03 to 09:15 on
-      // 2026-09-25 after an unobserved end. Mark the row so nextWorkstreamActions() recovers it
-      // once OBSERVATION_LOSS_ACTIVITY_MS pass with no further activity and no running call.
-      row.error = UNOBSERVED_TURN_END;
-      await save();
-      return false;
-    }
+    if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
 
     row.lastAdvancedTurnId = turnId;
     row.lastAdvancedTurnTime = time;
-    row.lastActivity = Math.max(row.lastActivity, time);
     row.commandId = null;
     row.error = null;
     if (outcome === "completed") {
@@ -747,21 +668,6 @@ export async function configureWorkstream(
     await save();
     return true;
   });
-}
-
-export function noteWorkstreamWorkspace(
-  logicalWorkstream: string,
-  workspace: string,
-): void {
-  if (loadedRoot !== durableRoot()) return;
-  const row = rows.get(logicalWorkstream);
-  // The logical workstream's workspace is its repository binding, not the cwd of the most
-  // recent tool call. A worker may legitimately inspect a nested dependency repository (for
-  // example `.lake/packages/mathlib`) without moving the workstream itself there. Learn the
-  // repository once for an unbound workstream; replacements and subsequent calls preserve it.
-  if (!row || row.phase !== "active" || row.workspace !== null) return;
-  row.workspace = workspace;
-  writeDurableSoon("workstreams", snapshot());
 }
 
 export async function pauseWorkstream(id: string): Promise<boolean> {
@@ -851,14 +757,24 @@ export async function recoverWorkstreamNow(
 
 export const STEWARD_CONTINUATION =
   "Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. Preserve other workers’ changes, finish the substantive work, and keep the workstream moving. Keep every command/tool action under five minutes. These managed workstreams are source/architecture/definition/card work, not release pipelines: do not push/publish, start watchers/servers, use foreground sleeps, declare persistent terminal sessions, or run broad/heavy test/build suites unless the CURRENT repository contract explicitly requires that exact action. Prefer focused owner-local checks. A command or test approaching five minutes is a major failure signal: stop it, re-read the explicit assigned task/DAG/phase boundary, check for drift or over-broad validation, and resume with a narrower action rather than waiting.";
-export function workstreamPrompt(row: Workstream): string {
+/**
+ * The message the controller sends for one action. `connector` is the name the owner gave
+ * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
+ * A bound chat is the proven holder of the lock and is handed it again; a fresh chat claims
+ * the workstream itself.
+ */
+export function workstreamPrompt(row: Workstream, connector: string): string {
   const recoveryNotice =
     row.error?.startsWith("five_minute_")
       ? row.error.startsWith("five_minute_action_overrun:")
         ? `\nRECOVERY NOTICE: Your previous action exceeded the hard five-minute action ceiling: ${row.error.slice("five_minute_action_overrun:".length)}. This is not normal waiting. In these repository workstreams, no single command, test, build, or tool action should take more than five minutes. Treat this as a major red flag for drift, an over-broad or unacceptably slow test/build, unnecessary heavyweight work, or work outside the assigned phase such as push/publication. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints before doing anything else. Verify that you are still on the repository-selected unit and are not attempting push/publication or broad validation unless explicitly required. Resume with a narrower source action or focused owner-local check; do not rerun the same long command.\n`
         : "\nRECOVERY NOTICE: This workstream made no substantive movement for five minutes. There is no autonomous waiting/wake-up state after tool activity stops; five minutes without movement means the worker is stalled. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints, verify you are still on the selected unit, check for drift such as broad tests/builds or push/publication work, and resume immediately with a narrower substantive action.\n"
       : "";
-  return `Continue workstream ${row.id}. Before any other connector operation, call \`workstream\` with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary connector call.\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${STEWARD_CONTINUATION}`;
+  const claim =
+    row.phase === "opening"
+      ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
+      : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call; do not call \`workstream\` again.`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${STEWARD_CONTINUATION}`;
 }
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
@@ -931,19 +847,7 @@ export async function nextWorkstreamActions(
       }
       if (
         row.phase === "active" &&
-        row.error === UNOBSERVED_TURN_END &&
-        now >= row.lastActivity + OBSERVATION_LOSS_ACTIVITY_MS &&
-        runningToolCallsForWorkstream(row.id) === 0
-      ) {
-        row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.commandId = null;
-        row.actionId = null;
-      }
-      if (
-        row.phase === "active" &&
-        now >= row.lastActivity + leaseFor(row) &&
+        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
         now >= row.nextCheck &&
         runningToolCallsForWorkstream(row.id) === 0
       ) {
@@ -957,7 +861,7 @@ export async function nextWorkstreamActions(
         row.phase === "opening" &&
         row.conversationId &&
         row.commandId === null &&
-        now >= row.lastActivity + leaseFor(row)
+        now >= row.lastActivity + WORKSTREAM_LEASE_MS
       ) {
         row.phase = "recovering";
         row.attempts = 0;
@@ -971,16 +875,13 @@ export async function nextWorkstreamActions(
       if (row.phase === "recovering" && row.commandId !== null) continue;
       if (row.phase !== "recovering" || now < row.nextCheck) continue;
       if (!row.conversationId) {
-        // No known frontend means there is nothing honest to revive or archive. This is the
-        // expected state after a successful archive whose replacement failed, or whenever a
-        // logical workstream has continued making tool progress without a controller-bound
-        // browser route. Recovery must create a fresh frontend directly rather than waiting
-        // forever for a conversation id that ordinary workstream calls intentionally do not
-        // carry.
-        row.phase = "opening";
-        row.actionId = `replace-${row.lock}`;
+        // The holder's chat was never found, so there is no chat to revive. A fresh chat would
+        // be a second holder of work the first may still be doing: stop and say so.
+        row.phase = "blocked";
+        row.actionId = null;
         row.commandId = null;
-        row.nextCheck = now;
+        row.error =
+          "conversation_unbound: the chat that holds this workstream was not found in the ChatGPT backend, so it cannot be revived";
         continue;
       }
       // A WEB:<uuid> route is a send ChatGPT had not accepted when it was bound, and it was

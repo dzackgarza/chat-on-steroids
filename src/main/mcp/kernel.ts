@@ -23,7 +23,6 @@ import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
 import {
   admitWorkstreamCall,
-  noteWorkstreamWorkspace,
   workstreamWorkspace,
 } from "../workstreams.js";
 import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
@@ -458,7 +457,7 @@ async function dispatchTracked(
     : agentForCaller(context.caller);
   const refusal = workerFenceRefusal(context.workstreamId, isFinish);
   const result = await runInCallContext(context, () =>
-    refusal ? Promise.resolve(fail(refusal)) : runNotingWorkspace(context, run),
+    refusal ? Promise.resolve(fail(refusal)) : run(),
   );
   // Never erase an identity a handler proved more strongly (agents::callerNow). The old
   // post-handler pass could fail to rediscover evidence that callerNow had already reserved
@@ -571,17 +570,6 @@ function workerFenceRefusal(
   return isFinish ? null : endedWorkerNoticeForWorkstream(workstreamId);
 }
 
-async function runNotingWorkspace(
-  context: CallContext,
-  run: () => Promise<ToolResult>,
-): Promise<ToolResult> {
-  const result = await run();
-  const workspace = currentWorkspace();
-  if (workspace && context.workstreamId)
-    noteWorkstreamWorkspace(context.workstreamId, workspace.virtual);
-  return result;
-}
-
 /**
  * One tool call made from inside a code-mode `exec` script.
  *
@@ -621,7 +609,7 @@ async function dispatchNested(
       const result = await runInCallContext(context, () =>
         refusal
           ? Promise.resolve(fail(refusal))
-          : runNotingWorkspace(context, run),
+          : run(),
       );
       await recordToolCall({
         tool: name,

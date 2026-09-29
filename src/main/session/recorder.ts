@@ -2050,7 +2050,8 @@ export interface ChatObservation {
     | "turn_start"
     | "turn_end"
     | "chat_error"
-    | "tool_evidence";
+    | "tool_evidence"
+    | "workstream_claim";
   time: number;
   /** True when `time` is ChatGPT's own authored create_time, not local observation time. */
   authoredTime?: boolean;
@@ -2420,6 +2421,9 @@ async function recordChatObservationsNow(
             item.time,
           );
         }
+        continue;
+      // Workstream binding evidence, which the bridge consumes. Nothing happened in the chat.
+      case "workstream_claim":
         continue;
       case "turn_end":
         // An unnamed end closes nothing durable and, worse, used to clear whichever named

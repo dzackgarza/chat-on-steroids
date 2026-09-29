@@ -111,6 +111,8 @@ export interface TunnelSettings {
    * and the API (`docs/tool-surface.md` §6.5). One id per connector is what actually works.
    */
   desktopTunnelId: string;
+  /** The name the owner gave the Core connector in ChatGPT. Workstream messages name it. */
+  connectorName: string;
   /** Optional explicit path to tunnel-client / cloudflared. */
   binaryPath: string;
 }
@@ -254,6 +256,8 @@ export interface Config {
   compaction: CompactionSettings;
   multiAgent: MultiAgentSettings;
   goal: GoalSettings;
+  /** Whether the workstream controller may inject into conversations at all. */
+  autoContinue: boolean;
   /**
    * Optional on purpose: the renderer and IPC settings paths build patches that predate
    * this section, and an absent section always means the shipped defaults (off).

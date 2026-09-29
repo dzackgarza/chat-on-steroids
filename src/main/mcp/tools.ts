@@ -22,7 +22,8 @@ import { registerCodeMode } from "./code-mode-tool.js";
 import { surfaceDefinition, type SurfaceId } from "./surfaces.js";
 import { serverInstructions } from "./instructions.js";
 import { APP_VERSION } from "./../version.js";
-import { toVirtualPath } from "../sandbox.js";
+import { rawPromises as fs } from "../rawfs.js";
+import { SandboxError, resolvePath, toVirtualPath } from "../sandbox.js";
 import { logWarn } from "../logger.js";
 import {
   continueWorkstream,
@@ -49,18 +50,26 @@ function rulesNotice(id: string): string {
 
 /** What a refused setup call means for the chat that made it, and what it does next. */
 function workstreamRefusal(
-  code: Extract<WorkstreamSetupResult, { ok: false }>["code"],
+  refusal: Extract<WorkstreamSetupResult, { ok: false }>,
 ): string {
-  switch (code) {
+  switch (refusal.code) {
     case "WORKSTREAM_ALREADY_EXISTS":
       return 'That workstream is already registered. Call this tool with action="continue" and the same name to claim it.';
+    case "WORKSTREAM_PATH_TAKEN":
+      return `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path. One path has one workstream; claim "${refusal.holder}" with action="continue" instead.`;
+    case "WORKSTREAM_HELD":
+      return (
+        "WORKSTREAM_HELD: another chat holds this workstream and made a tool call under it within the last five minutes. " +
+        "Do not work on it here. The lock frees five minutes after its holder's last tool call."
+      );
     case "WORKSTREAM_NOT_FOUND":
       return 'No workstream has that name. Check the name you were given; to create a new one, call this tool with action="start".';
     case "WORKSTREAM_UNAVAILABLE":
       return (
         "WORKSTREAM_UNAVAILABLE: this workstream is being moved to a fresh chat right now, and that chat carries " +
         "the work on. Stop working on it in this chat and make no further tool calls for it here."
-      );    case "WORKSTREAM_PAUSED":
+      );
+    case "WORKSTREAM_PAUSED":
       return (
         "WORKSTREAM_PAUSED: the owner has paused this workstream to free its resources. Stop working: " +
         "make no further tool calls for it, and end your turn with a short note of where the work stands. " +
@@ -83,7 +92,7 @@ export function buildServer(
     },
   );
 
-  if (surface === "core") registerWorkstreamSetupTool(server);
+  if (surface === "core") registerWorkstreamSetupTool(server, liveContext);
 
   const registrar = createRegistrar(server, ctx, surface);
   if (surface === "core") {
@@ -121,72 +130,79 @@ export function buildServer(
  * with a required `workstream_id` — and setup is exactly the operation that must succeed
  * before any workstream_id exists.
  *
- * `action=start` registers and claims a new named logical workstream for this chat;
- * `action=continue` claims an already-registered one. Either returns the opaque
- * `workstream_id` required to unlock ordinary connector calls under that identity.
+ * `action=start` registers a new named workstream on the directory it declares, which is
+ * fixed for the life of the workstream; `action=continue` claims an existing one whose lock
+ * has expired. Either returns the opaque `workstream_id` required on ordinary calls.
  */
-function registerWorkstreamSetupTool(server: McpServer): void {
+function registerWorkstreamSetupTool(
+  server: McpServer,
+  liveContext: () => ToolContext,
+): void {
   server.registerTool(
     "workstream",
     {
       title: "Register or claim workstream identity",
       description:
         "Identity setup required before ordinary Core/Desktop calls. Use action=start with a new logical " +
-        "workstream name to register and claim that repository/task identity for this chat. Use action=continue " +
-        "with an already-registered name to claim and continue it. The returned workstream_id is the identity token " +
-        "required on every ordinary connector call.",
+        "workstream name and the repository directory it works in, to register and claim it for this chat. Use " +
+        "action=continue with an already-registered name to claim it. The returned workstream_id is the identity " +
+        "token required on every ordinary connector call.",
       inputSchema: z.object({
         action: z
           .enum(["start", "continue"])
           .describe(
             "start: register and claim a new named workstream. continue: claim an already-registered named workstream.",
           ),
-        workstream: workstreamIdSchema
+        workstream: workstreamIdSchema.describe(
+          "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
+        ),
+        path: z
+          .string()
+          .optional()
           .describe(
-            "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
+            "start only, and required there: the absolute virtual path of the directory this workstream works in, " +
+              "for example /research/math-notes-app. It is fixed for the life of the workstream.",
           ),
       }),
     },
-    async ({ action, workstream }) =>
+    async ({ action, workstream, path }) =>
       guard("workstream", async () => {
+        const refused = (text: string) => ({
+          content: [{ type: "text" as const, text }],
+          isError: true,
+        });
         if (action === "start") {
-          const result = await startWorkstream(workstream);
-          if (!result.ok)
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text:
-                    result.code === "WORKSTREAM_ALREADY_EXISTS"
-                      ? `Workstream "${workstream}" is already registered. Use action=continue with this name to claim it.`
-                      : workstreamRefusal(result.code),
-                },
-              ],
-              isError: true,
-            };
+          if (!path)
+            return refused(
+              'action="start" requires `path`: the absolute virtual path of the directory this workstream works in.',
+            );
+          let workspace: string;
+          try {
+            const resolved = await resolvePath(liveContext().roots, path);
+            if (!(await fs.stat(resolved.real)).isDirectory())
+              return refused(`${resolved.virtual} is not a directory.`);
+            workspace = resolved.virtual;
+          } catch (error) {
+            if (error instanceof SandboxError) return refused(error.message);
+            throw error;
+          }
+          const result = await startWorkstream(workstream, workspace);
+          if (!result.ok) return refused(workstreamRefusal(result));
           return {
             content: [
               {
                 type: "text" as const,
-                text: `Registered and claimed workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + rulesNotice(result.id),
+                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + rulesNotice(result.id),
               },
             ],
           };
         }
+        if (path)
+          return refused(
+            'action="continue" takes no `path`: a workstream keeps the directory it was started on.',
+          );
         const result = await continueWorkstream(workstream);
-        if (!result.ok)
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text:
-                  result.code === "WORKSTREAM_NOT_FOUND"
-                    ? `Workstream "${workstream}" is not registered. Use action=start with this name to register and claim it.`
-                    : workstreamRefusal(result.code),
-              },
-            ],
-            isError: true,
-          };
+        if (!result.ok) return refused(workstreamRefusal(result));
         return {
           content: [
             {

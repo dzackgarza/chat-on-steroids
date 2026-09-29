@@ -238,6 +238,7 @@ const configSchema = z.object({
     // loads unchanged and simply has no Desktop tunnel yet — which is also the correct
     // state for it, since the user has not created that connector in ChatGPT either.
     desktopTunnelId: z.string().max(128).optional().default(''),
+    connectorName: z.string().max(64).optional().default(''),
     binaryPath: z.string().max(4096)
   }),
   ui: z.object({
@@ -289,6 +290,9 @@ const configSchema = z.object({
     })
     .optional()
     .default({ ...DEFAULT_MULTI_AGENT }),
+  // Whether the workstream controller may type into, stop, archive or open chats. Off keeps
+  // the controller's state machine running and suppresses every conversation injection.
+  autoContinue: z.boolean().optional().default(false),
   sleepWake: z
     .object({
       enabled: z.boolean().optional().default(DEFAULT_SLEEP_WAKE.enabled),
@@ -369,12 +373,13 @@ export function defaultConfig(platform: NodeJS.Platform = process.platform): Con
     // stored schema remains cross-platform so one config can still be moved between machines.
     capabilities: capabilitiesForPlatform({ ...ALL_FIRST_LAUNCH_CAPABILITIES }, platform),
     readOnly: false,
-    tunnel: { kind: 'openai', tunnelId: '', desktopTunnelId: '', binaryPath: '' },
+    tunnel: { kind: 'openai', tunnelId: '', desktopTunnelId: '', connectorName: '', binaryPath: '' },
     ui: { minimizeToTray: true, autoConnect: false, privacyScreenshots: false, theme: 'dark' },
     sessions: { ...DEFAULT_SESSIONS },
     compaction: { ...DEFAULT_COMPACTION },
     multiAgent: { ...FIRST_LAUNCH_MULTI_AGENT },
     goal: { ...DEFAULT_GOAL },
+    autoContinue: false,
     sleepWake: { ...DEFAULT_SLEEP_WAKE }
   };
 }
@@ -397,6 +402,7 @@ function conservativeRecoveryConfig(): Config {
     // into the user's chat, whatever the unreadable file said — nor to have the app closing
     // browser tabs on its own.
     goal: { ...DEFAULT_GOAL },
+    autoContinue: false,
     sleepWake: { ...DEFAULT_SLEEP_WAKE }
   };
 }
