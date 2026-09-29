@@ -1003,6 +1003,47 @@ export function upsertMessageEvent(
 
 // ------------------------------------------------------------------- read
 
+/**
+ * One session journal, line by line, forwards, without ever holding the whole file.
+ *
+ * A missing journal yields nothing — an unwritten log and an empty one are the same fact to
+ * every reader here, and that is the behaviour the old `readFile` + ENOENT guard had.
+ *
+ * A line longer than {@link MAX_LINE_BYTES} is a torn write, not an event, and is dropped
+ * here rather than handed on to be parsed. `readRecentEvents` applies the identical guard on
+ * its backwards scan; without it one corrupt run of bytes with no newline in it could pull
+ * an arbitrary amount of the file into memory, which is the failure this whole change is
+ * about.
+ */
+async function* journalLines(sessionId: string): AsyncGenerator<string> {
+  const handle = await fs.open(path.join(sessionDir(sessionId), 'events.jsonl'), 'r').catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  });
+  if (!handle) return;
+  try {
+    let carry = '';
+    // Each chunk is one turn of the event loop for everything else in the process. That is
+    // the property being bought here; the chunk size only decides how often it is paid.
+    for await (const chunk of handle.createReadStream({ encoding: 'utf8', highWaterMark: 256 * 1024 })) {
+      carry += chunk as string;
+      let cut = carry.indexOf('\n');
+      while (cut !== -1) {
+        const line = carry.slice(0, cut);
+        carry = carry.slice(cut + 1);
+        if (line.length <= MAX_LINE_BYTES) yield line;
+        cut = carry.indexOf('\n');
+      }
+      // An unterminated run this long is not a pending final line, it is damage. Drop it and
+      // resynchronise on the next newline rather than growing `carry` without bound.
+      if (carry.length > MAX_LINE_BYTES) carry = '';
+    }
+    if (carry.length > 0 && carry.length <= MAX_LINE_BYTES) yield carry;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 export interface ReadOptions {
   /** First sequence number to return, inclusive. */
   from?: number;
@@ -1016,7 +1057,22 @@ export interface ReadOptions {
  *
  * A malformed line is skipped and counted rather than throwing: the whole point of
  * an append-only log is that a half-written final line costs one event, not the
- * session. Reading the file in one go is fine at the sizes the caps allow.
+ * session.
+ *
+ * The journal is *streamed*, never materialised. It used to be one `readFile` plus one
+ * `split('\n')` plus one synchronous parse loop, on the assumption that "the sizes the caps
+ * allow" kept that cheap. The caps do not hold: two live journals on this machine reached
+ * 63 MB and 49 MB, and at 63 MB that path blocked the event loop for **1.5 seconds** per
+ * call (measured 2026-09-10: 544 ms in `split`, 975 ms parsing 21,482 lines; the async read
+ * itself cost 13 ms of loop lag, so the file I/O was never the problem — the synchronous
+ * work after it was). Every other request in the process queues behind that, which is what
+ * made a healthy daemon answer `/hello` outside a second about one probe in twenty and
+ * occasionally not at all, and what made `just say` report a running app as absent.
+ *
+ * Reading line by line off a stream keeps both halves bounded: no 63 MB string is ever
+ * allocated, and the loop gets a turn at every chunk boundary. It is slightly slower
+ * end to end and that is the correct trade — this is a background read competing with a
+ * live fleet, not a latency-critical path.
  */
 export async function readEvents(sessionId: string, options: ReadOptions = {}): Promise<SessionEvent[]> {
   assertSessionId(sessionId);
@@ -1044,18 +1100,11 @@ export async function readEvents(sessionId: string, options: ReadOptions = {}): 
       return chronological(page);
     }
   }
-  let raw: string;
-  try {
-    raw = await fs.readFile(path.join(sessionDir(sessionId), 'events.jsonl'), 'utf8');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') raw = '';
-    else throw err;
-  }
   const messages = active?.messages ?? (await readCanonicalMessages(sessionId));
   const canonicalKeys = new Set(messages.keys());
   const out: SessionEvent[] = [];
   let damaged = 0;
-  for (const line of raw.split('\n')) {
+  for await (const line of journalLines(sessionId)) {
     if (!line.trim()) continue;
     let parsed: SessionEvent;
     try {
@@ -1798,6 +1847,70 @@ export async function setSessionOrigin(id: string, origin: SessionOrigin, title:
 }
 
 /**
+ * Detaches the durable session from its current ChatGPT frontend while preserving chatIds.
+ *
+ * Managed workstreams own their recorder session independently of browser conversation ids.
+ * Historical sessions created before that invariant may still carry a current conversation
+ * attachment; clear only that attachment in place, preserving the full event history and
+ * conversation lineage as metadata.
+ */
+export async function detachSessionConversation(
+  id: string,
+  expectedConversationId: string | null = null,
+): Promise<boolean> {
+  const entry = await ensureOpen(id);
+  return enqueueSessionOperation(entry, 'detach conversation', async () => {
+    const current = entry.summary.conversationId;
+    if (
+      expectedConversationId !== null &&
+      current !== expectedConversationId
+    )
+      return false;
+    if (current === null) return true;
+    const staged: SessionSummary = {
+      ...entry.summary,
+      conversationId: null,
+      // Ownership migration is not new model/session activity; preserve ordering.
+      updatedAt: entry.summary.updatedAt,
+    };
+    await writeSummary(staged, entry.historySeq);
+    Object.assign(entry.summary, staged);
+    entry.metaDirty = false;
+    publishAttachmentSummary(entry.summary);
+    return true;
+  });
+}
+
+/**
+ * Records one browser conversation in a durable session's lineage without making it the
+ * session's owner/current identity.
+ *
+ * Workstream recorder sessions are conversation-neutral. This is metadata only, useful for
+ * history/debugging after a replacement frontend is gone.
+ */
+export async function noteSessionConversationLineage(
+  id: string,
+  conversationId: string,
+): Promise<boolean> {
+  if (!conversationId) return false;
+  const entry = await ensureOpen(id);
+  return enqueueSessionOperation(entry, 'conversation lineage', async () => {
+    if (entry.summary.chatIds.includes(conversationId)) return true;
+    const staged: SessionSummary = {
+      ...entry.summary,
+      chatIds: [...entry.summary.chatIds, conversationId],
+      // Metadata attachment is not new model/session work; preserve ordering.
+      updatedAt: entry.summary.updatedAt,
+    };
+    await writeSummary(staged, entry.historySeq);
+    Object.assign(entry.summary, staged);
+    entry.metaDirty = false;
+    publishAttachmentSummary(entry.summary);
+    return true;
+  });
+}
+
+/**
  * Attaches this durable session to a different ChatGPT conversation.
  *
  * The single canonical session-transfer primitive: Compact & Resume does not create a
@@ -1838,10 +1951,10 @@ export async function rebindSession(
   const entry = await ensureOpen(id);
   return enqueueSessionOperation(entry, 'rebind', async () => {
     if (entry.summary.conversationId !== fromConversationId) return false;
-    // Browser conversation ids are UUID-like. A handful of store unit tests deliberately
+    // Browser conversation ids are UUID-like or WEB:<uuid>. A handful of store unit tests deliberately
     // use short symbolic ids and reuse them across retained temp sessions; ownership safety
     // applies to the real identity domain rather than manufacturing a test-only collision.
-    if (/^[0-9a-f-]{8,64}$/i.test(toConversationId)) {
+    if (/^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
       const target = await findSessionByConversation(toConversationId, { requireUnique: true });
       if (target && target.id !== id) {
         logWarn(`session ${id} cannot move to ${toConversationId}: that chat already belongs to ${target.id}`);
@@ -2146,29 +2259,4 @@ export async function deleteSession(id: string): Promise<void> {
   await fs.rm(sessionDir(id), { recursive: true, force: true });
   invalidateAssetUsage(id);
   publishAttachmentRemoval(id);
-}
-
-/** Test seam: forgets in-memory state without touching the files. */
-export function resetSessionStoreForTests(): void {
-  for (const entry of open.values()) if (entry.metaTimer) clearTimeout(entry.metaTimer);
-  open.clear();
-  opening.clear();
-  reconciling.clear();
-  sessionAssetUsage.clear();
-  globalAssetUsage = null;
-  missingCurrentConversations.clear();
-  attachmentCatalog = null;
-  attachmentCatalogLoading = null;
-  attachmentEpoch = 0;
-}
-
-/** Test seam: puts the store back to never having been told where to write. */
-export function unsetSessionRootForTests(): void {
-  root = '';
-  sessionAssetUsage.clear();
-  globalAssetUsage = null;
-  missingCurrentConversations.clear();
-  attachmentCatalog = null;
-  attachmentCatalogLoading = null;
-  attachmentEpoch = 0;
 }

@@ -7,7 +7,7 @@
  */
 
 /** Where an event came from. The extension is untrusted UI observation; mcp is ours. */
-export type EventSource = 'extension' | 'mcp' | 'app';
+export type EventSource = "extension" | "mcp" | "app";
 
 /**
  * How a ChatGPT turn ended.
@@ -17,20 +17,32 @@ export type EventSource = 'extension' | 'mcp' | 'app';
  * unexplained stop stays `interrupted` or `unknown` unless ChatGPT actually said why.
  */
 export type TurnOutcome =
-  | 'completed'
-  | 'failed'
-  | 'stopped'
-  | 'interrupted'
-  | 'stalled'
-  | 'unknown';
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "interrupted"
+  | "stalled"
+  | "unknown"
+  /**
+   * The app closed this turn because the page observer that opened it disappeared —
+   * tab discarded/frozen, content script orphaned, browser gone — and no evidence
+   * arrived for long enough that the open turn had become a stale claim. Deliberately
+   * distinct from `unknown`: this closure was *not observed on the page*, so it says
+   * nothing about whether ChatGPT actually finished, and the attribution layer must
+   * never treat it as a real "stopped generating" boundary (see recorder.ts
+   * soleGeneratingConversation). Only the app appends this outcome; the bridge refuses
+   * it from extension input because an observer cannot report its own absence.
+   */
+  | "observer_lost";
 
 export const TURN_OUTCOME_LABELS: Record<TurnOutcome, string> = {
-  completed: 'completed',
-  failed: 'failed with a visible error',
-  stopped: 'stopped by the user',
-  interrupted: 'interrupted before it finished',
-  stalled: 'stalled — no visible progress',
-  unknown: 'ended for an unknown reason'
+  completed: "completed",
+  failed: "failed with a visible error",
+  stopped: "stopped by the user",
+  interrupted: "interrupted before it finished",
+  stalled: "stalled — no visible progress",
+  unknown: "ended for an unknown reason",
+  observer_lost: "closed by the app after its page observer disappeared",
 };
 
 /**
@@ -79,24 +91,24 @@ export interface ActivitySummary {
   detail?: string;
   /** Optional right-aligned metric: "+18 −4", "✓ 4.8s", "✕ exit 1". */
   metric?: string;
-  tone: 'neutral' | 'good' | 'bad' | 'warn';
+  tone: "neutral" | "good" | "bad" | "warn";
   /** Family the entry belongs to, for icons and filtering. */
   kind:
-    | 'edit'
-    | 'create'
-    | 'delete'
-    | 'move'
-    | 'read'
-    | 'search'
-    | 'browse'
-    | 'run'
-    | 'process'
-    | 'screen'
-    | 'input'
-    | 'clipboard'
-    | 'session'
-    | 'agent'
-    | 'other';
+    | "edit"
+    | "create"
+    | "delete"
+    | "move"
+    | "read"
+    | "search"
+    | "browse"
+    | "run"
+    | "process"
+    | "screen"
+    | "input"
+    | "clipboard"
+    | "session"
+    | "agent"
+    | "other";
 }
 
 export interface FileChange {
@@ -107,7 +119,7 @@ export interface FileChange {
   approximate: boolean;
 }
 
-export type ToolOutcome = 'ok' | 'error' | 'rejected';
+export type ToolOutcome = "ok" | "error" | "rejected";
 
 /**
  * How confident the recorder is that this call belongs to the session it landed in.
@@ -118,8 +130,30 @@ export type ToolOutcome = 'ok' | 'error' | 'rejected';
  * nothing identified the caller — those calls are stored in the unattributed stream rather
  * than guessed into somebody's history. The extension refuses to rewrite ChatGPT's UI for
  * an inferred call.
+ *
+ * `temporal_unique` and `connector_session` are the 2026-09 degraded tiers, added when the
+ * connector platform stopped sending any request id (see inbound.ts). `temporal_unique` is
+ * the only managed conversation that was generating when the call arrived. `connector_session`
+ * is the transport's opaque session key, whose owner was learned at such a temporally unique
+ * moment (see connector-session.ts). `push_correlated` is the strongest of the degraded
+ * tiers: the key was bound inside the bounded window after a send this app itself delivered
+ * and verified against the recording (see session/sleep-wake.ts) — evidence about what the
+ * app did, not about how the page fleet looked, and the attribution path for slept
+ * (tab-discarded) conversations. All are honestly labeled as what they rest on and are
+ * never presented as exact request-id attribution.
  */
-export type CallAttribution = 'request_id' | 'unattributed' | 'turn' | 'agent' | 'generation' | 'inferred';
+export type CallAttribution =
+  | "workstream"
+  | "conversation_key"
+  | "request_id"
+  | "unattributed"
+  | "turn"
+  | "agent"
+  | "generation"
+  | "inferred"
+  | "push_correlated"
+  | "temporal_unique"
+  | "connector_session";
 
 /**
  * What each grade of attribution actually rests on, in the words shown to the user.
@@ -141,12 +175,19 @@ export type CallAttribution = 'request_id' | 'unattributed' | 'turn' | 'agent' |
  * goes rather than being guessed into somebody's history.
  */
 export const ATTRIBUTION_LABELS: Record<CallAttribution, string> = {
-  request_id: 'exact request id',
-  unattributed: 'request id not resolved',
-  agent: 'agent key',
-  turn: 'tool block on the page',
-  generation: 'the only chat generating',
-  inferred: 'not placed in a chat'
+  workstream: "the admitted workstream id carried by the model",
+  conversation_key: "app-issued conversation key carried by the model",
+  request_id: "exact request id",
+  unattributed: "request id not resolved",
+  agent: "agent key",
+  turn: "tool block on the page",
+  generation: "the only chat generating",
+  inferred: "not placed in a chat",
+  push_correlated:
+    "connector session key bound after a verified push by this app",
+  temporal_unique: "the only managed chat generating at arrival",
+  connector_session:
+    "connector session key learned at a temporally unique moment",
 };
 
 export interface ToolCallRecord {
@@ -159,8 +200,21 @@ export interface ToolCallRecord {
   requestId: string | null;
   /** Conversation proven by that request id, or null when ownership was unresolved. */
   conversationId: string | null;
-  /** New 1.8 calls use only these two deterministic outcomes. */
-  attributionMethod: 'request_id' | 'unattributed';
+  /** Logical workstream that owned this call. Present on workstream-attributed records. */
+  workstreamId?: string | null;
+  /**
+   * How the recorder placed this call. 1.8 used only the two deterministic outcomes;
+   * the 2026-09 headerless connector platform added the two degraded evidence tiers,
+   * each honestly labeled and never masquerading as exact request_id attribution.
+   */
+  attributionMethod:
+    | "workstream"
+    | "conversation_key"
+    | "request_id"
+    | "push_correlated"
+    | "temporal_unique"
+    | "connector_session"
+    | "unattributed";
   /** Exact arguments as JSON. Cut inline past the cap, with the whole text in an asset. */
   args: StoredText;
   result: StoredText;
@@ -172,7 +226,21 @@ export interface ToolCallRecord {
   assets?: AssetRef[];
 }
 
-export type MessageState = 'streaming' | 'final';
+export type MessageState = "streaming" | "final";
+
+/**
+ * Which driver typed the message that started a turn. ("Send" here means a message typed
+ * into a ChatGPT composer; nothing about this field concerns git.)
+ *
+ * `app` — a send this app typed and registered itself: a local /send, a worker bootstrap,
+ * a revival offer, a resume handoff, a goal draft. `out_of_band` — page evidence of a new
+ * turn that no registered app send explains: something other than the app typed into the
+ * chat (a human at the keyboard, or direct-CDP steward tooling). `unknown` — an evidence
+ * gap: a restart window, an observer-lost remount, or a send still in flight, where honesty
+ * forbids either claim. The classifier never guesses `app`; the page never supplies this
+ * field. See session/send-origin.ts.
+ */
+export type SendOrigin = "app" | "out_of_band" | "unknown";
 
 interface BaseEvent {
   /** 1-based, strictly increasing within a session. Ordering never relies on time. */
@@ -186,16 +254,20 @@ interface BaseEvent {
 }
 
 export type SessionEvent =
-  | (BaseEvent & { kind: 'session_start'; conversationId: string | null; title: string })
   | (BaseEvent & {
-      kind: 'user_message';
+      kind: "session_start";
+      conversationId: string | null;
+      title: string;
+    })
+  | (BaseEvent & {
+      kind: "user_message";
       message: StoredText;
       messageId?: string;
       /** First sequence assigned to this stable website message; revisions keep this anchor. */
       origin?: number;
     })
   | (BaseEvent & {
-      kind: 'assistant_message';
+      kind: "assistant_message";
       message: StoredText;
       /**
        * Stable ChatGPT website identity used by the local canonical store.
@@ -232,7 +304,12 @@ export type SessionEvent =
    * event written before this model existed, or by a page whose commentary had no readable
    * identity, is still a plain standalone caption.
    */
-  | (BaseEvent & { kind: 'progress'; message: StoredText; progressId?: string; origin?: number })
+  | (BaseEvent & {
+      kind: "progress";
+      message: StoredText;
+      progressId?: string;
+      origin?: number;
+    })
   /**
    * Visible ChatGPT-native tool activity that never passed through this MCP server.
    *
@@ -241,12 +318,17 @@ export type SessionEvent =
    * neither affects identity. `origin` names the seq of the first record of that site object,
    * for readers working from a cursor that has already consumed it.
    */
-  | (BaseEvent & { kind: 'page_tool'; messageId: string; label: string; origin?: number })
-  | (BaseEvent & { kind: 'turn_start' })
-  | (BaseEvent & { kind: 'turn_end'; outcome: TurnOutcome; detail?: string })
-  | (BaseEvent & { kind: 'chat_error'; message: StoredText })
-  | (BaseEvent & { kind: 'tool_call'; call: ToolCallRecord })
-  | (BaseEvent & { kind: 'note'; message: StoredText })
+  | (BaseEvent & {
+      kind: "page_tool";
+      messageId: string;
+      label: string;
+      origin?: number;
+    })
+  | (BaseEvent & { kind: "turn_start"; sendOrigin?: SendOrigin })
+  | (BaseEvent & { kind: "turn_end"; outcome: TurnOutcome; detail?: string })
+  | (BaseEvent & { kind: "chat_error"; message: StoredText })
+  | (BaseEvent & { kind: "tool_call"; call: ToolCallRecord })
+  | (BaseEvent & { kind: "note"; message: StoredText })
   /**
    * A message routed between agents.
    *
@@ -259,22 +341,22 @@ export type SessionEvent =
    * same message never produce a second record.
    */
   | (BaseEvent & {
-      kind: 'agent_message';
+      kind: "agent_message";
       messageId: string;
       from: string;
       to: string;
       message: StoredText;
-      delivery: 'sent' | 'delivered';
+      delivery: "sent" | "delivered";
     })
   | (BaseEvent & {
-      kind: 'handoff';
+      kind: "handoff";
       handoffId: string;
       chars: number;
       /** What triggered it: manual compaction, resume, or an automatic suggestion. */
       reason: string;
     });
 
-export type SessionEventKind = SessionEvent['kind'];
+export type SessionEventKind = SessionEvent["kind"];
 
 /**
  * An event before the store assigns its sequence number.
@@ -285,7 +367,7 @@ export type SessionEventKind = SessionEvent['kind'];
  */
 export type NewSessionEvent = SessionEvent extends infer Event
   ? Event extends SessionEvent
-    ? Omit<Event, 'seq'>
+    ? Omit<Event, "seq">
     : never
   : never;
 
@@ -297,7 +379,7 @@ export type NewSessionEvent = SessionEvent extends infer Event
  * queued to the conversation that command became.
  */
 export interface SessionOrigin {
-  kind: 'resume' | 'worker';
+  kind: "resume" | "worker";
   /** The session this chat continues. Null when the source session no longer exists. */
   fromSessionId: string | null;
   /** Agent id for a worker chat ("worker-1"). Null for a resume. */
@@ -306,10 +388,10 @@ export interface SessionOrigin {
   task: string;
 }
 
-const RESUMED_PREFIX = 'Resumed · ';
+const RESUMED_PREFIX = "Resumed · ";
 
 function clip(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
@@ -323,16 +405,22 @@ function clip(text: string, max: number): string {
  * with nothing in them to say which run a row belonged to. The command that opened the
  * chat already knows what the chat is for, so the name comes from there instead.
  */
-export function originTitle(origin: SessionOrigin, source: string | null): string {
-  if (origin.kind === 'worker') {
-    const who = origin.agentId ?? 'worker';
+export function originTitle(
+  origin: SessionOrigin,
+  source: string | null,
+): string {
+  if (origin.kind === "worker") {
+    const who = origin.agentId ?? "worker";
     const task = clip(origin.task, 60);
     return task ? `${who} · ${task}` : who;
   }
   // A resumed chat is itself resumable, and often is. Stacking the prefix each time
   // would bury the part of the name that identifies the work.
-  const from = clip((source ?? '').replace(new RegExp(`^(?:${RESUMED_PREFIX})+`), ''), 80);
-  return from ? `${RESUMED_PREFIX}${from}` : 'Resumed session';
+  const from = clip(
+    (source ?? "").replace(new RegExp(`^(?:${RESUMED_PREFIX})+`), ""),
+    80,
+  );
+  return from ? `${RESUMED_PREFIX}${from}` : "Resumed session";
 }
 
 export interface SessionSummary {
@@ -423,7 +511,7 @@ export interface Handoff {
 
 // ---------------------------------------------------------------- agents
 
-export type AgentRole = 'prime' | 'worker';
+export type AgentRole = "prime" | "worker";
 /**
  * Where an agent is in its life, and — for `detached` — where its *browser view* is.
  *
@@ -458,16 +546,18 @@ export type AgentRole = 'prime' | 'worker';
  * nothing left to reuse, so the next time it stops working it stops for good.
  */
 export type AgentState =
-  | 'invited'
-  | 'active'
-  | 'detached'
-  | 'waking'
-  | 'sleeping'
-  | 'finished'
-  | 'failed';
+  | "invited"
+  | "active"
+  | "detached"
+  | "waking"
+  | "sleeping"
+  | "finished"
+  | "failed";
 
 export interface AgentInfo {
   id: string;
+  /** Stable logical workstream that owns this agent's tool/provenance thread. */
+  workstreamId: string;
   role: AgentRole;
   label: string;
   task: string;
@@ -490,12 +580,19 @@ export interface AgentInfo {
   /** Messages this agent has demonstrably received. */
   delivered: number;
   /**
-   * The ChatGPT conversation this agent is running in.
+   * When the app last failed to wake this worker, cleared when a revival succeeds.
    *
-   * For the prime this is the run's identity and is set exactly once, by a successful
-   * spawn; it moves only through the app's authenticated Compact & Resume transfer. For a
-   * worker it is reported first-hand by the extension that opened the tab, and is what
-   * lets `join` answer from the conversation the call came from.
+   * Automatic revival skips a worker whose last revival failed until a newer message arrives:
+   * otherwise a chat that cannot be reopened is woken again every sweep, holding a slot each
+   * time. A deliberate message from the prime still wakes it.
+   */
+  revivalFailedAt?: number | null;
+  /**
+   * The ChatGPT conversation currently presenting this agent.
+   *
+   * Routing/lifecycle metadata only. Tool identity is `workstreamId`. For a worker this is
+   * reported by the extension that opened/reopened the tab so the app can revive that exact
+   * frontend later.
    */
   conversationId: string | null;
   /**
@@ -569,7 +666,9 @@ export interface AgentInfo {
 export interface AgentMessage {
   id: string;
   from: string;
+  fromWorkstreamId: string;
   to: string;
+  toWorkstreamId: string;
   time: number;
   text: string;
   /** When it was last written into a tool result. Re-offered until acknowledged. */
@@ -622,7 +721,7 @@ export interface SwarmState {
  * ended does nothing at all. The UI reports this rather than assuming the click worked.
  */
 export interface ClearAgentResult {
-  cleared: 'run' | 'worker' | 'none';
+  cleared: "run" | "worker" | "none";
   reason: string;
   swarm: SwarmState;
 }
@@ -645,30 +744,30 @@ export function estimateTokens(text: string): number {
 /** Token weight of one stored event, using the text we actually kept. */
 export function eventTokens(event: SessionEvent): number {
   switch (event.kind) {
-    case 'user_message':
-    case 'assistant_message':
-    case 'chat_error':
-    case 'note':
+    case "user_message":
+    case "assistant_message":
+    case "chat_error":
+    case "note":
       return estimateTokens(event.message.text);
-    case 'progress':
+    case "progress":
       // Live progress/reasoning captions are useful audit evidence but are not stable
       // conversation context, and often restate work that later appears in the final
       // assistant message. Counting every transient caption made the advisory meter
       // roughly double what users saw in the actual conversation on tool-heavy turns.
       return 0;
-    case 'agent_message':
+    case "agent_message":
       // Real context, unlike a progress caption: a brokered message is appended to a tool
       // result the model actually reads, so it occupies the conversation the same way a
       // tool result does. Leaving it at zero made the meter under-report exactly the runs
       // most likely to need compacting — the multi-agent ones.
       return estimateTokens(event.message.text);
-    case 'tool_call':
+    case "tool_call":
       return (
         estimateTokens(event.call.args.text) +
         estimateTokens(event.call.result.text) +
         estimateTokens(event.call.summary.title)
       );
-    case 'handoff':
+    case "handoff":
       return 0;
     default:
       return 0;
@@ -703,8 +802,10 @@ export function foldProgress(events: readonly SessionEvent[]): SessionEvent[] {
     const event = out[index];
     if (!event) continue;
     let key: string | null = null;
-    if (event.kind === 'progress' && event.progressId) key = `progress\u0000${event.progressId}`;
-    else if (event.kind === 'page_tool' && event.messageId) key = `page_tool\u0000${event.messageId}`;
+    if (event.kind === "progress" && event.progressId)
+      key = `progress\u0000${event.progressId}`;
+    else if (event.kind === "page_tool" && event.messageId)
+      key = `page_tool\u0000${event.messageId}`;
     if (!key) continue;
     const at = anchor.get(key);
     if (at === undefined) {
@@ -712,9 +813,13 @@ export function foldProgress(events: readonly SessionEvent[]): SessionEvent[] {
       continue;
     }
     const held = out[at];
-    if (held && held.kind === 'progress' && event.kind === 'progress') {
+    if (held && held.kind === "progress" && event.kind === "progress") {
       out[at] = { ...held, message: event.message };
-    } else if (held && held.kind === 'page_tool' && event.kind === 'page_tool') {
+    } else if (
+      held &&
+      held.kind === "page_tool" &&
+      event.kind === "page_tool"
+    ) {
       out[at] = { ...held, label: event.label };
     }
     out[index] = null;
@@ -726,14 +831,18 @@ export interface TokenPressure {
   estimated: number;
   advisory: number;
   limit: number;
-  level: 'ok' | 'large' | 'huge';
+  level: "ok" | "large" | "huge";
 }
 
-export function tokenPressure(estimated: number, advisory: number, limit: number): TokenPressure {
+export function tokenPressure(
+  estimated: number,
+  advisory: number,
+  limit: number,
+): TokenPressure {
   return {
     estimated,
     advisory,
     limit,
-    level: estimated >= limit ? 'huge' : estimated >= advisory ? 'large' : 'ok'
+    level: estimated >= limit ? "huge" : estimated >= advisory ? "large" : "ok",
   };
 }

@@ -422,15 +422,6 @@ export function retireGoalDraftsFor(conversationId: string): boolean {
   return true;
 }
 
-export function resetGoalStateForTests(): void {
-  for (const draft of drafts.values()) draft.abort?.abort();
-  drafts.clear();
-  goalObjectives.clear();
-  firstUserCache.clear();
-  legacyCommittedResumeCache.clear();
-  modelCache = null;
-}
-
 export interface StartGoalDraftInput {
   sessionId: string;
   conversationId: string;

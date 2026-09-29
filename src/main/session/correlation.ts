@@ -310,11 +310,3 @@ export async function awaitRequestCorrelation(requestId: string | null | undefin
   if (timer) clearTimeout(timer);
   return requestCorrelation(requestId);
 }
-
-/** A conversation being closed cannot invalidate an already issued request. */
-export function resetCorrelationRegistryForTests(): void {
-  byRequest.clear();
-  restored = false;
-  restoring = null;
-  for (const requestId of [...waiters.keys()]) wake(requestId);
-}

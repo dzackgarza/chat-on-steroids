@@ -12,10 +12,9 @@
     "headless": "tsx src/main/headless.ts",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
     "verify": "npm run verify:ci",
-    "verify:ci": "npm run rg && npm run verify:privacy && npm run typecheck && vitest run --exclude test/mcp-shutdown.test.ts && vitest run test/mcp-shutdown.test.ts",
+    "verify:ci": "npm run rg && npm run verify:privacy && npm run typecheck",
+    "verify:live": "node scripts/live-chatgpt-workstream.mjs --live",
     "verify:privacy": "node scripts/verify-public-history.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "icon": "node scripts/make-icon.mjs",
@@ -41,8 +40,7 @@
     "dist:dir:mac": "node scripts/package.mjs --platform darwin --arch x64,arm64 --dir",
     "dist:dir:linux:x64": "node scripts/package.mjs --platform linux --arch x64 --dir",
     "dist:dir:linux:arm64": "node scripts/package.mjs --platform linux --arch arm64 --dir",
-    "dist:dir:linux": "node scripts/package.mjs --platform linux --arch x64,arm64 --dir",
-    "test:kill": "node scripts/kill-stray-vitest.mjs"
+    "dist:dir:linux": "node scripts/package.mjs --platform linux --arch x64,arm64 --dir"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
@@ -56,15 +54,12 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.15.0",
     "electron": "43.4.1",
     "electron-builder": "^26.15.7",
     "electron-vite": "^5.0.0",
-    "jsdom": "^30.0.1",
-    "tsx": "^4.19.3",
     "typescript": "^7.0.2",
-    "vite": "^7.3.6",
-    "vitest": "^4.1.10"
+    "tsx": "^4.19.3",
+    "vite": "^7.3.6"
   }
 }

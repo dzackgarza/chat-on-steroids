@@ -342,11 +342,3 @@ export function deleteAllSecrets(): Promise<void> {
     }
   });
 }
-
-/** Test seam: forgets the decrypted blob so the next read comes from disk. */
-export function resetSecretsCacheForTests(): void {
-  loadGeneration += 1;
-  cache = null;
-  rotationPending = false;
-  loadInFlight = null;
-}

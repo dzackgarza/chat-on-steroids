@@ -213,6 +213,37 @@ export interface MultiAgentSettings {
   maxWorkers: number;
 }
 
+/**
+ * Sleep/wake tab architecture for pushed fleets, validated by
+ * docs/tabless-generation-experiment-2026-09-09.md: a ChatGPT tool-looping turn runs
+ * entirely server-side, so the tab is needed only at turn boundaries. When enabled, a
+ * conversation's tab is discarded after a push is *verified* (a fresh `turn_start` in the
+ * recording), its calls are attributed by a push-correlated session-key binding, and the
+ * tab is remounted once its call stream goes quiet so the recorder can capture the
+ * finished turn.
+ *
+ * Off by default: with `enabled: false` every hook is inert and behavior is identical to
+ * an app without the feature.
+ */
+export interface SleepWakeSettings {
+  enabled: boolean;
+  /** How long after a verified send the tab lives before it is discarded. */
+  graceMs: number;
+  /**
+   * Call-stream silence that triggers a wake for a slept conversation with a bound
+   * session key. Legitimate mid-turn gaps measured up to ~80s, and the final text-writing
+   * phase is call-silent — quiescence is the wake trigger, never proof of completion.
+   */
+  quietMs: number;
+  /** Wake timer for a slept conversation with NO bound key (quiescence unobservable). */
+  fallbackWakeMs: number;
+  /**
+   * How long after a verified send a first-seen session key may still be claimed as that
+   * conversation's. Pushes are serialized, so at most one window is ever open.
+   */
+  correlationWindowMs: number;
+}
+
 export interface Config {
   roots: Root[];
   capabilities: Capabilities;
@@ -223,6 +254,11 @@ export interface Config {
   compaction: CompactionSettings;
   multiAgent: MultiAgentSettings;
   goal: GoalSettings;
+  /**
+   * Optional on purpose: the renderer and IPC settings paths build patches that predate
+   * this section, and an absent section always means the shipped defaults (off).
+   */
+  sleepWake?: SleepWakeSettings;
 }
 
 export type ConnectionState =

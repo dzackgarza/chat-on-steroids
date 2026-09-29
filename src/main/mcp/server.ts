@@ -17,15 +17,27 @@
  * protected-resource metadata request properly and never emits a non-JSON body.
  */
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { requestIdFromHeader, withInboundRequestId } from './inbound.js';
-import http from 'node:http';
-import { createMcpHandler } from '@modelcontextprotocol/server';
-import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from '@modelcontextprotocol/node';
-import { getConfig } from '../config.js';
-import { logError, logInfo, logWarn } from '../logger.js';
-import { buildServer, resetToolClock, type ToolContext } from './tools.js';
-import { SURFACE_IDS, surfaceDefinition, type SurfaceId } from './surfaces.js';
+import assert from "node:assert/strict";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  connectorSessionFromHeader,
+  requestIdFromHeader,
+  withInboundIdentity,
+} from "./inbound.js";
+import http from "node:http";
+import { createMcpHandler } from "@modelcontextprotocol/server";
+import {
+  localhostHostValidation,
+  localhostOriginValidation,
+  toNodeHandler,
+} from "@modelcontextprotocol/node";
+import { getConfig } from "../config.js";
+import { logError, logInfo, logWarn } from "../logger.js";
+import { buildServer, resetToolClock, type ToolContext } from "./tools.js";
+import { SURFACE_IDS, surfaceDefinition, type SurfaceId } from "./surfaces.js";
+import { restoreConversationKeys } from "../session/conversation-key.js";
+import { restoreWorkstreams } from "../workstreams.js";
+import { noteChatGptListing, trackCoreSchema } from "../connector-schema.js";
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -58,11 +70,11 @@ export interface McpEndpoint {
 }
 
 /** RFC 9728 §3.1: the metadata for a resource at /x lives at /.well-known/…/x. */
-const PRM_PREFIX = '/.well-known/oauth-protected-resource';
+const PRM_PREFIX = "/.well-known/oauth-protected-resource";
 
 function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
 }
@@ -75,11 +87,15 @@ function safeEqual(a: string, b: string): boolean {
  * surfaced as `invalid character 'N' looking for beginning of value` and left the
  * client's OAuth state permanently in a failed state.
  */
-function jsonError(res: http.ServerResponse, status: number, error: string): void {
+function jsonError(
+  res: http.ServerResponse,
+  status: number,
+  error: string,
+): void {
   const body = JSON.stringify({ error });
   res.writeHead(status, {
-    'content-type': 'application/json',
-    'content-length': Buffer.byteLength(body)
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
   });
   res.end(body);
 }
@@ -92,27 +108,71 @@ function jsonError(res: http.ServerResponse, status: number, error: string): voi
  * header guard advertises, answer immediately, and drain the remaining socket bytes without
  * keeping them in memory.
  */
+/** Whether a JSON-RPC body (single or batch) asks for tools/list. */
+function listsTools(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some(
+    (message) =>
+      message !== null &&
+      typeof message === "object" &&
+      (message as { method?: unknown }).method === "tools/list",
+  );
+}
+
+/** The handler's own tools/list answer, asked for exactly as a client would ask. */
+async function listTools(
+  mcp: ReturnType<typeof createMcpHandler>,
+  url: string,
+): Promise<unknown> {
+  const response = await mcp.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }),
+  );
+  assert.equal(response.status, 200, "tools/list answers 200");
+  const text = await response.text();
+  const payload = text.startsWith("{")
+    ? text
+    : text
+        .split("\n")
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+  assert(payload, `tools/list answered a JSON-RPC message: ${text.slice(0, 200)}`);
+  const message = JSON.parse(payload) as { result?: unknown };
+  assert(message.result !== undefined, `tools/list answered a result: ${payload.slice(0, 200)}`);
+  return message.result;
+}
+
 function readBoundedJsonBody(
-  req: http.IncomingMessage
-): Promise<{ body?: unknown; error?: 'payload_too_large' | 'invalid_json' }> {
+  req: http.IncomingMessage,
+): Promise<{ body?: unknown; error?: "payload_too_large" | "invalid_json" }> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let total = 0;
     let done = false;
 
-    const finish = (value: { body?: unknown; error?: 'payload_too_large' | 'invalid_json' }): void => {
+    const finish = (value: {
+      body?: unknown;
+      error?: "payload_too_large" | "invalid_json";
+    }): void => {
       if (done) return;
       done = true;
-      req.off('data', onData);
-      req.off('end', onEnd);
-      req.off('error', onError);
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
       resolve(value);
     };
     const onData = (chunk: Buffer | string): void => {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       total += bytes.length;
       if (total > MAX_BODY_BYTES) {
-        finish({ error: 'payload_too_large' });
+        finish({ error: "payload_too_large" });
         // Do not leave the unread request applying backpressure to this connection. Its
         // remaining bytes are discarded by Node rather than accumulated by us.
         req.resume();
@@ -122,17 +182,17 @@ function readBoundedJsonBody(
     };
     const onEnd = (): void => {
       try {
-        const text = Buffer.concat(chunks, total).toString('utf8');
+        const text = Buffer.concat(chunks, total).toString("utf8");
         finish({ body: text.length === 0 ? undefined : JSON.parse(text) });
       } catch {
-        finish({ error: 'invalid_json' });
+        finish({ error: "invalid_json" });
       }
     };
-    const onError = (): void => finish({ error: 'invalid_json' });
+    const onError = (): void => finish({ error: "invalid_json" });
 
-    req.on('data', onData);
-    req.on('end', onEnd);
-    req.on('error', onError);
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
   });
 }
 
@@ -148,12 +208,15 @@ function readBoundedJsonBody(
  * knows the token, so the `resource` field gives nothing away; serving it at the bare
  * /.well-known root would hand the token to any local process that asked.
  */
-function protectedResourceMetadata(resource: string, resourceName: string): string {
+function protectedResourceMetadata(
+  resource: string,
+  resourceName: string,
+): string {
   return JSON.stringify({
     resource,
     resource_name: resourceName,
     authorization_servers: [],
-    scopes_supported: []
+    scopes_supported: [],
   });
 }
 
@@ -188,10 +251,10 @@ export function lastRequestAt(surface?: SurfaceId): number | null {
  * this app switched on itself. The value is random per session and never leaves the
  * process, so nothing outside can claim to be the self-test.
  */
-const SELF_TEST_HEADER = 'x-local-self-test';
-const TUNNEL_PROBE_HEADER = 'x-local-tunnel-probe';
-let selfTestToken = randomBytes(16).toString('hex');
-let tunnelProbeToken = randomBytes(16).toString('hex');
+const SELF_TEST_HEADER = "x-local-self-test";
+const TUNNEL_PROBE_HEADER = "x-local-tunnel-probe";
+let selfTestToken = randomBytes(16).toString("hex");
+let tunnelProbeToken = randomBytes(16).toString("hex");
 
 export function selfTestHeaders(): Record<string, string> {
   return { [SELF_TEST_HEADER]: selfTestToken };
@@ -209,7 +272,7 @@ export function tunnelProbeHeaders(): Record<string, string> {
  * fresh; nothing about the permission state is captured at startup.
  */
 interface SurfaceExposure {
-  caps: ToolContext['caps'] | null;
+  caps: ToolContext["caps"] | null;
   sessionTools: boolean;
   agentTools: boolean;
   find: boolean | null;
@@ -255,21 +318,25 @@ export function forgetExposedSurface(): void {
   surfaceExposure.clear();
 }
 
-export async function startMcpServer(getContext: () => ToolContext): Promise<McpEndpoint> {
+export async function startMcpServer(
+  getContext: () => ToolContext,
+): Promise<McpEndpoint> {
+  await restoreConversationKeys();
+  await restoreWorkstreams();
   // A per-session token in the path is what authorises callers. It is regenerated on
   // every app start, so a URL that leaks stops working when the app restarts.
   requestSeenAt = null;
   surfaceRequestAt.clear();
   resetToolClock();
-  selfTestToken = randomBytes(16).toString('hex');
-  tunnelProbeToken = randomBytes(16).toString('hex');
+  selfTestToken = randomBytes(16).toString("hex");
+  tunnelProbeToken = randomBytes(16).toString("hex");
   // One path per surface, each with its own token. Distinct tokens rather than one shared
   // secret because the two connectors are configured separately in ChatGPT and may be
   // shared, revoked or re-pasted at different times; a single token would make "give me
   // Desktop" and "give me everything" the same act.
   const surfacePaths = SURFACE_IDS.map((id) => ({
     id,
-    basePath: `/mcp/${id}/${process.env.COS_TOKEN || randomBytes(32).toString('base64url')}`
+    basePath: `/mcp/${id}/${process.env.COS_TOKEN || randomBytes(32).toString("base64url")}`,
   }));
 
   // ChatGPT can keep a cached tools/list snapshot for the lifetime of a connector
@@ -284,11 +351,14 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
   const stableContext = (surface: SurfaceId): ToolContext => {
     const live = getContext();
     const exposed = exposureFor(surface);
-    if (exposed.find === null) exposed.find = !live.caps.command && live.caps.search;
+    if (exposed.find === null)
+      exposed.find = !live.caps.command && live.caps.search;
     if (exposed.caps === null) {
       exposed.caps = { ...live.caps };
     } else {
-      for (const key of Object.keys(live.caps) as Array<keyof ToolContext['caps']>) {
+      for (const key of Object.keys(live.caps) as Array<
+        keyof ToolContext["caps"]
+      >) {
         if (live.caps[key]) exposed.caps[key] = true;
       }
     }
@@ -304,7 +374,7 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       exposedCaps: { ...exposed.caps },
       exposedSessionTools: exposed.sessionTools,
       exposedAgentTools: exposed.agentTools,
-      exposedFind: exposed.find
+      exposedFind: exposed.find,
     };
   };
 
@@ -313,39 +383,59 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
   // advertised: the Core handler has no `computer` registered at all, so a call for it
   // fails as an unknown tool inside the protocol layer, with nothing here to "helpfully"
   // forward it to the other surface.
-  const routes = surfacePaths.map((surface) => ({
+  const routes = surfacePaths.map((surface) => {
+    const mcp = createMcpHandler(() =>
+      buildServer(stableContext(surface.id), surface.id, () =>
+        stableContext(surface.id),
+      ),
+    );
+    return {
     ...surface,
     prmPath: `${PRM_PREFIX}${surface.basePath}`,
-    url: '',
+    url: "",
+    mcp,
     handler: toNodeHandler(
-      createMcpHandler(() => buildServer(stableContext(surface.id), surface.id, () => stableContext(surface.id))),
-      { onerror: (error) => logError(`MCP handler error (${surface.id}): ${error.message}`) }
-    )
-  }));
+      mcp,
+      {
+        onerror: (error) =>
+          logError(`MCP handler error (${surface.id}): ${error.message}`),
+      },
+    ),
+    };
+  });
   const checkHost = localhostHostValidation();
   const checkOrigin = localhostOriginValidation();
+  const identityDiagnostics = new Set<string>();
 
   const server = http.createServer((req, res) => {
-    const url = req.url ?? '';
-    const pathOnly = url.split('?')[0] ?? '';
+    const url = req.url ?? "";
+    const pathOnly = url.split("?")[0] ?? "";
     const selfTest = req.headers[SELF_TEST_HEADER] === selfTestToken;
     const tunnelProbe = req.headers[TUNNEL_PROBE_HEADER] === tunnelProbeToken;
 
     // Logged for every request, so the Activity tab shows what actually arrived and
     // what it was answered with. The path is reduced to a shape — it carries the
     // session token — and nothing from the body is logged.
-    const route = routes.find((candidate) => safeEqual(pathOnly, candidate.basePath)) ?? null;
-    const prmRoute = routes.find((candidate) => safeEqual(pathOnly, candidate.prmPath)) ?? null;
+    const route =
+      routes.find((candidate) => safeEqual(pathOnly, candidate.basePath)) ??
+      null;
+    const prmRoute =
+      routes.find((candidate) => safeEqual(pathOnly, candidate.prmPath)) ??
+      null;
 
     const startedAt = Date.now();
-    res.on('finish', () => {
+    res.on("finish", () => {
       const shape = route
         ? `mcp/${route.id}`
         : prmRoute
           ? `oauth-metadata/${prmRoute.id}`
           : pathOnly.slice(0, 40);
-      const method = req.method ?? '?';
-      const who = selfTest ? ' (self-test)' : tunnelProbe ? ' (tunnel probe)' : '';
+      const method = req.method ?? "?";
+      const who = selfTest
+        ? " (self-test)"
+        : tunnelProbe
+          ? " (tunnel probe)"
+          : "";
       const line = `${method} ${shape} → ${res.statusCode} in ${Date.now() - startedAt}ms${who}`;
       // Streamable HTTP makes the server-opened SSE stream and session deletion
       // optional, and 405 is the prescribed answer for a server that offers
@@ -353,10 +443,18 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       // as failures would put a pair of red lines in the log on a healthy
       // connection and bury the errors that do matter.
       const optional =
-        res.statusCode === 405 && route !== null && (method === 'GET' || method === 'DELETE');
-      const expectedTunnelProbe = tunnelProbe && res.statusCode === 415 && route !== null && method === 'POST';
-      if (optional) logInfo(`request ${line} (stream/session not offered — normal)`);
-      else if (expectedTunnelProbe) logInfo(`request ${line} (probe compatibility check — normal)`);
+        res.statusCode === 405 &&
+        route !== null &&
+        (method === "GET" || method === "DELETE");
+      const expectedTunnelProbe =
+        tunnelProbe &&
+        res.statusCode === 415 &&
+        route !== null &&
+        method === "POST";
+      if (optional)
+        logInfo(`request ${line} (stream/session not offered — normal)`);
+      else if (expectedTunnelProbe)
+        logInfo(`request ${line} (probe compatibility check — normal)`);
       else if (res.statusCode >= 400) logWarn(`request ${line}`);
       else logInfo(`request ${line}`);
     });
@@ -364,18 +462,21 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
     if (prmRoute) {
       if (!checkHost(req, res)) return;
       if (!checkOrigin(req, res)) return;
-      const body = protectedResourceMetadata(prmRoute.url, surfaceDefinition(prmRoute.id).connectorName);
+      const body = protectedResourceMetadata(
+        prmRoute.url,
+        surfaceDefinition(prmRoute.id).connectorName,
+      );
       res.writeHead(200, {
-        'content-type': 'application/json',
-        'cache-control': 'no-store',
-        'content-length': Buffer.byteLength(body)
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        "content-length": Buffer.byteLength(body),
       });
       res.end(body);
       return;
     }
 
     if (!route) {
-      jsonError(res, 404, 'not_found');
+      jsonError(res, 404, "not_found");
       return;
     }
     if (!checkHost(req, res)) return;
@@ -389,31 +490,72 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
       surfaceRequestAt.set(route.id, requestSeenAt);
     }
 
-    const declaredHeader = req.headers['content-length'];
+    const declaredHeader = req.headers["content-length"];
     const declared = Number(declaredHeader ?? 0);
     if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-      jsonError(res, 413, 'payload_too_large');
+      jsonError(res, 413, "payload_too_large");
       return;
     }
 
-    // The tool dispatch reads this back to join the call to the page request that issued
-    // it; see inbound.ts for why it cannot be taken from the MCP call context.
-    const requestId = requestIdFromHeader(req.headers['x-request-id']);
-    if (req.method === 'POST' && declaredHeader === undefined) {
+    // Retain transport metadata for diagnostics and historical correlation. Current
+    // caller identity comes from the admitted workstream id.
+    const identity = {
+      requestId: requestIdFromHeader(req.headers["x-request-id"]),
+      sessionKey: connectorSessionFromHeader(req.headers["x-openai-session"]),
+    };
+    // Observe before adapter dispatch; never log header values or the secret URL.
+    // Bound chatter by the finite set of surface/header states per endpoint lifetime.
+    if (req.method === "POST" && !selfTest && !tunnelProbe) {
+      const requestState =
+        req.headers["x-request-id"] === undefined
+          ? "missing"
+          : identity.requestId === null
+            ? "rejected"
+            : "accepted";
+      const sessionState =
+        req.headers["x-openai-session"] === undefined
+          ? "missing"
+          : identity.sessionKey === null
+            ? "rejected"
+            : "accepted";
+      const diagnostic = `MCP ${route.id} ingress x-request-id=${requestState}; x-openai-session=${sessionState}`;
+      if (!identityDiagnostics.has(diagnostic)) {
+        identityDiagnostics.add(diagnostic);
+        if (requestState === "rejected" || sessionState === "rejected")
+          logWarn(diagnostic);
+        else logInfo(diagnostic);
+      }
+    }
+    // ChatGPT's tools/list through the managed tunnel is the moment its schema snapshot changes
+    // (connector-schema.ts). The OpenAI tunnel is outbound and does not supply a Cloudflare
+    // forwarding header. The same boundary used above for requestSeenAt is the evidence here:
+    // exclude this process's self-test and tunnel-client's marked startup probe; any remaining
+    // request to the secret Core MCP endpoint arrived through the configured connector path.
+    const chatGptCore =
+      req.method === "POST" &&
+      route.id === "core" &&
+      !selfTest &&
+      !tunnelProbe;
+    if (req.method === "POST" && (declaredHeader === undefined || chatGptCore)) {
       void readBoundedJsonBody(req).then((parsed) => {
-        if (parsed.error === 'payload_too_large') {
-          jsonError(res, 413, 'payload_too_large');
+        if (parsed.error === "payload_too_large") {
+          jsonError(res, 413, "payload_too_large");
           return;
         }
-        if (parsed.error === 'invalid_json') {
-          jsonError(res, 400, 'invalid_json');
+        if (parsed.error === "invalid_json") {
+          jsonError(res, 400, "invalid_json");
           return;
         }
-        withInboundRequestId(requestId, () => void route.handler(req, res, parsed.body));
+        if (chatGptCore && listsTools(parsed.body))
+          res.on("finish", () => void noteChatGptListing());
+        withInboundIdentity(
+          identity,
+          () => void route.handler(req, res, parsed.body),
+        );
       });
       return;
     }
-    withInboundRequestId(requestId, () => void route.handler(req, res));
+    withInboundIdentity(identity, () => void route.handler(req, res));
   });
 
   // Reject slow or oversized bodies rather than holding sockets open indefinitely.
@@ -422,26 +564,34 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
   server.maxRequestsPerSocket = 0;
 
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    const listenPort = process.env.COS_PORT ? parseInt(process.env.COS_PORT, 10) : 0;
-    server.listen(listenPort, '127.0.0.1', () => {
-      server.removeListener('error', reject);
+    server.once("error", reject);
+    const listenPort = process.env.COS_PORT
+      ? parseInt(process.env.COS_PORT, 10)
+      : 0;
+    server.listen(listenPort, "127.0.0.1", () => {
+      server.removeListener("error", reject);
       resolve();
     });
   });
 
   const address = server.address();
-  if (address === null || typeof address === 'string') {
-    throw new Error('Could not determine the local server port');
+  if (address === null || typeof address === "string") {
+    throw new Error("Could not determine the local server port");
   }
+  const core = routes.find((surface) => surface.id === "core");
+  assert(core, "the Core surface is served");
+  await trackCoreSchema(() => listTools(core.mcp, `http://127.0.0.1:${address.port}${core.basePath}`));
 
-  server.on('error', (err) => logError(`Local server error: ${err.message}`));
+  server.on("error", (err) => logError(`Local server error: ${err.message}`));
   logInfo(`server started on 127.0.0.1:${address.port}`);
 
   // Known only once the OS has handed us a port, and needed by each metadata document as
   // that surface's canonical resource identifier.
-  for (const surface of routes) surface.url = `http://127.0.0.1:${address.port}${surface.basePath}`;
-  const urls = Object.fromEntries(routes.map((surface) => [surface.id, surface.url])) as Record<SurfaceId, string>;
+  for (const surface of routes)
+    surface.url = `http://127.0.0.1:${address.port}${surface.basePath}`;
+  const urls = Object.fromEntries(
+    routes.map((surface) => [surface.id, surface.url]),
+  ) as Record<SurfaceId, string>;
 
   return {
     port: address.port,
@@ -460,23 +610,28 @@ export async function startMcpServer(getContext: () => ToolContext): Promise<Mcp
         const force =
           forceAfterMs === undefined
             ? null
-            : setTimeout(() => {
-                if (settled) return;
-                // Force first, report second. This timer is the only thing between a wedged
-                // peer and a shutdown that never ends, so nothing it depends on may sit behind
-                // a call that could throw — and logging reaches the renderer, which by this
-                // point in a quit is already gone.
-                server.closeAllConnections();
-                logWarn(`server drain timed out after ${forceAfterMs}ms during final shutdown; forcing remaining connections closed`);
-              }, Math.max(0, forceAfterMs));
+            : setTimeout(
+                () => {
+                  if (settled) return;
+                  // Force first, report second. This timer is the only thing between a wedged
+                  // peer and a shutdown that never ends, so nothing it depends on may sit behind
+                  // a call that could throw — and logging reaches the renderer, which by this
+                  // point in a quit is already gone.
+                  server.closeAllConnections();
+                  logWarn(
+                    `server drain timed out after ${forceAfterMs}ms during final shutdown; forcing remaining connections closed`,
+                  );
+                },
+                Math.max(0, forceAfterMs),
+              );
         force?.unref?.();
         server.closeIdleConnections?.();
         server.close(() => {
           settled = true;
           if (force) clearTimeout(force);
-          logInfo('server stopped');
+          logInfo("server stopped");
           resolve();
         });
-      })
+      }),
   };
 }

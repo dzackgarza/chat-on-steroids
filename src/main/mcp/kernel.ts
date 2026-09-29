@@ -19,65 +19,67 @@
  * genuinely read-only tool is marked as such.
  */
 
-import { rawPromises as fs } from '../rawfs.js';
-import { inboundRequestId } from './inbound.js';
-import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
-import { z } from 'zod';
-import type { Capabilities, Root } from '../../shared/types.js';
-import { FsOpError, formatBytes, type FileInfo } from '../fsops.js';
-import { logInfo, logWarn } from '../logger.js';
+import { rawPromises as fs } from "../rawfs.js";
+import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
+import {
+  admitWorkstreamCall,
+  noteWorkstreamWorkspace,
+  workstreamWorkspace,
+} from "../workstreams.js";
+import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
+import { z } from "zod";
+import type { Capabilities, Root } from "../../shared/types.js";
+import { FsOpError, formatBytes, type FileInfo } from "../fsops.js";
+import { logInfo, logWarn } from "../logger.js";
 import {
   SandboxError,
   isAbsoluteVirtualPath,
   isNativeWindowsPath,
   resolvePath,
-  type Resolved
-} from '../sandbox.js';
-import { currentWorkspace, learnWorkspace } from '../workspace.js';
-import { ExecError } from '../exec.js';
-import { ComputerError } from '../computer/index.js';
-import { getConfig } from '../config.js';
+  type Resolved,
+} from "../sandbox.js";
+import {
+  currentWorkspace,
+  learnWorkspace,
+  setCurrentWorkspace,
+} from "../workspace.js";
+import { ExecError } from "../exec.js";
+import { ComputerError } from "../computer/index.js";
+import { getConfig } from "../config.js";
 import {
   AgentError,
   acknowledgeOffers,
-  acknowledgeOffersForConversation,
-  dormantWorkerNotice,
-  endedWorkerNotice,
-  hasDormantWorkerLeases,
+  acknowledgeOffersForWorkstream,
+  dormantWorkerNoticeForWorkstream,
+  endedWorkerNoticeForWorkstream,
   sleepSilentDetachedWorkers,
-  noteAgentAlive,
+  noteAgentAliveForWorkstream,
   agentForCaller,
   agentForFinishCaller,
-  hasRetiredWorkerLeases,
   offerMessages,
-  offerMessagesForConversation,
+  offerMessagesForWorkstream,
   persistCriticalSwarmNow,
   requestWorkerRevivals,
   releaseQuiescentRun,
-  retiredWorkerForConversation,
+  retiredWorkerForWorkstream,
   stageQueuedWorkerRevivals,
-  swarmRunning
-} from '../agents.js';
-import type { SurfaceId } from './surfaces.js';
+  swarmRunning,
+} from "../agents.js";
+import type { SurfaceId } from "./surfaces.js";
 import {
   currentCall,
   emptyEvidence,
   noteOutcome,
-  holdWhileSettling,
   runInCallContext,
   trackInFlight,
   trackMcpRequest,
-  type CallContext
-} from './call-context.js';
-import {
-  awaitFreshCallOrigin,
-  evidenceWindow,
-  freshCallOrigin,
-  recordAgentMessage,
-  recordToolCall
-} from '../session/recorder.js';
-import { readOverflowText } from '../session/store.js';
-import type { StoredText } from '../../shared/session.js';
+  type CallContext,
+} from "./call-context.js";
+import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
+import { rulesGateRefusal } from "../rules-gate.js";
+import { noteCommandMinted, noteSearch, reusePendingRefusal, snapshotBeforeCommand } from "../reuse-gate.js";
+import { readOverflowText } from "../session/store.js";
+import type { StoredText } from "../../shared/session.js";
 
 export interface ToolContext {
   roots: Root[];
@@ -119,28 +121,40 @@ export interface ToolContext {
 }
 
 export type ToolContent =
-  | { type: 'text'; text: string }
-  | { type: 'image'; data: string; mimeType: string };
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
 
-export type ToolResult = { content: ToolContent[]; structuredContent?: Record<string, unknown>; isError?: boolean };
+export type ToolResult = {
+  content: ToolContent[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
 
-export const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] });
-export const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
+export const ok = (text: string): ToolResult => ({
+  content: [{ type: "text", text }],
+});
+export const fail = (text: string): ToolResult => ({
+  content: [{ type: "text", text }],
+  isError: true,
+});
 
 /** Maps runtime errors to short model-facing text without ever exposing real paths. */
 export function friendlyError(err: unknown): string {
-  if (err instanceof SandboxError || err instanceof ComputerError) return err.message;
+  if (err instanceof SandboxError || err instanceof ComputerError)
+    return err.message;
   const code = (err as NodeJS.ErrnoException).code;
-  if (code === 'ENOENT') return 'Not found';
-  if (code === 'EACCES' || code === 'EPERM') return 'Access denied by the operating system';
-  if (code === 'EBUSY') return 'The file is in use by another program';
-  if (code === 'ENOTEMPTY') return 'Directory is not empty';
-  if (code === 'EEXIST') return 'Already exists';
+  if (code === "ENOENT") return "Not found";
+  if (code === "EACCES" || code === "EPERM")
+    return "Access denied by the operating system";
+  if (code === "EBUSY") return "The file is in use by another program";
+  if (code === "ENOTEMPTY") return "Directory is not empty";
+  if (code === "EEXIST") return "Already exists";
   // Node filesystem errors routinely embed the absolute host path in `err.message`.
   // Unknown errno values (ELOOP, ENAMETOOLONG, EINVAL, ENOSPC, …) used to fall through
   // verbatim and violate the model-facing virtual-path contract. Keep the errno useful
   // without echoing the path Windows supplied.
-  if (typeof code === 'string' && code.length > 0) return `Filesystem error (${code})`;
+  if (typeof code === "string" && code.length > 0)
+    return `Filesystem error (${code})`;
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -177,7 +191,10 @@ export function resetToolClock(): void {
  * unexpected internals out of the response. Error results are logged with only their
  * first line, so Activity stays useful without copying command output or file contents.
  */
-export async function guard(name: string, fn: () => Promise<ToolResult>): Promise<ToolResult> {
+export async function guard(
+  name: string,
+  fn: () => Promise<ToolResult>,
+): Promise<ToolResult> {
   const started = Date.now();
   // Counted before the work, and counted even when the tool is disabled or fails:
   // the question this answers is whether the model may call us at all.
@@ -187,15 +204,20 @@ export async function guard(name: string, fn: () => Promise<ToolResult>): Promis
     const elapsed = Date.now() - started;
     if (result.isError) {
       const summary = result.content
-        .find((item): item is Extract<ToolContent, { type: 'text' }> => item.type === 'text')
+        .find(
+          (item): item is Extract<ToolContent, { type: "text" }> =>
+            item.type === "text",
+        )
         ?.text.split(/\r?\n/, 1)[0]
         ?.slice(0, 500);
       // A rejected edit, disabled permission, stale cursor, etc. is a normal tool
       // outcome, not evidence that the connector itself is unhealthy.
-      noteOutcomeSafely('rejected');
-      logInfo(`tool ${name} rejected in ${elapsed} ms${summary ? `: ${summary}` : ''}`);
+      noteOutcomeSafely("rejected");
+      logInfo(
+        `tool ${name} rejected in ${elapsed} ms${summary ? `: ${summary}` : ""}`,
+      );
     } else {
-      noteOutcomeSafely('ok');
+      noteOutcomeSafely("ok");
       logInfo(`tool ${name} ok in ${elapsed} ms`);
     }
     return result;
@@ -209,19 +231,19 @@ export async function guard(name: string, fn: () => Promise<ToolResult>): Promis
       err instanceof ExecError ||
       err instanceof AgentError
     ) {
-      noteOutcomeSafely('rejected');
+      noteOutcomeSafely("rejected");
       logInfo(`tool ${name} rejected in ${elapsed} ms: ${message}`);
     } else {
-      noteOutcomeSafely('error');
+      noteOutcomeSafely("error");
       logWarn(`tool ${name} failed in ${elapsed} ms: ${message}`);
     }
     return fail(message);
   }
 }
 
-// noteOutcome is only meaningful inside a call context; guard is also used by tests and
-// by internal paths that have none, and a missing context must not turn into an error.
-function noteOutcomeSafely(outcome: 'ok' | 'rejected' | 'error'): void {
+// noteOutcome is only meaningful inside a call context. Internal paths can have none, and a
+// missing context must not turn into an error.
+function noteOutcomeSafely(outcome: "ok" | "rejected" | "error"): void {
   try {
     noteOutcome(outcome);
   } catch {
@@ -229,34 +251,8 @@ function noteOutcomeSafely(outcome: 'ok' | 'rejected' | 'error'): void {
   }
 }
 
-/**
- * The conversation this call was made from, if this call itself proved it.
- *
- * The only identity any agent has, and the reason no tool here carries a key. It reads one
- * thing: ChatGPT's own message model naming *this* tool request, in exactly one conversation,
- * at or after the moment this call started. Not `provenConversation()` — that reports whichever
- * chat has drawn connector rows lately and keeps answering for a minute after that chat went
- * quiet, which on a machine with one busy chat says the same thing whoever is calling. Not the
- * active chat, not the last chat, not a guess.
- *
- * Deliberately non-blocking, and deliberately after the handler has run. Non-blocking because
- * this is on the path of every ordinary read and exec, and waiting on the browser to answer a
- * question about attribution would make the browser a dependency of reading a file. After the
- * handler because the page reports on its own tick: a call that took a second has had a second
- * for its evidence to arrive, which is exactly the calls whose attribution matters most.
- *
- * A call that cannot be placed simply has no agent. It is not refused — most calls in most
- * installs are an ordinary chat with no swarm anywhere near it, and a phone talking to the same
- * connector is not a worker impersonation attempt. What it does not get is somebody else's
- * inbox, and control of the run: `agents` establishes identity for itself, and refuses without
- * it by name.
- */
-function callerConversation(tool: string, startedAt: number, requestId: string | null): string | null {
-  return freshCallOrigin(tool, startedAt, requestId);
-}
-
 /** The only SDK handler context field this layer consumes; request identity comes from ingress ALS. */
-type McpCallContext = Pick<ServerContext, 'sessionId'>;
+type McpCallContext = Pick<ServerContext, "sessionId">;
 
 /**
  * ChatGPT's id for this request, from `x-request-id`, without the per-attempt suffix.
@@ -279,17 +275,16 @@ function requestIdOf(mcpCtx: McpCallContext | undefined): string | null {
   return inboundRequestId();
 }
 
-/**
- * Whether the MCP transport ever gave us a session id, once a real call has arrived.
- *
- * Recorded rather than assumed, because it is the one thing that would let this app know
- * which conversation is calling without asking the browser at all. Until it does, identity
- * comes from page evidence. This is what the Activity log reports on the first tool call of
- * each run.
- */
-let transportIdentity: { checked: boolean; present: boolean } = { checked: false, present: false };
+/** Diagnostic only: caller routing uses the app-issued key, regardless of transport. */
+let transportIdentity: { checked: boolean; present: boolean } = {
+  checked: false,
+  present: false,
+};
 
-export function transportIdentityStatus(): { checked: boolean; present: boolean } {
+export function transportIdentityStatus(): {
+  checked: boolean;
+  present: boolean;
+} {
   return { ...transportIdentity };
 }
 
@@ -298,8 +293,8 @@ function noteTransportIdentity(transportKey: string | null): void {
   transportIdentity = { checked: true, present: transportKey !== null };
   logInfo(
     transportKey
-      ? 'MCP transport supplied a session id — agent identity could be bound to the transport'
-      : 'MCP transport supplied no session id (stateless connector) — agent identity comes from page evidence'
+      ? "MCP transport supplied a session id; caller identity uses workstream_id"
+      : "MCP transport supplied no session id; caller identity uses workstream_id",
   );
 }
 
@@ -315,32 +310,35 @@ function noteTransportIdentity(transportKey: string | null): void {
  * again, because that is the first real evidence this result reached ChatGPT.
  */
 function withInbox(
-  conversationId: string | null | undefined,
+  workstreamId: string | null | undefined,
   agent: string | null,
   result: ToolResult,
-  onFinish = false
+  onFinish = false,
 ): ToolResult {
-  // Conversation ownership is the durable authority. This matters most for a parked prime:
-  // there is deliberately no live `agent:prime` while another history may be active, but its
-  // exact conversation still owns final worker reports queued before parking. The finish flag
-  // also preserves the one dormant-worker exception: retrying a lost finish result may re-offer
-  // rows that rode on that finish, without re-authorising ordinary worker activity.
-  const scoped = offerMessagesForConversation(conversationId, onFinish, onFinish);
+  const scoped = offerMessagesForWorkstream(
+    workstreamId,
+    onFinish,
+    onFinish,
+  );
   const recipient = scoped?.agentId ?? agent;
-  const messages = scoped?.messages ?? (agent ? offerMessages(agent, onFinish) : []);
+  const messages =
+    scoped?.messages ?? (agent ? offerMessages(agent, onFinish) : []);
   if (messages.length === 0) return result;
   const lines = messages
     .map(
       (message) =>
-        `• [${message.id}] from ${message.from}${message.offers > 1 ? ' (repeat — you may have seen this)' : ''}: ${message.text}`
+        `• [${message.id}] from ${message.from}${message.offers > 1 ? " (repeat — you may have seen this)" : ""}: ${message.text}`,
     )
-    .join('\n');
+    .join("\n");
   return {
     ...result,
     content: [
       ...result.content,
-      { type: 'text', text: `\n--- ${messages.length} message(s) for ${recipient ?? 'this conversation'} ---\n${lines}` }
-    ]
+      {
+        type: "text",
+        text: `\n--- ${messages.length} message(s) for ${recipient ?? "this conversation"} ---\n${lines}`,
+      },
+    ],
   };
 }
 
@@ -361,27 +359,40 @@ async function dispatch(
   transportKey: string | null,
   requestId: string | null,
   surface: SurfaceId,
+  workstreamId: string | null,
+  workstreamClaimId: string | null,
+  workstreamSessionId: string | null,
   run: () => Promise<ToolResult>,
-  parent?: CallContext
 ): Promise<ToolResult> {
   // The context is built here, one layer out from where the work happens, because the
   // compaction barrier asks about the whole request and not just the handler. A call is
-  // still unsettled while it waits for its request-id evidence, while its outcome is being
-  // recorded, and while its result is on the way back — and a handoff written in any of
+  // still unsettled while its outcome is being recorded and its result is on the way back — and a handoff written in any of
   // those gaps describes a machine that has not finished changing. The counter therefore
   // opens with the request and closes with it.
-  //
-  // A code-mode child (`parent` set) inherits the identity its `exec` call already proved.
   const context: CallContext = {
     startedAt: Date.now(),
+    tool: name,
+    workstreamId,
+    workstreamClaimId,
+    workstreamSessionId,
     transportKey,
-    agent: parent?.agent ?? null,
-    caller: parent ? { ...parent.caller } : { transportKey, requestId, conversationId: null },
+    agent: null,
+    caller: {
+      workstreamId,
+      transportKey,
+      requestId,
+      conversationId: null,
+      sessionKey: inboundConnectorSession(),
+      inferredConversationId: null,
+      inferredMethod: null,
+    },
     outcome: null,
-    evidence: emptyEvidence()
+    evidence: emptyEvidence(),
   };
   return trackMcpRequest(() =>
-    trackInFlight(context, () => dispatchTracked(context, name, args, transportKey, requestId, surface, run, !!parent))
+    trackInFlight(context, () =>
+      dispatchTracked(context, name, args, transportKey, surface, run),
+    ),
   );
 }
 
@@ -390,12 +401,9 @@ async function dispatchTracked(
   name: string,
   args: unknown,
   transportKey: string | null,
-  requestId: string | null,
   surface: SurfaceId,
   run: () => Promise<ToolResult>,
-  nested: boolean
 ): Promise<ToolResult> {
-  if (nested) return dispatchNested(context, name, args, surface, run);
   noteTransportIdentity(transportKey);
   // Recorded here rather than in `guard` because only this layer knows which server
   // answered, and "was this connector ever actually used from ChatGPT" is a per-connector
@@ -403,38 +411,9 @@ async function dispatchTracked(
   surfaceToolCallAt.set(surface, Date.now());
   const isFinish = isFinishCall(name, args);
   const startedAt = context.startedAt;
-  // Cheap, non-blocking ingress identity. When the page has already reported this exact
-  // request id, identity-sensitive handlers (workspace/session/agents) see it before they
-  // touch state. If the page is one tick late this stays null; only handlers that actually
-  // require identity wait for their own exact mate. Ordinary absolute reads/execs never wait.
-  context.caller.conversationId = callerConversation(name, startedAt, requestId);
-  // Only calls that need an *existing* per-chat workspace before the handler runs are
-  // identity-sensitive here. An absolute read or an exec with an explicit absolute workdir is
-  // self-contained and must stay fast; if its exact page mate is late, workspace.ts simply
-  // declines to learn a guessed workspace. Relative paths, omitted exec workdir and a patch with
-  // no explicit base really do consume caller state, so they wait for their exact request-id
-  // mate while a swarm is active. Use the full exact-id window, not the shorter prime window:
-  // the live worker failure that motivated IDENTITY_EVIDENCE_MS arrived ~8 seconds late.
-  const identitySensitive = needsWorkspaceIdentity(name, args);
-  if (!context.caller.conversationId && identitySensitive && swarmRunning() && requestId) {
-    context.caller.conversationId = await awaitFreshCallOrigin(name, startedAt, IDENTITY_EVIDENCE_MS, { requestId });
-  }
-  // A run that ended leaves an explicit short-lived lease tombstone for each open worker
-  // chat. Resolve exact request identity before ordinary tools too while such leases exist;
-  // otherwise an explicit-workdir exec could keep mutating after its worker was retired.
-  if (!context.caller.conversationId && hasRetiredWorkerLeases() && requestId) {
-    context.caller.conversationId = await awaitFreshCallOrigin(name, startedAt, IDENTITY_EVIDENCE_MS, { requestId });
-  }
-  // Dormant histories are long-lived identity fences, not active slot claims. An old worker tab
-  // may still issue a stale server-side call after its run parked, and without exact request-id
-  // attribution an absolute read/exec would otherwise look like an unrelated ordinary chat and
-  // run successfully. Resolve the exact mate for every call while such worker conversations
-  // exist, just as we do for short-lived retired worker leases.
-  if (!context.caller.conversationId && hasDormantWorkerLeases() && requestId) {
-    context.caller.conversationId = await awaitFreshCallOrigin(name, startedAt, IDENTITY_EVIDENCE_MS, { requestId });
-  }
-  // Two things about liveness, both before the agent is resolved so that the answer this
-  // call gets is the state this call itself established.
+  // Workstream admission already established caller identity before dispatch. Browser
+  // conversation/request evidence is irrelevant here. Two things about liveness happen before
+  // the agent is resolved so the answer this call gets reflects the state this call established.
   //
   // A detached worker that has also stopped calling is put to sleep here rather than on a
   // timer: nothing about a run changes while nothing is happening, and this is the moment
@@ -442,19 +421,20 @@ async function dispatchTracked(
   // costs the run nothing — its own next call takes the slot straight back.
   const quietWorkers = sleepSilentDetachedWorkers();
   for (const quiet of quietWorkers) {
-    if (quiet.report) await recordAgentMessage(quiet.report, 'sent');
+    if (quiet.report) await recordAgentMessage(quiet.report, "sent");
   }
-  // And this call is itself first-hand evidence that its own conversation is alive. That is
-  // what undoes a worker given up on because its tab went away — the turn never stopped, so
-  // the call arrives from a chat the app had written off, and the write-off was wrong.
-  const alive = noteAgentAlive(context.caller.conversationId);
-  if (alive?.report) await recordAgentMessage(alive.report, 'sent');
+  // The admitted workstream is first-hand evidence that this agent is active. It says nothing
+  // about whether the browser route currently has a live page.
+  const alive = noteAgentAliveForWorkstream(context.workstreamId);
+  if (alive?.report) await recordAgentMessage(alive.report, "sent");
   // A prime message accepted while a worker's tab was closed could not safely be injected while
   // that server-side turn might still be running. If the silence check above has now proved the
   // worker stopped, carry that already-durable unread work into a revival instead of leaving it
   // stranded until the prime happens to send a second message. Do this after noteAgentAlive so a
   // tool call from the supposedly quiet worker wins and simply keeps the worker active.
-  const deferredWake = stageQueuedWorkerRevivals(quietWorkers.map((entry) => entry.info.id));
+  const deferredWake = stageQueuedWorkerRevivals(
+    quietWorkers.map((entry) => entry.info.id),
+  );
   if (deferredWake.waking.length > 0) {
     try {
       if (await persistCriticalSwarmNow()) {
@@ -462,31 +442,32 @@ async function dispatchTracked(
         requestWorkerRevivals(deferredWake.waking);
       } else {
         deferredWake.rollback();
-        logWarn('multi-agent: could not durably reserve queued work for a worker that just fell asleep');
+        logWarn(
+          "multi-agent: could not durably reserve queued work for a worker that just fell asleep",
+        );
       }
     } catch (err) {
       deferredWake.rollback();
       logWarn(
-        `multi-agent: could not durably reserve queued work for a worker that just fell asleep — ${err instanceof Error ? err.message : String(err)}`
+        `multi-agent: could not durably reserve queued work for a worker that just fell asleep — ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
-  context.agent = isFinish ? agentForFinishCaller(context.caller) : agentForCaller(context.caller);
-  const refusal = workerFenceRefusal(context.caller.conversationId, identitySensitive, isFinish);
-  const result = await runInCallContext(context, () => (refusal ? Promise.resolve(fail(refusal)) : run()));
-  // Identity, once, from this call's own evidence — see callerConversation. `agents` has
-  // already established its own inside the call and adopted it, and re-reading here would
-  // only be able to disagree with the stronger answer it waited for.
-  if (!context.caller.conversationId) {
-    const resolved = callerConversation(name, startedAt, requestId);
-    if (resolved) context.caller.conversationId = resolved;
-  }
+  context.agent = isFinish
+    ? agentForFinishCaller(context.caller)
+    : agentForCaller(context.caller);
+  const refusal = workerFenceRefusal(context.workstreamId, isFinish);
+  const result = await runInCallContext(context, () =>
+    refusal ? Promise.resolve(fail(refusal)) : runNotingWorkspace(context, run),
+  );
   // Never erase an identity a handler proved more strongly (agents::callerNow). The old
   // post-handler pass could fail to rediscover evidence that callerNow had already reserved
   // and then set agent back to null, which is the live WORKER_IDENTITY_LOST / missing-inbox
   // split brain worker-1 observed.
   if (!context.agent) {
-    context.agent = isFinish ? agentForFinishCaller(context.caller) : agentForCaller(context.caller);
+    context.agent = isFinish
+      ? agentForFinishCaller(context.caller)
+      : agentForCaller(context.caller);
   }
   // This call is the best evidence there is that the previous result reached the agent's
   // conversation, so anything offered then can be retired and written to its history —
@@ -494,20 +475,24 @@ async function dispatchTracked(
   // retry after a lost result. The SDK exposes the JSON-RPC id, but a model-issued retry is
   // a new MCP request with a new id, so that id cannot prove the previous finish result was
   // seen. The broker therefore re-offers rather than assuming; see acknowledgeOffers.
-  const acknowledgedForConversation = acknowledgeOffersForConversation(
-    context.caller.conversationId,
+  const acknowledgedForWorkstream = acknowledgeOffersForWorkstream(
+    context.workstreamId,
     isFinish,
     startedAt,
-    isFinish
+    isFinish,
   );
   const acknowledged =
-    acknowledgedForConversation?.messages ??
-    (context.agent ? acknowledgeOffers(context.agent, isFinish, startedAt) : []);
+    acknowledgedForWorkstream?.messages ??
+    (context.agent
+      ? acknowledgeOffers(context.agent, isFinish, startedAt)
+      : []);
   for (const message of acknowledged) {
-    // The exact caller conversation is stronger than the friendly recipient id and remains
-    // unique after a run parks. Without this override, a parked Prime A acknowledging its report
-    // while Prime B is active could file the delivery into B's `prime` session (or Unattributed).
-    await recordAgentMessage(message, 'delivered', context.caller.conversationId);
+    // Delivery ownership was already resolved by the admitted workstream above. Recording must
+    // not re-resolve a parked prime through whichever browser conversation happens to be active.
+    await recordAgentMessage(
+      message,
+      "delivered",
+    );
   }
   // This is the MCP call's wall-clock latency. A managed child can outlive the call, and
   // its own lifetime is process evidence; letting that number overwrite ToolCallRecord's
@@ -516,37 +501,37 @@ async function dispatchTracked(
   // Inbox messages are part of the MCP result ChatGPT actually receives. Build the delivered
   // result before recording so session(action=read, tool_call=T…) is genuine wire forensics rather than a
   // subtly earlier internal value that omits the worker report most likely to matter later.
-  const delivered = withInbox(context.caller.conversationId, context.agent, result, isFinish);
+  const delivered = withInbox(
+    context.workstreamId,
+    context.agent,
+    result,
+    isFinish,
+  );
   const recorderStartedAt = Date.now();
   const recording = recordToolCall({
     tool: name,
     args,
     content: delivered.content,
-    outcome: context.outcome ?? (result.isError ? 'rejected' : 'ok'),
+    outcome: context.outcome ?? (result.isError ? "rejected" : "ok"),
     durationMs,
     startedAt,
     evidence: context.evidence,
     agent: context.agent,
-    bind: context.bindOnAttribution ?? null,
     requestId: context.caller.requestId,
-    conversationId: context.caller.conversationId
+    conversationId: context.caller.conversationId,
+    workstreamId: context.workstreamId,
+    workstreamSessionId: context.workstreamSessionId,
+    attributionMethod: "workstream",
+    inferredConversationId: context.caller.inferredConversationId ?? null,
+    inferredMethod: context.caller.inferredMethod ?? null,
   });
-  // Exact request-id identity needs no browser wait, so make its durable session append part
-  // of completing the MCP call. The recorder catches storage failures and returns null, so a
-  // broken history never breaks the tool itself. Only the degraded/unidentified path remains
-  // fire-and-forget because it may still spend a grace window waiting for page evidence.
-  if (context.caller.conversationId) {
-    await recording;
-    if (name === 'observe' || name === 'computer') {
-      logInfo(`desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`);
-    }
-  } else {
-    if (name === 'observe' || name === 'computer') {
-      void recording.then(() =>
-        logInfo(`desktop timing recorder_wait_ms=0 recorder_async_ms=${Date.now() - recorderStartedAt} attributed=false`)
-      );
-    }
-    holdWhileSettling(context, recording);
+  // The admitted workstream supplies identity before execution. Recording belongs to this
+  // request's completion boundary, with no browser grace window or fleet-wide charge.
+  await recording;
+  if (name === "observe" || name === "computer") {
+    logInfo(
+      `desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`,
+    );
   }
   // Retire a completed run only after this call has had every chance to acknowledge and
   // receive its inbox. Doing it inside acknowledgeOffers would let `agents status` destroy
@@ -555,18 +540,26 @@ async function dispatchTracked(
   return delivered;
 }
 
-/** Why a call from this conversation may not run a local tool, or null when it may. */
-function workerFenceRefusal(conversationId: string | null, identitySensitive: boolean, isFinish: boolean): string | null {
+/** Why a call from this workstream may not run a local tool, or null when it may. */
+function workerFenceRefusal(
+  workstreamId: string | null,
+  isFinish: boolean,
+): string | null {
   // Parking a run releases its global execution claim without retiring its worker chats. Those
   // exact conversations remain workers, though: a stale sleeping/terminal worker tab must not
   // turn into an ordinary unidentified chat and keep running local tools merely because another
   // prime currently owns the active run (or because no run is active at all). Only the owning
   // prime's explicit agents message may wake a sleeping worker.
-  const dormantWorker = isFinish ? null : dormantWorkerNotice(conversationId);
+  const dormantWorker = isFinish
+    ? null
+    : dormantWorkerNoticeForWorkstream(workstreamId);
   if (dormantWorker) return dormantWorker;
-  const retiredWorker = retiredWorkerForConversation(conversationId);
+  const retiredWorker = retiredWorkerForWorkstream(workstreamId);
   if (retiredWorker) {
-    return `WORKER_RETIRED: ${retiredWorker.id} was retired because ${retiredWorker.reason}. This chat can no longer use local tools. Stop working and return to the prime chat.`;
+    return (
+      `WORKER_RETIRED: nothing was run. The app retired this worker chat (${retiredWorker.reason}), so no tool will run ` +
+      "from it again. Files you changed stay in the repository. End your turn with a plain reply saying where you stopped."
+    );
   }
   // A worker that really is over learns so on its own next call. Without this its calls
   // resolved to nobody and ran anyway, so a chat the user had ended went on writing files
@@ -575,92 +568,83 @@ function workerFenceRefusal(conversationId: string | null, identitySensitive: bo
   // result. It still has a tombstone identity for that call so the dispatcher can re-offer the
   // inbox that rode on the missing result. Every other tool call from the same chat is refused
   // by endedWorkerNotice as before.
-  const endedWorker = isFinish ? null : endedWorkerNotice(conversationId);
-  if (endedWorker) return endedWorker;
-  if (hasRetiredWorkerLeases() && !conversationId) {
-    return 'CALLER_IDENTITY_REQUIRED: a recently retired worker tab may still be open, and the connector could not prove this call belongs to a different chat. No local tool was run. Reload the extension evidence path or wait for the retired lease to expire.';
-  }
-  if (hasDormantWorkerLeases() && !conversationId) {
-    return 'CALLER_IDENTITY_REQUIRED: a dormant worker chat still belongs to its prime history, and the connector could not prove this call belongs to a different conversation. No local tool was run. Restore the browser-extension identity path and retry.';
-  }
-  // In a swarm, a relative/defaulted filesystem operation is not safe to execute after the
-  // exact caller lookup timed out: its workspace is part of the requested operation. Falling
-  // back to the first approved root turns an attribution outage into wrong-project mutation.
-  // Refuse and let the model retry once page evidence is healthy instead.
-  if (swarmRunning() && identitySensitive && !conversationId) {
-    return 'CALLER_IDENTITY_REQUIRED: this operation needs this chat’s exact workspace, but the connector could not prove which ChatGPT conversation made the call. Retry after the extension reconnects; no file or command was changed.';
-  }
-  return null;
+  return isFinish ? null : endedWorkerNoticeForWorkstream(workstreamId);
+}
+
+async function runNotingWorkspace(
+  context: CallContext,
+  run: () => Promise<ToolResult>,
+): Promise<ToolResult> {
+  const result = await run();
+  const workspace = currentWorkspace();
+  if (workspace && context.workstreamId)
+    noteWorkstreamWorkspace(context.workstreamId, workspace.virtual);
+  return result;
 }
 
 /**
  * One tool call made from inside a code-mode `exec` script.
  *
- * Identity was proved once, by the `exec` call, and is copied into `context`; the child does
- * not wait for page evidence of its own and does not acknowledge or carry the worker inbox —
- * that rides on the outer result. It still passes the same worker fences and the handler's live
- * permission checks, and it is recorded as its own tool call, marked nested.
+ * The child runs under the workstream claim that admitted its `exec` call; the registrar
+ * re-admits that claim first, so a workstream reclaimed while the script awaits refuses its
+ * next child. The child does not acknowledge or carry the worker inbox — that rides on the
+ * outer result. It passes the same worker fences, the handler's live permission checks and
+ * the per-tool gates, and it is recorded as its own tool call, marked nested.
  */
 async function dispatchNested(
-  context: CallContext,
+  parent: CallContext,
   name: string,
   args: unknown,
   surface: SurfaceId,
-  run: () => Promise<ToolResult>
+  run: () => Promise<ToolResult>,
 ): Promise<ToolResult> {
-  const isFinish = isFinishCall(name, args);
-  const refusal =
-    name === 'exec'
-      ? 'CODE_MODE_RECURSION: exec cannot call exec. No tool was run.'
-      : isFinish
-      ? 'CODE_MODE_FINISH: call agents action=finish directly, not from exec. No tool was run.'
-      : workerFenceRefusal(context.caller.conversationId, needsWorkspaceIdentity(name, args), false);
-  const result = await runInCallContext(context, () => (refusal ? Promise.resolve(fail(refusal)) : run()));
-  const recording = recordToolCall({
+  const context: CallContext = {
+    startedAt: Date.now(),
     tool: name,
-    args,
-    content: result.content,
-    outcome: context.outcome ?? (result.isError ? 'rejected' : 'ok'),
-    durationMs: Date.now() - context.startedAt,
-    startedAt: context.startedAt,
-    evidence: context.evidence,
-    agent: context.agent,
-    bind: null,
-    requestId: context.caller.requestId,
-    conversationId: context.caller.conversationId,
-    nested: true
-  });
-  if (context.caller.conversationId) await recording;
-  else holdWhileSettling(context, recording);
-  surfaceToolCallAt.set(surface, Date.now());
-  return result;
-}
-
-/** Whether this handler must know which chat it is before resolving its paths. */
-function needsWorkspaceIdentity(name: string, args: unknown): boolean {
-  const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
-  const relative = (value: unknown): boolean =>
-    typeof value === 'string' && !isAbsoluteVirtualPath(value) && !isNativeWindowsPath(value);
-  if (name === 'read') {
-    const paths = Array.isArray(input['paths']) ? input['paths'] : [];
-    return paths.some(relative);
-  }
-  if (name === 'find') return relative(input['path']);
-  if (name === 'apply_patch') {
-    // Codex's apply_patch surface has no cwd argument. Relative patch paths therefore always
-    // consume the turn/chat cwd analogue maintained by this connector.
-    return true;
-  }
-  if (name === 'exec_command') {
-    // Every exec in a swarm also needs caller identity so a long-running session can be
-    // owned by the right chat even when the cwd itself was explicit.
-    const workdir = input['workdir'];
-    return swarmRunning() || workdir === undefined || relative(workdir);
-  }
-  // A code-mode script's children inherit this call's identity instead of waiting for their
-  // own, so in a swarm the script has to prove it before any child runs.
-  if (name === 'exec') return swarmRunning();
-  return false;
+    workstreamId: parent.workstreamId,
+    workstreamClaimId: parent.workstreamClaimId,
+    workstreamSessionId: parent.workstreamSessionId,
+    transportKey: parent.transportKey,
+    agent: parent.agent,
+    caller: { ...parent.caller },
+    outcome: null,
+    evidence: emptyEvidence(),
+  };
+  return trackMcpRequest(() =>
+    trackInFlight(context, async () => {
+      const refusal =
+        name === "exec"
+          ? "CODE_MODE_RECURSION: exec cannot call exec. No tool was run."
+          : isFinishCall(name, args)
+            ? "CODE_MODE_FINISH: call agents action=finish directly, not from exec. No tool was run."
+            : workerFenceRefusal(context.workstreamId, false);
+      const result = await runInCallContext(context, () =>
+        refusal
+          ? Promise.resolve(fail(refusal))
+          : runNotingWorkspace(context, run),
+      );
+      await recordToolCall({
+        tool: name,
+        args,
+        content: result.content,
+        outcome: context.outcome ?? (result.isError ? "rejected" : "ok"),
+        durationMs: Date.now() - context.startedAt,
+        startedAt: context.startedAt,
+        evidence: context.evidence,
+        agent: context.agent,
+        requestId: context.caller.requestId,
+        conversationId: context.caller.conversationId,
+        workstreamId: context.workstreamId,
+        workstreamSessionId: context.workstreamSessionId,
+        attributionMethod: "workstream",
+        inferredConversationId: context.caller.inferredConversationId ?? null,
+        inferredMethod: context.caller.inferredMethod ?? null,
+        nested: true,
+      });
+      surfaceToolCallAt.set(surface, Date.now());
+      return result;
+    }),
+  );
 }
 
 /**
@@ -683,9 +667,9 @@ export async function adoptAgent(agent: string | null): Promise<void> {
 }
 
 function isFinishCall(name: string, args: unknown): boolean {
-  if (name !== 'agents') return false;
-  if (!args || typeof args !== 'object') return false;
-  return (args as Record<string, unknown>)['action'] === 'finish';
+  if (name !== "agents") return false;
+  if (!args || typeof args !== "object") return false;
+  return (args as Record<string, unknown>)["action"] === "finish";
 }
 
 /**
@@ -706,22 +690,40 @@ function isFinishCall(name: string, args: unknown): boolean {
 export async function resolveIn(
   roots: Parameters<typeof resolvePath>[0],
   requested: string,
-  options: { allowMissing?: boolean; base?: string | null } = {}
+  options: { allowMissing?: boolean; base?: string | null } = {},
 ): Promise<Resolved> {
+  let workspace = currentWorkspace();
+  if (!workspace && options.base === undefined) {
+    const logicalWorkstream = currentCall()?.workstreamId ?? null;
+    const remembered = logicalWorkstream
+      ? workstreamWorkspace(logicalWorkstream)
+      : null;
+    if (remembered) {
+      const restored = await resolvePath(roots, remembered);
+      setCurrentWorkspace({ real: restored.real, virtual: restored.virtual });
+      workspace = currentWorkspace();
+    }
+  }
   // An explicit adapter-supplied base beats the workspace; otherwise the workspace is the base.
   // Either way the joining happens inside `resolvePath`, ahead of validation,
   // so a `..` in the caller's text still meets `checkSegment` instead of being normalised
   // away first. Doing that join here is how a relative patch path could climb out of the
   // workspace: `posix.normalize('/root/a/../../elsewhere')` is a perfectly clean-looking
   // `/elsewhere`, and nothing downstream can tell it apart from a path that was always that.
-  const base = options.base !== undefined ? options.base : (currentWorkspace()?.virtual ?? null);
+  const base =
+    options.base !== undefined
+      ? options.base
+      : (workspace?.virtual ?? null);
   const resolved = await resolvePath(roots, requested, {
-    ...(options.allowMissing === undefined ? {} : { allowMissing: options.allowMissing }),
-    base
+    ...(options.allowMissing === undefined
+      ? {}
+      : { allowMissing: options.allowMissing }),
+    base,
   });
   // Absolute only: a workspace learned from a relative path would let one loose resolution
   // decide where the next loose resolution points. See workspace.ts.
-  if (isAbsoluteVirtualPath(requested) || isNativeWindowsPath(requested)) await learnWorkspace(resolved);
+  if (isAbsoluteVirtualPath(requested) || isNativeWindowsPath(requested))
+    await learnWorkspace(resolved);
   return resolved;
 }
 
@@ -740,24 +742,34 @@ export interface ResolvedCwd {
  * wrong build: a live run meant for `…/minecraft-web-demo` fell back to the first root and
  * rebuilt the parent Electron app instead, and nothing in the reply said so.
  */
-export async function resolveCwd(ctx: ToolContext, virtualPath: string | undefined): Promise<ResolvedCwd> {
+export async function resolveCwd(
+  ctx: ToolContext,
+  virtualPath: string | undefined,
+): Promise<ResolvedCwd> {
   // The chat's own folder before the first root: a command with no `workdir` should run where the
   // chat has been working, which is the whole point of the workspace and is exactly the case
   // the note above describes going wrong.
   const workspace = currentWorkspace();
   // Codex treats an explicitly empty workdir exactly like an omitted one.
-  const provided = virtualPath !== undefined && virtualPath !== '';
+  const provided = virtualPath !== undefined && virtualPath !== "";
   if (!provided && !workspace && swarmRunning()) {
     throw new SandboxError(
-      'WORKSPACE_REQUIRED: this multi-agent chat has no proven workspace. Supply an explicit approved workdir before running a command.'
+      "WORKSPACE_REQUIRED: this multi-agent chat has no proven workspace. Supply an explicit approved workdir before running a command.",
     );
   }
-  const target = provided ? virtualPath : (workspace?.virtual ?? (ctx.roots[0] ? `/${ctx.roots[0].name}` : ''));
-  if (!target) throw new SandboxError('No folder is approved, so there is nowhere to run');
+  const target = provided
+    ? virtualPath
+    : (workspace?.virtual ?? (ctx.roots[0] ? `/${ctx.roots[0].name}` : ""));
+  if (!target)
+    throw new SandboxError("No folder is approved, so there is nowhere to run");
   const resolved = await resolveIn(ctx.roots, target);
   const stat = await fs.stat(resolved.real);
-  if (!stat.isDirectory()) throw new SandboxError('workdir must be a folder');
-  return { real: resolved.real, virtual: resolved.virtual, defaulted: !provided };
+  if (!stat.isDirectory()) throw new SandboxError("workdir must be a folder");
+  return {
+    real: resolved.real,
+    virtual: resolved.virtual,
+    defaulted: !provided,
+  };
 }
 
 // ------------------------------------------------------------------ shared args
@@ -769,16 +781,18 @@ export const imageCoordinateArg = z.number().int().min(-100_000).max(100_000);
 // Zod's plain object parser strips unknown keys even though its generated JSON Schema says
 // additionalProperties=false. Keep runtime validation as strict as the wire contract so a
 // misspelled coordinate/crop field cannot be silently discarded.
-export const pointArg = z.object({ x: imageCoordinateArg, y: imageCoordinateArg }).strict();
+export const pointArg = z
+  .object({ x: imageCoordinateArg, y: imageCoordinateArg })
+  .strict();
 export const cropArg = z
   .object({
     x: z.number().int().min(0).max(100_000),
     y: z.number().int().min(0).max(100_000),
     width: z.number().int().min(1).max(100_000),
-    height: z.number().int().min(1).max(100_000)
+    height: z.number().int().min(1).max(100_000),
   })
   .strict();
-export const mouseButtonArg = z.enum(['left', 'right', 'middle']);
+export const mouseButtonArg = z.enum(["left", "right", "middle"]);
 // ------------------------------------------------------------------ registration
 
 export interface ToolAnnotations {
@@ -807,7 +821,7 @@ export interface SurfaceRegistrar {
   agentToolsExposed: boolean;
   /** Whether `find` is part of this endpoint's surface. See ToolContext.exposedFind. */
   findExposed: boolean;
-  register<Schema extends z.ZodType>(
+  register<Schema extends z.ZodObject>(
     name: string,
     config: {
       title?: string;
@@ -816,21 +830,114 @@ export interface SurfaceRegistrar {
       outputSchema?: z.ZodType;
       annotations?: ToolAnnotations;
     },
-    handler: (args: z.output<Schema>) => Promise<ToolResult>
+    handler: (args: z.output<Schema>) => Promise<ToolResult>,
   ): void;
   /** Runs `fn` only while `cap` is live, and explains the refusal otherwise. */
-  guarded(cap: keyof Capabilities, name: string, fn: () => Promise<ToolResult>): Promise<ToolResult>;
+  guarded(
+    cap: keyof Capabilities,
+    name: string,
+    fn: () => Promise<ToolResult>,
+  ): Promise<ToolResult>;
   /** Refusal used when a whole feature is off but its tool is still exposed. */
   featureDisabled(feature: string, setting: string): ToolResult;
   /** Names actually registered on this server, in registration order. */
   registered(): string[];
-  /** Same registered handler/schema, with a fresh child recording context and inherited proof. */
-  invokeNested(name: string, args: unknown, parent: CallContext): Promise<ToolResult>;
+  /** Runs a registered tool from inside a code-mode `exec` script under its parent's claim. */
+  invokeNested(
+    name: string,
+    args: unknown,
+    parent: CallContext,
+  ): Promise<ToolResult>;
   descriptions(): Array<{ name: string; description: string }>;
 }
 
+// ------------------------------------------------------------------ emergency recovery bypass
+//
+// Temporary, exact-chat maintenance exception, installed only while the unscoped
+// setup/attachment operation was absent. Gated entirely on process environment so it is
+// inert everywhere unless the daemon is launched with the recovery credentials.
+//
+// It does NOT create, claim, renew, retire, or otherwise touch a workstream, and it does
+// NOT alter conversation-key bindings. It lets a single known chat reach the four
+// filesystem/execution tools directly, bypassing workstream admission. Remove this block
+// and its systemd drop-in once the `workstream` setup tool is confirmed live.
+
+const recoveryConversationKey =
+  process.env.COS_RECOVERY_CONVERSATION_KEY?.trim() ?? "";
+
+const recoveryWorkstreamLock =
+  process.env.COS_RECOVERY_WORKSTREAM_LOCK?.trim() ?? "";
+
+const RECOVERY_TOOL_NAMES = new Set([
+  "read",
+  "exec_command",
+  "apply_patch",
+  "write_stdin",
+]);
+
+function isEmergencyRecoveryCall(
+  toolName: string,
+  workstreamId: string | undefined,
+): boolean {
+  if (!recoveryConversationKey || !recoveryWorkstreamLock) return false;
+  // The recovery sentinel rides the ordinary workstream_id slot on this exact chat. It is
+  // the value of the old `workstream_lock` recovery credential, now carried in the single
+  // identity field the ordinary-tool schema exposes.
+  if (workstreamId !== recoveryWorkstreamLock) return false;
+  return RECOVERY_TOOL_NAMES.has(toolName);
+}
+
+/**
+ * The per-tool gates every admitted call passes before its handler runs.
+ *
+ * `exec` passes none itself: it does no local work, and each child it dispatches passes them
+ * under its own tool name.
+ */
+function gatedHandler(
+  name: string,
+  roots: Root[],
+  handler: (args: never) => Promise<ToolResult>,
+): (args: Record<string, unknown>) => Promise<ToolResult> {
+  if (name === "exec") return (args) => handler(args as never);
+  return async (args) => {
+    // A chat acts only after it has read its repository's rules (rules-gate.ts).
+    const unread = await rulesGateRefusal(
+      name,
+      async (virtualWorkspace) => (await resolvePath(roots, virtualWorkspace)).real,
+    );
+    if (unread) return fail(unread);
+    const reusePending = reusePendingRefusal(name, args);
+    if (reusePending) return fail(reusePending);
+    noteSearch(name, args);
+    if (name !== "exec_command" && name !== "write_stdin") return handler(args as never);
+    // Shell commands can mint definitions without apply_patch; see reuse-gate.ts.
+    // No workspace: the workstream has no repository to watch. A workspace that fails
+    // to resolve is an error for this call, never an unwatched command.
+    const workstreamId = currentCall()?.workstreamId ?? null;
+    const workspace = workstreamId ? workstreamWorkspace(workstreamId) : null;
+    const root = workspace ? (await resolvePath(roots, workspace)).real : null;
+    const snapshot = await snapshotBeforeCommand(root);
+    const result = await handler(args as never);
+    const minted = await noteCommandMinted(snapshot);
+    if (minted.length > 0 && result && Array.isArray((result as { content?: unknown }).content)) {
+      (result as { content: Array<{ type: "text"; text: string }> }).content.push({
+        type: "text",
+        text:
+          `REUSE_SEARCH_PENDING: this command added ${minted.join(", ")} without a reuse record. ` +
+          "Every tool except read and find is now refused until an apply_patch carries a reuse_search covering those names: " +
+          "the searches you ran for existing owners, what they found and why none is reused.",
+      });
+    }
+    return result;
+  };
+}
+
 /** `server` is null for the per-child registrar code mode builds against live permissions. */
-export function createRegistrar(server: McpServer | null, ctx: ToolContext, surface: SurfaceId): SurfaceRegistrar {
+export function createRegistrar(
+  server: McpServer | null,
+  ctx: ToolContext,
+  surface: SurfaceId,
+): SurfaceRegistrar {
   const caps = ctx.caps;
   const exposedCaps = ctx.exposedCaps ?? caps;
   // These two do not follow a capability checkbox: they are whole features the user
@@ -841,9 +948,13 @@ export function createRegistrar(server: McpServer | null, ctx: ToolContext, surf
   const agentToolsLive = ctx.agentTools ?? getConfig().multiAgent.enabled;
   const sessionToolsExposed = ctx.exposedSessionTools ?? sessionToolsLive;
   const agentToolsExposed = ctx.exposedAgentTools ?? agentToolsLive;
-  const findExposed = ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
+  const findExposed =
+    ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
   const names: string[] = [];
-  const handlers = new Map<string, { description: string; run: (args: unknown) => Promise<ToolResult> }>();
+  const handlers = new Map<
+    string,
+    { description: string; run: (args: unknown) => Promise<ToolResult> }
+  >();
 
   return {
     ctx,
@@ -855,51 +966,105 @@ export function createRegistrar(server: McpServer | null, ctx: ToolContext, surf
     agentToolsExposed,
     findExposed,
     registered: () => [...names],
-    descriptions: () => [...handlers].map(([name, entry]) => ({ name, description: entry.description })),
-    invokeNested(name, args, parent) {
-      return dispatch(
-        name,
-        args,
-        parent.caller.transportKey,
-        parent.caller.requestId,
-        surface,
-        async () => {
-          const entry = handlers.get(name);
-          return entry ? entry.run(args) : fail('UNKNOWN_TOOL: this tool is not available on this connector.');
-        },
-        parent
-      );
+    descriptions: () =>
+      [...handlers].map(([name, entry]) => ({ name, description: entry.description })),
+    async invokeNested(name, args, parent) {
+      const admitted = parent.workstreamClaimId
+        ? await admitWorkstreamCall(parent.workstreamClaimId)
+        : null;
+      if (!admitted?.ok)
+        return fail(
+          "WORKSTREAM_SETUP_REQUIRED: the workstream this exec call ran under was claimed again while the script " +
+            "was running, so this nested call did not run. Stop the script's work and call the workstream tool with " +
+            'action="continue".',
+        );
+      return dispatchNested(parent, name, args, surface, async () => {
+        const entry = handlers.get(name);
+        return entry
+          ? entry.run(args)
+          : fail("UNKNOWN_TOOL: this tool is not available on this connector.");
+      });
     },
     register(name, config, handler) {
       names.push(name);
+      const gated = gatedHandler(name, ctx.roots, handler as (args: never) => Promise<ToolResult>);
       // The MCP SDK validates wire arguments; a code-mode child arrives without that layer,
       // so it is validated here against the same schema. Zod issues omit input values.
       handlers.set(name, {
         description: config.description,
         run: async (args) => {
           const parsed = await config.inputSchema.safeParseAsync(args);
-          if (parsed.success) return handler(parsed.data);
+          if (parsed.success) return gated(parsed.data as Record<string, unknown>);
           const details = parsed.error.issues
             .slice(0, 3)
-            .map((issue) => `${issue.path.map(String).join('.').slice(0, 80) || 'arguments'}: ${issue.message.slice(0, 300)}`)
-            .join('; ');
+            .map((issue) => `${issue.path.map(String).join(".").slice(0, 80) || "arguments"}: ${issue.message.slice(0, 300)}`)
+            .join("; ");
           return fail(`INVALID_ARGUMENTS: ${details}`);
-        }
+        },
       });
-      // No identity field is ever added here. Every tool's schema is exactly what its
-      // surface declared: who is calling is a fact about the conversation, established from
-      // page evidence in `dispatch`, and never something the model is asked to carry.
-      server?.registerTool(name, config, ((args: never, mcpCtx?: McpCallContext) =>
-        dispatch(name, args, mcpCtx?.sessionId ?? null, requestIdOf(mcpCtx), surface, () =>
-          handler(args)
-        )) as never);
+      if (!server) return;
+      const inputSchema = config.inputSchema.safeExtend({
+        workstream_id: z
+          .string()
+          .min(1)
+          .max(150)
+          .describe(
+            "The identity token returned after this chat registers/claims a logical workstream with the `workstream` setup tool. Reuse it on every ordinary Core/Desktop call under that workstream.",
+          ),
+      });
+      server.registerTool(name, { ...config, inputSchema }, (async (
+        input: Record<string, unknown>,
+        mcpCtx?: McpCallContext,
+      ) => {
+        const { workstream_id, ...args } = input;
+        if (isEmergencyRecoveryCall(name, workstream_id as string)) {
+          logWarn(`EMERGENCY_RECOVERY_BYPASS tool=${name} surface=${surface}`);
+          return dispatch(
+            name,
+            args,
+            mcpCtx?.sessionId ?? null,
+            requestIdOf(mcpCtx),
+            surface,
+            null,
+            null,
+            null,
+            () => handler(args as never),
+          );
+        }
+        const admitted = await admitWorkstreamCall(workstream_id as string);
+        if (!admitted.ok) {
+          if (admitted.code === "WORKSTREAM_BUSY")
+            return fail(
+              "WORKSTREAM_BUSY: a command started by an earlier chat of this workstream is still finishing " +
+                "(usually within a minute), so nothing was run. Spend a minute reading or planning, then repeat this exact " +
+                "call with the same workstream_id. Do not call the workstream tool again.",
+            );
+          return fail(
+            "WORKSTREAM_SETUP_REQUIRED: this workstream_id is missing or out of date (the workstream was claimed " +
+              "again, for example after a restart or by a newer chat), so nothing was run. Call the workstream tool " +
+              'with action="continue" and your workstream name (action="start" only for a brand-new one), then repeat ' +
+              "this call with the workstream_id it returns.",
+          );
+        }
+        return dispatch(
+          name,
+          args,
+          mcpCtx?.sessionId ?? null,
+          requestIdOf(mcpCtx),
+          surface,
+          admitted.id,
+          workstream_id as string,
+          admitted.sessionId,
+          () => gated(args),
+        );
+      }) as never);
     },
     guarded(cap, name, fn) {
       return guard(name, async () => {
         if (!caps[cap]) {
           return fail(
             `TOOL_DISABLED: ${name} is disabled by the current Chat On Steroids permissions. ` +
-              'Ask the user to enable the permission in the app, then retry. If the tool list in this conversation is stale, start a new chat.'
+              "Ask the user to enable the permission in the app, then retry. If the tool list in this conversation is stale, start a new chat.",
           );
         }
         return fn();
@@ -908,9 +1073,9 @@ export function createRegistrar(server: McpServer | null, ctx: ToolContext, surf
     featureDisabled(feature, setting) {
       return fail(
         `FEATURE_DISABLED: ${feature} is switched off in Chat On Steroids. ` +
-          `Ask the user to enable "${setting}" in the app, then try again.`
+          `Ask the user to enable "${setting}" in the app, then try again.`,
       );
-    }
+    },
   };
 }
 
@@ -928,43 +1093,6 @@ export function createRegistrar(server: McpServer | null, ctx: ToolContext, surf
 export const MAX_HANDOFF_CHARS = 400_000;
 
 /**
- * How long a prime-role `agents` call waits for the calling chat to show its own block.
- *
- * The prime holds no credential, so this window *is* its identity, and it has to be
- * evidence from this call: a block rendered after the call began, in exactly one
- * conversation. Shorter than a join because a prime calls `agents` repeatedly during a run
- * and a join happens once, but long enough that a page reporting on its own tick lands
- * inside it. Nothing falls back to "the only chat that has been active lately".
- */
-export const PRIME_EVIDENCE_MS = evidenceWindow(2_500);
-
-/**
- * The same window for a call ChatGPT gave a request id, which is waiting for one exact
- * page record rather than for whichever block turns up.
- *
- * Two and a half seconds was measured too short for the case that matters most: a worker's
- * first `agents` call runs seconds after its tab opened, and on 2026-08-18 worker-1 was
- * told WORKER_IDENTITY_LOST at 16:33:56 with the page evidence for that very call arriving
- * at 16:34:04. The wait is event-driven and ends the instant the mate lands, so the extra
- * seconds are only ever spent by a call that was going to be refused anyway.
- */
-export const IDENTITY_EVIDENCE_MS = evidenceWindow(15_000);
-
-/**
- * The same window again for the two `agents` actions whose refusal cannot be retried cheaply.
- *
- * Everything else that waits for identity is asking about work it can decline and be asked
- * for again a moment later. `spawn` is not: a refused `spawn` ends the turn with
- * no run, and the model's own retry costs the user another full generation — on 2026-08-21 it
- * cost two, and the run still never started. The wait is event-driven and returns the instant
- * the page's request-id mate lands, so a longer ceiling is only ever spent by a call that was
- * going to be refused anyway; against that, the live evidence shows ids arriving twenty
- * seconds after the window that refused them. Kept well inside ChatGPT's own connector
- * timeout, so a slow proof still comes back as a spawned run rather than as a dead call.
- */
-export const SPAWN_EVIDENCE_MS = evidenceWindow(30_000);
-
-/**
  * Recovers the complete text behind a stored field.
  *
  * A long tool argument or result is bounded inline in the log and written whole beside
@@ -974,7 +1102,7 @@ export const SPAWN_EVIDENCE_MS = evidenceWindow(30_000);
  */
 export async function expandStored(
   sessionId: string,
-  stored: StoredText
+  stored: StoredText,
 ): Promise<{ text: string; complete: boolean }> {
   if (!stored.truncated) return { text: stored.text, complete: true };
   if (stored.assetId) {
@@ -988,7 +1116,7 @@ export async function expandStored(
 export function chunkText(text: string, size: number): string[] {
   if (text.length <= size) return [text];
   const parts: string[] = [];
-  let current = '';
+  let current = "";
   for (const block of text.split(/\n{2,}/)) {
     const candidate = current ? `${current}\n\n${block}` : block;
     if (candidate.length <= size) {
@@ -999,12 +1127,13 @@ export function chunkText(text: string, size: number): string[] {
     if (block.length <= size) {
       current = block;
     } else {
-      for (let at = 0; at < block.length; at += size) parts.push(block.slice(at, at + size));
-      current = '';
+      for (let at = 0; at < block.length; at += size)
+        parts.push(block.slice(at, at + size));
+      current = "";
     }
   }
   if (current) parts.push(current);
-  return parts.length > 0 ? parts : [''];
+  return parts.length > 0 ? parts : [""];
 }
 
 /** The per-path header `read` prints. This is what `file_info` used to be. */
@@ -1014,11 +1143,11 @@ export function formatFileInfo(info: FileInfo): string {
     `type: ${info.type}`,
     `size: ${formatBytes(info.bytes)}`,
     `modified: ${info.modified}`,
-    `created: ${info.created}`
+    `created: ${info.created}`,
   ];
-  if (info.readOnly) lines.push('readonly: true');
+  if (info.readOnly) lines.push("readonly: true");
   if (info.binary !== null) lines.push(`binary: ${info.binary}`);
   if (info.lines !== null) lines.push(`lines: ${info.lines}`);
   if (info.sha256) lines.push(`sha256: ${info.sha256}`);
-  return lines.join('\n');
+  return lines.join("\n");
 }

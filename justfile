@@ -131,9 +131,20 @@ state_dir := if os() == "macos" {
 # three it is actually keeping alive. Pass a bigger number, or 0, for the whole history.
 chats hours="24":
     #!/usr/bin/env python3
-    import json, pathlib, time
+    import json, pathlib, sys, time
 
     root = pathlib.Path("{{sessions_dir}}")
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     def describe(row):
         """One line for the newest thing this chat did. `busy` alone says nothing about
@@ -161,7 +172,7 @@ chats hours="24":
             continue  # nothing to address a message to
         session = meta_file.parent
 
-        events = [json.loads(l) for l in (session / "events.jsonl").read_text().splitlines() if l.strip()]
+        events = load_jsonl(session / "events.jsonl")
         # A message is rewritten in its own shard while it streams, so the newest one is not
         # in events.jsonl at all and is often the only thing that happened recently.
         messages = [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
@@ -283,6 +294,17 @@ gpt limit="100" match="" archived="false":
 
 # Archive one conversation in ChatGPT, whether or not it has a tab open
 archive chat:
+    @just _set-archived {{chat}} true archived
+
+# Archiving is how a chat leaves management, and a chat archived on a wrong call is still a
+# live worker: it keeps executing, it just stops being reachable.
+#
+# Bring an archived conversation back into the managed set, so it can be pushed again
+unarchive chat:
+    @just _set-archived {{chat}} false unarchived
+
+[private]
+_set-archived chat flag verb:
     #!/usr/bin/env python3
     import json, subprocess
 
@@ -314,7 +336,7 @@ archive chat:
         '   method: "PATCH",'
         '   headers: {"Content-Type":"application/json", "Authorization":"Bearer " + s.accessToken},'
         '   credentials: "include",'
-        '   body: JSON.stringify({is_archived: true})'
+        '   body: JSON.stringify({is_archived: {{flag}}})'
         " });"
         " return r.status;"
         "})()"
@@ -330,16 +352,27 @@ archive chat:
     except Exception:
         status = None
     if status == 200:
-        print("archived {{chat}}")
+        print("{{verb}} {{chat}}")
     elif status is None:
         raise SystemExit("the tab this ran through did not answer — try again, or open another ChatGPT tab")
     else:
-        raise SystemExit(f"ChatGPT refused the archive with status {status}")
+        raise SystemExit(f"ChatGPT refused the change with status {status}")
 
 # Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
 tabs quiet="30":
     #!/usr/bin/env python3
-    import json, subprocess, pathlib, time, glob
+    import json, subprocess, pathlib, sys, time, glob
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     def dt(path):
         out = subprocess.run(["curl", "-s", "-m", "5", "{{devtools}}" + path],
@@ -358,12 +391,18 @@ tabs quiet="30":
         if not chat:
             continue
         titles[chat] = " ".join((meta.get("title") or "").split())[:38]
-        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows = load_jsonl(meta_file.parent / "events.jsonl")
         rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
 
-    quiet = float("{{quiet}}") * 60
+    try:
+        quiet = float("{{quiet}}") * 60
+    except ValueError:
+        raise SystemExit(
+            'quiet must be a number of minutes, not "{{quiet}}" — '
+            'the parameters are positional: `just tidy 30 "id1,id2"`'
+        )
     now = time.time()
     seen = set()
     for target in targets:
@@ -391,7 +430,18 @@ tabs quiet="30":
 # time — a chat under active management is quiet between pushes, and quiet is not finished.
 tidy quiet="30" keep="":
     #!/usr/bin/env python3
-    import json, subprocess, pathlib, time, glob
+    import json, subprocess, pathlib, sys, time, glob
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     def dt(path):
         out = subprocess.run(["curl", "-s", "-m", "5", "{{devtools}}" + path],
@@ -409,7 +459,7 @@ tidy quiet="30" keep="":
         chat = meta.get("conversationId")
         if not chat:
             continue
-        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows = load_jsonl(meta_file.parent / "events.jsonl")
         rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
@@ -455,7 +505,13 @@ tidy quiet="30" keep="":
         except Exception:
             return None
 
-    quiet = float("{{quiet}}") * 60
+    try:
+        quiet = float("{{quiet}}") * 60
+    except ValueError:
+        raise SystemExit(
+            'quiet must be a number of minutes, not "{{quiet}}" — '
+            'the parameters are positional: `just tidy 30 "id1,id2"`'
+        )
     now = time.time()
     seen = set()
     for target in targets:
@@ -489,13 +545,50 @@ tidy quiet="30" keep="":
     if scratch_id:
         dt("/json/close/" + scratch_id)
 
+    # Every send opens a command tab on bare chatgpt.com, and a send that never redeems leaves
+    # its tab behind. They carry no conversation id, so the loop above never sees them, and they
+    # accumulate one renderer at a time until the host is swapping — which is what kills the
+    # workers' own exec sessions.
+    #
+    # A managed chat's own tab is momentarily bare too, between opening and navigating to the
+    # conversation, and closing one of those takes a live worker off the air. The two look
+    # identical in a single snapshot, so look twice: a tab still bare several seconds later is
+    # not on its way anywhere. Keep the newest survivor as the app's spare.
+    def bare_ids():
+        listing = json.loads(subprocess.run(
+            ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
+        return {t["id"] for t in listing
+                if t.get("type") == "page"
+                and (t.get("url") or "").rstrip("/") == "https://chatgpt.com"
+                and t.get("id") != scratch_id}
+
+    first = bare_ids()
+    if first:
+        time.sleep(8)
+        orphans = sorted(first & bare_ids())
+        for tab in orphans[1:]:
+            dt("/json/close/" + tab)
+        if len(orphans) > 1:
+            print(f"closed {len(orphans) - 1} orphaned command tab(s)")
+
 # What a chat is: driven prime, swarm worker, or nothing the app is still using
 #
 # Paste the id from a tab's URL. Answers the only question a pile of open tabs raises —
 # whether this one is still someone's live work, or a leftover the app has finished with.
 who chat:
     #!/usr/bin/env python3
-    import json, pathlib, time, glob
+    import json, pathlib, sys, time, glob
+
+    def load_jsonl(path):
+        rows = []
+        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+        return rows
 
     home = pathlib.Path.home()
     want = "{{chat}}"
@@ -514,7 +607,7 @@ who chat:
         if meta.get("conversationId") != want:
             continue
         title = " ".join((meta.get("title") or "").split())[:60]
-        rows = [json.loads(l) for l in (meta_file.parent / "events.jsonl").read_text().splitlines() if l.strip()]
+        rows = load_jsonl(meta_file.parent / "events.jsonl")
         rows += [json.loads(open(f).read()) for f in glob.glob(str(meta_file.parent / "messages/*.json"))]
         if rows:
             when = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
@@ -547,46 +640,187 @@ who chat:
 
 # Send a message to an open chat, by conversation id (see `just chats`)
 say $chat $text:
-    @just -f {{justfile()}} _send "$chat" "$text"
+    @just -f {{justfile()}} _send "$chat" "$text" refuse false
 
 # Start a new chat with this opening message
 new $text:
-    @just -f {{justfile()}} _send "" "$text"
+    @just -f {{justfile()}} _send "" "$text" refuse false
+
+# The composer refuses while a turn is in flight, so a turn that will never finish makes the
+# chat unreachable by anything; this is the one thing that gets past it. It also destroys
+# whatever that turn was producing, which is why it is its own verb and never something `say`
+# decides to do — a chat that is merely working is a chat to leave alone. Read
+# `just state <chat>` first: it says how long the turn has been open, and when the recording
+# last actually changed.
+
+# Stop the turn that chat is running, then send this message — for a turn that will not end
+interrupt $chat $text:
+    @just -f {{justfile()}} _send "$chat" "$text" stop_first false
+
+# For a document alive enough to poll but stuck behind a turn its renderer will never resolve:
+# the state where a person would press reload. The reload is offered once, before the message
+# is typed, and only while nothing has claimed the send yet. A renderer frozen hard enough not
+# to poll at all is not reachable this way; the extension recycles those tabs itself.
+
+# Reload that chat's page, then send this message — for a tab that is stuck rather than busy
+revive $chat $text:
+    @just -f {{justfile()}} _send "$chat" "$text" refuse true
+
+# What that chat's turn is doing right now, from the live recorder rather than from disk
+state chat:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    token=$(cat "{{state_dir}}/local-token")
+    for port in 8765 8766 8767 8768 8769; do
+        # A stalled bridge is not an absent one; see the note in `_send`.
+        if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+            curl -fsS --connect-timeout 5 -m 45 -G "http://127.0.0.1:$port/conversation/status" \
+                --data-urlencode "conversationId={{chat}}" \
+                -H "authorization: Bearer $token" | jq .
+            exit 0
+        fi
+    done
+    echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
+    exit 1
 
 # POST one message to the running app's bridge. Empty chat means a fresh one.
-_send $chat $text:
+#
+# `mode` is what the send may do to a turn already running: `refuse` never interrupts one and
+# refuses immediately when the recorder already knows that chat is generating; it is what every
+# ordinary push uses. `stop_first` presses Stop first. `reload` reloads the page holding the
+# chat once before typing. Both extras need a named chat.
+_send $chat $text mode="refuse" reload="false":
     #!/usr/bin/env bash
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
     # Built by jq, never by string interpolation: a message is arbitrary prose and will
     # contain the quotes, newlines and backslashes that hand-built JSON gets wrong.
-    body=$(jq -nc --arg c "$chat" --arg t "$text" \
-        'if $c == "" then { text: $t } else { conversationId: $c, text: $t } end')
+    body=$(jq -nc --arg c "$chat" --arg t "$text" --arg m "{{mode}}" --argjson r {{reload}} \
+        'if $c == "" then { text: $t } else { conversationId: $c, text: $t, ifGenerating: $m, reloadFirst: $r } end')
     for port in 8765 8766 8767 8768 8769; do
         # /hello is unauthenticated and names the app, so it is how a local caller finds
         # which of the five candidate ports this app actually bound.
-        if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
-            accepted=$(curl -fsS -m 10 "http://127.0.0.1:$port/send" \
-                -H "authorization: Bearer $token" \
-                -H 'content-type: application/json' \
-                --data-binary "$body")
+        #
+        # Split into a connect deadline and a response deadline, because the two failures are
+        # nothing alike. A port nothing is listening on refuses the connection in under a
+        # millisecond, so hunting the other four costs nothing. A port this app *is* bound to
+        # can take far longer than a second to answer: sampled 2026-09-10, 60 consecutive
+        # /hello probes against a healthy daemon returned a median of ~100ms, one at 6.3s and
+        # one that never answered inside 30s. Under the old flat `-m 1` those stalls fell out
+        # of the loop as if no app were listening, and `say` reported "is the app running?"
+        # about a running app — four times in five on an idle chat. A false liveness verdict
+        # is worse than a slow one: it is the reading that makes the send path look dead.
+        if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+            # A sleep-managed chat answers 409 with a typed reason, a next-check hint and the
+            # concrete next action. `curl -f` threw all three away and left the caller a bare
+            # `curl: (22)` — indistinguishable from a dead app, a bad token or a wedged
+            # composer, which is exactly the blindness that sent a steward off to drive
+            # composers over CDP. Read the body, relay what it says, and honour the documented
+            # contract by waiting for the wake instead of failing the push.
+            #
+            # Bounded, because waiting forever is its own kind of lie: 25 minutes is longer
+            # than the app's own fallback wake horizon, so a chat still refusing past it is
+            # stuck rather than busy and the steward is told to go look.
+            waited=0
+            while :; do
+                # Same split, and the transport failure is retried rather than fatal: the app
+                # stalling for longer than this deadline is a slow app, not a refused send, and
+                # aborting the whole push on one slow response threw away a message the bridge
+                # had every intention of accepting.
+                answer=$(curl -sS --connect-timeout 5 -m 60 -w '\n%{http_code}' "http://127.0.0.1:$port/send" \
+                    -H "authorization: Bearer $token" \
+                    -H 'content-type: application/json' \
+                    --data-binary "$body" || printf '\n000')
+                code=$(tail -n1 <<<"$answer")
+                accepted=$(sed '$d' <<<"$answer")
+                if [[ "$code" == "200" ]]; then break; fi
+                if [[ "$code" == "000" ]]; then
+                    if (( waited >= 1500 )); then
+                        echo "gave up after ${waited}s: the app never answered POST /send inside its deadline." >&2
+                        exit 1
+                    fi
+                    echo "note: the app did not answer POST /send in time; it is stalled rather than gone. Retrying." >&2
+                    sleep 10
+                    waited=$(( waited + 10 ))
+                    continue
+                fi
+                reason=$(jq -r '.reason // .error // empty' <<<"$accepted" 2>/dev/null || true)
+                if [[ "$code" != "409" || ( "$reason" != "sleeping" && "$reason" != "waking" ) ]]; then
+                    echo "the app refused this send (HTTP $code): ${reason:-no reason given}" >&2
+                    jq -r '.message // empty' <<<"$accepted" 2>/dev/null >&2 || true
+                    exit 1
+                fi
+                if (( waited == 0 )); then
+                    echo "note: that chat is $reason — the app discarded its tab after the last verified push and is the only driver allowed to type into it. Waiting." >&2
+                fi
+                if (( waited >= 1500 )); then
+                    echo "gave up after ${waited}s: the chat is still '$reason', which is longer than a healthy sleep lasts." >&2
+                    echo "Read GET /sleep/status — if its nextCheckAt keeps moving away while lastCallAt keeps advancing, its session key is bound to another chat's call stream." >&2
+                    exit 1
+                fi
+                hint=$(jq -r '((.nextCheckHintMs // 15000) / 1000) | floor' <<<"$accepted")
+                if (( hint > 30 )); then hint=30; fi
+                if (( hint < 5 )); then hint=5; fi
+                sleep "$hint"
+                waited=$(( waited + hint ))
+            done
             id=$(jq -r '.command.id' <<<"$accepted")
             pending=$(jq -r '.pendingTools' <<<"$accepted")
 
-            # Accepting the message only queues it. The browser still has to open the chat,
-            # find a composer it may type into, and send — and it fails outright if that chat
-            # is mid-turn. Reporting "sent" at the queue is how a caller ends up believing a
-            # message landed when nothing was typed, so wait for the real outcome instead.
-            # Wait for the receipt the browser writes once it has actually typed. Waiting for
-            # the command to leave the queue instead looks equivalent and is not: the queue is
-            # persisted a moment after the POST returns, so a command that has not been written
-            # yet is indistinguishable from one already finished, and every send reports failure.
-            # The app gives up on a command after 90s, so no receipt by then means it never sent.
+            # Accepting the message only queues it, and even a page click receipt is not
+            # delivery: in a background tab the send button reports enabled and the click
+            # silently no-ops. The only success is the app confirming a fresh turn_start in
+            # the recording, which is what GET /send/outcome reports — poll it to terminal.
+            horizon=$(jq -r '.verifyHorizonMs // 90000' <<<"$accepted")
+            if [[ "$pending" != "0" && "$pending" != "null" ]]; then
+                echo "note: $pending local tool call(s) in flight; the page will not type until they settle." >&2
+                # Which calls, and how old. A call a few seconds in is an agent working and the
+                # wait is correct; a call an hour in is a fact only the steward can act on, and
+                # a bare count hides the difference. `unplaced` is the one charged to every chat.
+                jq -r '.inFlightCalls[]? | "      \(.tool) \((.ageMs / 1000) | floor)s \(.attribution) \(.conversationId // "unplaced")"' \
+                    <<<"$accepted" >&2 2>/dev/null || true
+            fi
+            probe=$(curl -sS --connect-timeout 5 -m 45 -o /dev/null -w '%{http_code}' \
+                "http://127.0.0.1:$port/send/outcome?id=$id" -H "authorization: Bearer $token" || echo 000)
+            if [[ "$probe" == "200" ]]; then
+                deadline=$(( $(date +%s) + 90 + horizon / 1000 + 30 ))
+                while :; do
+                    # A slow answer is not a lost send: an empty reply keeps the poll in its
+                    # current state and tries again, which is what the deadline below is for.
+                    out=$(curl -fsS --connect-timeout 5 -m 45 "http://127.0.0.1:$port/send/outcome?id=$id" \
+                        -H "authorization: Bearer $token" || echo '{}')
+                    state=$(jq -r '.state // empty' <<<"$out")
+                    case "$state" in
+                        sent_verified)
+                            conv=$(jq -r '.conversationId' <<<"$out")
+                            ts=$(( $(jq -r '.turnStartTs' <<<"$out") / 1000 ))
+                            echo "delivered to $conv — turn_start at $(date -d "@$ts" +%H:%M:%S 2>/dev/null || echo "$ts")"
+                            exit 0 ;;
+                        queued|delivering|typed|"")
+                            ;;
+                        *)
+                            # Terminal without proof of delivery. The app states the cause and
+                            # the concrete next action; relay both instead of a bare failure.
+                            echo "$state: $(jq -r '.reason // .message // empty' <<<"$out")" >&2
+                            hint=$(jq -r '.message // empty' <<<"$out")
+                            [[ -n "$hint" ]] && echo "$hint" >&2
+                            exit 1 ;;
+                    esac
+                    if (( $(date +%s) >= deadline )); then
+                        echo "gave up polling in state '${state:-unknown}'. $(jq -r '.message // empty' <<<"$out")" >&2
+                        exit 1
+                    fi
+                    sleep 1
+                done
+            fi
+            # The running app predates /send/outcome (it activates on its next restart).
+            # Fall back to the receipt the browser writes once it has actually typed — the
+            # old contract: no receipt within the 90s command deadline means it never sent.
             state="{{state_dir}}/bridge-commands.json"
             for _ in $(seq 1 180); do
                 landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null || true)
                 if [[ -n "$landed" ]]; then
-                    echo "typed into $landed"
+                    echo "typed into $landed (unverified: this app build cannot confirm turn_start; restart onto the new build for verified sends)"
                     exit 0
                 fi
                 sleep 1
@@ -683,3 +917,7 @@ install:
         echo "installed, but the bridge did not come back within 30s; start the app yourself." >&2
         exit 1
     fi
+
+# Refresh the read-only steward workstream dashboard from live repository state.
+steward-dashboard *args:
+    python3 scripts/generate-steward-dashboard.py {{args}}

@@ -21,10 +21,10 @@
  * Two surfaces pass that test today.
  */
 
-import type { Capabilities } from '../../shared/types.js';
-import { desktopAutomationSupported } from '../platform.js';
+import type { Capabilities } from "../../shared/types.js";
+import { desktopAutomationSupported } from "../platform.js";
 
-export const SURFACE_IDS = ['core', 'desktop'] as const;
+export const SURFACE_IDS = ["core", "desktop"] as const;
 export type SurfaceId = (typeof SURFACE_IDS)[number];
 
 /**
@@ -34,7 +34,7 @@ export type SurfaceId = (typeof SURFACE_IDS)[number];
  * name and the setup cards, and those three drifting apart is how a user ends up with
  * a connector whose name does not match the thing the instructions told them to type.
  */
-export const CONNECTOR_BRAND = 'Chat On Steroids';
+export const CONNECTOR_BRAND = "Chat On Steroids";
 
 export interface SurfaceDefinition {
   id: SurfaceId;
@@ -69,10 +69,9 @@ export interface SurfaceDefinition {
   /**
    * Every tool this surface can ever advertise, in listing order.
    *
-   * The authority for tests, for the setup UI's "what you get" list, and for the
-   * cross-surface leakage assertions. A tool that appears here and nowhere else is a
-   * bug in one direction; a tool registered on a server that does not name it here is
-   * a bug in the other.
+   * The authority for the setup UI's "what you get" list and server registration. A tool
+   * that appears here and nowhere else is a bug in one direction; a tool registered on a
+   * server that does not name it here is a bug in the other.
    */
   tools: readonly string[];
 }
@@ -91,23 +90,36 @@ export interface SurfaceDefinition {
  *    it here. A dedicated connector for one conditional schema is pure setup overhead with
  *    no discovery benefit.
  *
- * Core declares 8 possible tool names below, but at most 7 schemas are live at once. `find`
+ * Core declares 9 possible tool names below, but at most 8 schemas are live at once. `find`
  * and the exec pair are mutually exclusive — `find` exists only when command execution is
- * off — so no runtime tools/list reaches all 8 declarations.
+ * off — so no runtime tools/list reaches all 9 declarations. `workstream` is the one
+ * unscoped setup tool and is always advertised alongside the ordinary tools.
  */
 const CORE: SurfaceDefinition = {
-  id: 'core',
-  serverName: 'chat-on-steroids-core',
+  id: "core",
+  serverName: "chat-on-steroids-core",
   connectorName: `${CONNECTOR_BRAND} Core`,
   description:
-    'Read and edit code and text files on this computer, and run commands in a real terminal. ' +
-    'Use for: opening and reading files, searching a repository, applying patches, creating, renaming and deleting files, ' +
-    'running builds, tests, linters, git, npm and shell commands, and continuing long-running or interactive terminal sessions. ' +
-    'Also searches and reads local recordings of previous or concurrently running ChatGPT work, and — when the user has ' +
-    'enabled it — spawns and coordinates worker agents, subagents or a parallel swarm across several ChatGPT conversations.',
-  cardSummary: 'Files, patches and the terminal. Required — this is the coding connector.',
+    "Read and edit code and text files on this computer, and run commands in a real terminal. " +
+    "Use for: opening and reading files, searching a repository, applying patches, creating, renaming and deleting files, " +
+    "running builds, tests, linters, git, npm and shell commands, and continuing long-running or interactive terminal sessions. " +
+    "Also searches and reads local recordings of previous or concurrently running ChatGPT work, and — when the user has " +
+    "enabled it — spawns and coordinates worker agents, subagents or a parallel swarm across several ChatGPT conversations.",
+  cardSummary:
+    "Files, patches and the terminal. Required — this is the coding connector.",
   required: true,
-  tools: ['read', 'view_image', 'find', 'apply_patch', 'exec_command', 'write_stdin', 'session', 'agents', 'exec']
+  tools: [
+    "workstream",
+    "read",
+    "view_image",
+    "find",
+    "apply_patch",
+    "exec_command",
+    "write_stdin",
+    "session",
+    "agents",
+    "exec",
+  ],
 };
 
 /**
@@ -121,21 +133,24 @@ const CORE: SurfaceDefinition = {
  * want.
  */
 const DESKTOP: SurfaceDefinition = {
-  id: 'desktop',
-  serverName: 'chat-on-steroids-desktop',
+  id: "desktop",
+  serverName: "chat-on-steroids-desktop",
   connectorName: `${CONNECTOR_BRAND} Desktop`,
   description:
-    'See and control this Windows desktop, including its clipboard. ' +
-    'Use for: taking a screenshot, reading what is on screen, listing and finding windows, inspecting buttons, fields and other UI controls, ' +
-    'clicking, typing, pressing keys, scrolling and dragging in any Windows application, ' +
-    'and reading the clipboard or copying and pasting text between programs.',
+    "See and control this Windows desktop, including its clipboard. " +
+    "Use for: taking a screenshot, reading what is on screen, listing and finding windows, inspecting buttons, fields and other UI controls, " +
+    "clicking, typing, pressing keys, scrolling and dragging in any Windows application, " +
+    "and reading the clipboard or copying and pasting text between programs.",
   cardSummary:
-    'Screenshots, windows, mouse/keyboard control and the clipboard. Optional — connect it only if you want desktop automation.',
+    "Screenshots, windows, mouse/keyboard control and the clipboard. Optional — connect it only if you want desktop automation.",
   required: false,
-  tools: ['observe', 'computer']
+  tools: ["observe", "computer"],
 };
 
-export const SURFACES: Record<SurfaceId, SurfaceDefinition> = { core: CORE, desktop: DESKTOP };
+export const SURFACES: Record<SurfaceId, SurfaceDefinition> = {
+  core: CORE,
+  desktop: DESKTOP,
+};
 
 export const SURFACE_LIST: readonly SurfaceDefinition[] = [CORE, DESKTOP];
 
@@ -157,12 +172,15 @@ export function surfaceDefinition(id: SurfaceId): SurfaceDefinition {
 export function surfaceIsUseful(
   id: SurfaceId,
   caps: Capabilities,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
 ): boolean {
   // Clipboard counts: it is reached through `computer`, so granting only the clipboard
   // still gives this surface something real to advertise.
-  if (id === 'desktop') {
-    return desktopAutomationSupported(platform) && (caps.screen || caps.control || caps.clipboardRead || caps.clipboardWrite);
+  if (id === "desktop") {
+    return (
+      desktopAutomationSupported(platform) &&
+      (caps.screen || caps.control || caps.clipboardRead || caps.clipboardWrite)
+    );
   }
   return true;
 }

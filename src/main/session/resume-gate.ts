@@ -75,8 +75,3 @@ export function resumeOpeningChat(now: number = Date.now()): boolean {
   }
   return false;
 }
-
-/** Test seam. */
-export function resetResumeGate(): void {
-  claims.clear();
-}

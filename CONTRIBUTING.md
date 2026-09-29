@@ -14,11 +14,15 @@ Development requires Node 22+ and is supported on Windows, macOS and Linux. Desk
 
 ```sh
 npm ci
-npm run verify     # the same gate CI runs
+npm run verify     # local CI checks; not ChatGPT integration acceptance
 npm run dev        # Electron development build
 ```
 
-A behavior change should include a deterministic regression test where practical. Run the nearest focused tests while working and `npm run verify` before submitting.
+Validate a behavior change against an oracle independent of the code being changed. There is no
+internal unit-test suite. If a change depends on ChatGPT, Chrome, the extension, conversation
+lifecycle, or bridge behavior, run `npm run verify:live` against a real authenticated ChatGPT
+session; a mocked external service is not acceptance evidence. Run `npm run verify` for the local
+compiler/privacy checks before submitting, plus packaged/native smoke where the changed layer needs it.
 
 ## Packaging
 

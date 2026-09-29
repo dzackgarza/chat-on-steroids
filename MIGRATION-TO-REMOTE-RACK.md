@@ -205,13 +205,18 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/dzack
 Environment=HOME=/home/dzack
-ExecStart=/usr/bin/xvfb-run -a /home/dzack/.local/share/browsers/chrome/linux-152.0.7977.82/chrome-linux64/chrome --no-sandbox --disable-setuid-sandbox --remote-debugging-port=9222 --user-data-dir=/home/dzack/.config/chrome-cos --load-extension=/home/dzack/gitclones/chat-on-steroids/extension --disable-gpu --no-first-run https://chatgpt.com/
+ExecStart=/usr/bin/xvfb-run -a /home/dzack/.local/share/browsers/chrome/linux-152.0.7977.82/chrome-linux64/chrome --no-sandbox --disable-setuid-sandbox --remote-debugging-port=9222 --user-data-dir=/home/dzack/.config/chrome-cos --load-extension=/home/dzack/gitclones/chat-on-steroids/extension --enable-unsafe-extension-debugging --disable-gpu --no-first-run https://chatgpt.com/
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 ```
+
+`--enable-unsafe-extension-debugging` is required for this development deployment because the
+companion is loaded unpacked. Current Chromium otherwise disables unpacked extensions when the
+profile's Extensions Developer mode is off, leaving existing content-script worlds invalidated and
+new ChatGPT tabs without the companion at all.
 
 ### Shepherding Operations on Rack
 
@@ -344,4 +349,3 @@ print(\"Remote auth state:\", res)
 ```
 
 Successful output indicates `hasToken: true` with the authenticated email address.
-

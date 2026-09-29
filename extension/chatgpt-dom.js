@@ -11,8 +11,9 @@
  *     data-message-author-role, data-interrupted, data-testid)
  *   · `.markdown` for assistant prose when the current renderer supplies no assistant
  *     data-message-id; progress markdown under data-interrupted is excluded
- *   · the id #prompt-textarea on the composer, and the send/stop/dictation buttons beside
- *     it, which is where our own composer control is anchored
+ *   · the composer: #prompt-textarea, or the ProseMirror textbox inside
+ *     form[data-chatgpt-composer] on the newer build, and the send/stop/dictation buttons
+ *     beside it, which is where our own composer control is anchored
  *   · one structural tool-message class substring, plus a display-contents row shape that
  *     is confirmed structurally (short header line, no prose) before it is believed
  *
@@ -24,6 +25,17 @@
 
 var CLF_DOM = (() => {
   const TURN = 'section[data-testid^="conversation-turn"]';
+  /**
+   * ChatGPT's 2026-09-27 frontend (html[data-codex-window-type]) has no turn sections. One
+   * `[data-turn-key]` block holds an exchange, and each role is a unit keyed
+   * `<turn>:<n>:user|assistant` by the page's own search index. Message ids live on
+   * `data-chatgpt-search-message-ids` (user) and `data-chatgpt-selection-message-id`
+   * (assistant); the assistant node also names the server conversation id.
+   */
+  const UNIT = '[data-turn-key] [data-chatgpt-search-unit-key], [data-turn-key] [data-content-search-unit-key]';
+  const unitKey = (node) =>
+    node.getAttribute('data-chatgpt-search-unit-key') || node.getAttribute('data-content-search-unit-key') || '';
+  const ASSISTANT_PROSE = '.markdown, [data-markdown-text-style="assistant-message"]';
   // ChatGPT has used both shapes in the live renderer: the older tool-message span
   // and, as of 2026-08-15, a display-contents row wrapping the visible tool label.
   // Keep both explicit structural anchors; hashed CSS-module names remain off limits.
@@ -48,7 +60,8 @@ var CLF_DOM = (() => {
   const CONNECTOR = '[aria-label="Open tool call list" i]';
   const STOP =
     'button[data-testid="stop-button"], button[data-testid="composer-stop-button"], ' +
-    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"]';
+    'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], ' +
+    'form[data-chatgpt-composer] button[aria-label^="Stop" i]';
   const SEND = 'button[data-testid="send-button"], form button[aria-label^="Send" i]';
   /** The composer's own trailing controls, where the send and dictation buttons live. */
   const TRAILING =
@@ -66,7 +79,10 @@ var CLF_DOM = (() => {
    * recent renderers also used the explicit test id below.
    */
   const COMPLETION_ACTION =
-    'button[data-testid="copy-turn-action-button"], button[aria-label="Copy message" i]';
+    'button[data-testid="copy-turn-action-button"], button[aria-label="Copy message" i]' +
+    // 2026-09-27 frontend: the assistant action bar's copy button is labelled plain "Copy";
+    // "Copy message" there belongs to the user message.
+    ', .turn-action-controls button[aria-label="Copy" i]';
 
   const safe = (fn, fallback) => {
     try {
@@ -164,7 +180,7 @@ var CLF_DOM = (() => {
         if (parts.length > 0) return parts.join('\n');
       }
       if (role === 'assistant') {
-        const parts = [...node.querySelectorAll('.markdown')]
+        const parts = [...node.querySelectorAll(ASSISTANT_PROSE)]
           .filter((part) => !(part.closest && part.closest('[data-interrupted]')))
           .filter((part) => !(part.closest && part.closest(TOOL)))
           .map((part) => text(part))
@@ -260,8 +276,22 @@ var CLF_DOM = (() => {
   /** The conversation this tab is on, or null for a chat that has not been sent yet. */
   function conversationId() {
     return safe(() => {
-      const match = /^\/c\/([0-9a-f-]{8,64})/i.exec(location.pathname);
-      return match ? match[1] : null;
+      // ChatGPT now uses legacy UUID routes, WEB:<uuid> routes and (since 2026-09-27)
+      // local-chatgpt:<uuid> routes, percent-encoded in the path, for real authored
+      // conversations. The prefix is part of the conversation id and must survive intact
+      // through recording/controller routing. An unrecognised route left every fresh chat
+      // unbound, so the app replaced working chats every two minutes.
+      const match = /^\/c\/((?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64})/i.exec(decodeURIComponent(location.pathname));
+      if (!match) return null;
+      // A local-chatgpt:<uuid> route is never rewritten in the URL; the page names the server
+      // conversation on its rendered assistant messages instead. Reporting it is the
+      // provisional -> server promotion that WEB: routes get from their URL rewrite.
+      if (/^local-chatgpt:/i.test(match[1])) {
+        const named = document.querySelector('[data-chatgpt-selection-conversation-id]');
+        const server = named && named.getAttribute('data-chatgpt-selection-conversation-id');
+        if (server && /^[0-9a-f-]{8,64}$/i.test(server)) return server;
+      }
+      return match[1];
     }, null);
   }
 
@@ -286,8 +316,32 @@ var CLF_DOM = (() => {
    * Group only sections that explicitly share role + id; id-less sections stay
    * independent because merging those would be a guess.
    */
+  /** Role units of the 2026-09-27 layout, newest last, one per unit key. */
+  function unitTurns() {
+    const out = [];
+    const byKey = new Set();
+    for (const node of document.querySelectorAll(UNIT)) {
+      const key = unitKey(node);
+      const role = /:(user|assistant)$/.exec(key)?.[1];
+      // The same unit key appears on nested wrappers; document order puts the outermost first.
+      if (!role || byKey.has(key)) continue;
+      byKey.add(key);
+      const idNode =
+        role === 'assistant'
+          ? node.querySelector('[data-chatgpt-selection-message-id]')
+          : node.closest('[data-chatgpt-search-message-ids]') || node.querySelector('[data-chatgpt-search-message-ids]');
+      const id =
+        (role === 'assistant'
+          ? idNode && idNode.getAttribute('data-chatgpt-selection-message-id')
+          : idNode && (idNode.getAttribute('data-chatgpt-search-message-ids') || '').split(/\s+/)[0]) || key;
+      out.push({ node, nodes: [node], id, role, unitKey: key });
+    }
+    return out;
+  }
+
   function turns() {
     return safe(() => {
+      if (document.querySelector('[data-turn-key]')) return unitTurns();
       const out = [];
       const byKey = new Map();
       for (const node of document.querySelectorAll(TURN)) {
@@ -322,6 +376,7 @@ var CLF_DOM = (() => {
    */
   function presentationTurns() {
     return safe(() => {
+      if (document.querySelector('[data-turn-key]')) return unitTurns();
       const out = [];
       let previous = null;
       for (const node of document.querySelectorAll(TURN)) {
@@ -375,6 +430,18 @@ var CLF_DOM = (() => {
       const out = [];
       const nodes = turnNodes(turn);
       let explicit = 0;
+      if (turn.unitKey && turn.id && turn.id !== turn.unitKey && !seen.has(turn.id)) {
+        seen.add(turn.id);
+        explicit++;
+        out.push({
+          id: turn.id,
+          role: turn.role,
+          text: messageText(turn.node, turn.role),
+          turnId: turn.id,
+          node: turn.node,
+          interrupted: interrupted(turn)
+        });
+      }
       for (const section of nodes) {
         for (const node of section.querySelectorAll('[data-message-id]')) {
           const id = node.getAttribute('data-message-id');
@@ -403,7 +470,7 @@ var CLF_DOM = (() => {
       if (turn.role === 'assistant' && explicit === 0) {
         const parts = [];
         for (const section of nodes) {
-          for (const markdown of section.querySelectorAll('.markdown')) {
+          for (const markdown of section.querySelectorAll(ASSISTANT_PROSE)) {
             if (markdown.closest && markdown.closest('[data-interrupted]')) continue;
             if (markdown.closest && markdown.closest(TOOL)) continue;
             if (markdown.closest && markdown.closest(OWN_SURFACES)) continue;
@@ -445,6 +512,15 @@ var CLF_DOM = (() => {
    */
   function completionAction(turn) {
     return safe(() => {
+      if (turn && turn.unitKey && turn.node) {
+        // The 2026-09-27 layout puts the action bar beside the assistant unit, inside the
+        // exchange's [data-turn-key] block: take the first action that follows this unit.
+        const block = turn.node.closest('[data-turn-key]');
+        for (const action of block ? block.querySelectorAll(COMPLETION_ACTION) : []) {
+          if (turn.node.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING) return action;
+        }
+        return null;
+      }
       for (const section of turnNodes(turn)) {
         const action = section && section.querySelector ? section.querySelector(COMPLETION_ACTION) : null;
         if (action) return action;
@@ -1076,7 +1152,7 @@ var CLF_DOM = (() => {
       for (const turn of turns()) {
         if (turn.role !== 'assistant') continue;
         for (const section of turnNodes(turn)) {
-          for (const markdown of section.querySelectorAll('.markdown')) {
+          for (const markdown of section.querySelectorAll(ASSISTANT_PROSE)) {
             const value = text(markdown, 500).replace(/\s+/g, ' ').trim();
             if (!value || !transportFailure(value) || texts.has(value)) continue;
             texts.add(value);
@@ -1141,8 +1217,41 @@ var CLF_DOM = (() => {
     }, '');
   }
 
+  /**
+   * Clicks the acknowledgement on ChatGPT's own blocking dialog (never one of ours).
+   *
+   * ChatGPT's "You're making requests too quickly … temporarily limited access" notice clears
+   * within about 30 s once acknowledged; left open it blocks the composer indefinitely.
+   * Prefers an explicit acknowledgement label, else a dialog's only button.
+   */
+  function acknowledgeBlockingDialog() {
+    return safe(() => {
+      for (const node of document.querySelectorAll('[role="dialog"]')) {
+        if (node.closest && node.closest(OWN_SURFACES)) continue;
+        if (!displayed(node)) continue;
+        const buttons = [...node.querySelectorAll('button')].filter((b) => displayed(b) && !b.disabled);
+        const label = (b) => (b.innerText || b.getAttribute('aria-label') || '').trim();
+        const ack =
+          buttons.find((b) => /^(got it|ok|okay|close|dismiss|continue|try again)$/i.test(label(b))) ||
+          (buttons.length === 1 ? buttons[0] : null);
+        if (ack) {
+          ack.click();
+          return true;
+        }
+      }
+      return false;
+    }, false);
+  }
+
+  // ChatGPT serves two composer builds at once. The older one carries #prompt-textarea; the home
+  // page rolled out 2026-09-25 renders a ProseMirror textbox with no id inside
+  // form[data-chatgpt-composer]. Matching only the id left every fresh chat with "no usable
+  // composer" and stopped all workstream replacements and worker bootstraps.
+  const COMPOSER_SELECTOR =
+    '#prompt-textarea, form[data-chatgpt-composer] div[contenteditable="true"][role="textbox"]';
+
   function composer() {
-    return safe(() => document.querySelector('#prompt-textarea'), null);
+    return safe(() => document.querySelector(COMPOSER_SELECTOR), null);
   }
 
   /**
@@ -1154,12 +1263,15 @@ var CLF_DOM = (() => {
    * Keeping the emptiness check here also makes it impossible for a revival waiter to "reserve"
    * the composer by inserting its text before the page is actually ready.
    */
-  function composerSubmitReady() {
+  function composerSubmitReady(ignoreDraft = false) {
     return safe(() => {
       const box = composer();
       if (!box || !box.isConnected) return false;
       if (generating() || stopButton()) return false;
-      if ((box.textContent || '').trim() !== '') return false;
+      // `ignoreDraft` is for one caller only: the revival/send waiter that has proven the
+      // draft static and is about to compare it against the app's own typed-text ledger.
+      // Everything that types unconditionally keeps the empty-composer requirement.
+      if (!ignoreDraft && (box.textContent || '').trim() !== '') return false;
       if (box.getAttribute('aria-disabled') === 'true') return false;
       if (box.getAttribute('contenteditable') === 'false') return false;
       return true;
@@ -1246,6 +1358,11 @@ var CLF_DOM = (() => {
   function firstUserMessage() {
     return safe(() => {
       for (const turn of turns()) {
+        if (turn.unitKey) {
+          if (turn.role === 'assistant') return null;
+          if (turn.role === 'user') return turn.node;
+          continue;
+        }
         for (const section of turnNodes(turn)) {
           for (const node of section.querySelectorAll('[data-message-id]')) {
             const role = node.getAttribute('data-message-author-role') || turn.role;
@@ -1371,28 +1488,127 @@ var CLF_DOM = (() => {
     }, false);
   }
 
-  /** Types into the composer. Refuses if the user already has a draft there. */
-  function insertPrompt(value) {
+  /**
+   * Empties the composer, and reports whether it really is empty afterwards.
+   *
+   * Only ever called on a draft the caller has already proven to be this app's own — a text
+   * the bridge's ledger says the app itself asked to type, left unsent by a background-tab
+   * click that silently no-opped. Clearing user writing is never this function's business;
+   * the caller owns that proof, this owns only the editing mechanics.
+   */
+  function clearComposer() {
     return safe(() => {
       const box = composer();
       if (!box) return false;
-      if ((box.textContent || '').trim() !== '') return false;
+      if ((box.textContent || '').trim() === '') return true;
       box.focus();
-      // execCommand still produces the native editing path ChatGPT listens for. Newer
-      // composer builds occasionally ignore its return value, so verify the DOM and
-      // also emit input so React cannot miss the mutation.
-      document.execCommand('insertText', false, value);
-      box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
-      return (box.textContent || '').trim().length > 0;
+      // The same native editing path insertPrompt() uses, so React observes the mutation.
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+      if ((box.textContent || '').trim() !== '') {
+        // Some composer builds ignore execCommand deletion; fall back to replacing the
+        // children and telling React explicitly.
+        box.replaceChildren();
+      }
+      box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+      return (box.textContent || '').trim() === '';
     }, false);
+  }
+
+  let lastInsertPromptDebug = null;
+  let lastSendDebug = null;
+
+  /** Types into the composer. Refuses if the user already has a draft there. */
+  function insertPrompt(value) {
+    return safe(() => {
+      lastInsertPromptDebug = null;
+      const typeInto = (box) => {
+        if (!box || !box.isConnected) {
+          lastInsertPromptDebug = { stage: 'host-missing-or-disconnected' };
+          return false;
+        }
+        if ((box.textContent || '').trim() !== '') {
+          lastInsertPromptDebug = {
+            stage: 'host-not-empty',
+            chars: (box.textContent || '').length
+          };
+          return false;
+        }
+        box.focus();
+        // An empty ProseMirror host does not reliably receive a caret merely because focus()
+        // returned, especially while hydration is replacing the editor node. Put the selection
+        // inside the exact host before using the native editing path.
+        const selection = window.getSelection();
+        if (selection) {
+          const range = document.createRange();
+          range.selectNodeContents(box);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        const execResult = document.execCommand('insertText', false, value);
+        box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+        const chars = (box.textContent || '').trim().length;
+        const selectionAfter = window.getSelection();
+        const success = box.isConnected && chars > 0;
+        lastInsertPromptDebug = {
+          stage: success ? 'inserted' : 'native-insert-no-text',
+          execResult,
+          connected: box.isConnected,
+          chars,
+          active: document.activeElement === box,
+          selectionInside:
+            Boolean(
+              selectionAfter?.anchorNode &&
+              (selectionAfter.anchorNode === box || box.contains(selectionAfter.anchorNode))
+            ),
+          contentEditable: box.getAttribute('contenteditable')
+        };
+        return success;
+      };
+
+      const first = composer();
+      if (!first || (first.textContent || '').trim() !== '') {
+        lastInsertPromptDebug = {
+          stage: !first ? 'initial-host-missing' : 'initial-host-not-empty',
+          chars: first ? (first.textContent || '').length : 0
+        };
+        return false;
+      }
+      if (typeInto(first)) return true;
+
+      // focus()/selection can synchronously cause ChatGPT to replace the ProseMirror host.
+      // Retry once only when a different, still-empty editor has taken its place. Never retry
+      // over text: that could be a user draft created during the replacement.
+      const replacement = composer();
+      if (!replacement || replacement === first) {
+        lastInsertPromptDebug = {
+          ...(lastInsertPromptDebug || {}),
+          replacement: !replacement ? 'missing' : 'same'
+        };
+        return false;
+      }
+      return typeInto(replacement);
+    }, false);
+  }
+
+  function insertPromptDebug() {
+    return lastInsertPromptDebug ? { ...lastInsertPromptDebug } : null;
   }
 
   async function send() {
     try {
+      lastSendDebug = null;
       const box = composer();
-      if (!box) return false;
+      if (!box) {
+        lastSendDebug = { stage: 'composer-missing' };
+        return false;
+      }
       const submitted = (box.textContent || '').trim();
-      if (!submitted) return false;
+      if (!submitted) {
+        lastSendDebug = { stage: 'composer-empty' };
+        return false;
+      }
       const compact = (value) => String(value || '').replace(/\s+/g, '');
       const expected = compact(submitted);
       const beforeConversation = conversationId();
@@ -1425,7 +1641,8 @@ var CLF_DOM = (() => {
         return false;
       };
 
-      return await new Promise((resolve) => {
+      // Async executor: the send path awaits the send control becoming live before clicking.
+      return await new Promise(async (resolve) => {
         let done = false;
         let observer = null;
         let timer = null;
@@ -1434,6 +1651,21 @@ var CLF_DOM = (() => {
           done = true;
           if (observer) observer.disconnect();
           if (timer !== null) clearTimeout(timer);
+          const current = composer();
+          const currentConversation = conversationId();
+          const button = document.querySelector(SEND);
+          lastSendDebug = {
+            stage: value ? 'accepted' : 'not-accepted',
+            submittedChars: submitted.length,
+            composerChars: (current?.textContent || '').trim().length,
+            conversationChanged:
+              Boolean(currentConversation && currentConversation !== beforeConversation),
+            generatingChanged: !beforeGenerating && generating(),
+            stopAppeared: !beforeStop && Boolean(stopButton()),
+            sendButtonPresent: Boolean(button),
+            sendButtonDisabled: button ? Boolean(button.disabled) : null,
+            activeComposer: document.activeElement === current
+          };
           resolve(value);
         };
         const check = () => {
@@ -1447,10 +1679,27 @@ var CLF_DOM = (() => {
           characterData: true,
           attributes: true
         });
-        timer = setTimeout(() => finish(false), 3000);
+        // Acceptance is observed, so a long window only delays a genuine failure. The home
+        // composer rolled out 2026-09-25 takes ~6 s to show acceptance (it navigates to the new
+        // /c/ route first); a 3 s window reported every real send as not-accepted, the app
+        // opened another chat, and each retry created one more real conversation.
+        timer = setTimeout(() => finish(false), 30000);
 
         try {
-          const button = document.querySelector(SEND);
+          // The home composer rolled out 2026-09-25 renders before its send control is live: the
+          // button stays disabled for a moment after text is inserted, and the Enter fallback
+          // below is an untrusted event ChatGPT ignores. Every workstream bootstrap typed into
+          // that window and sat unsent. Wait for the button to enable before choosing a path.
+          const enabledSend = () => {
+            const candidate = document.querySelector(SEND);
+            return candidate && !candidate.disabled ? candidate : null;
+          };
+          const deadline = Date.now() + 10_000;
+          while (!done && !enabledSend() && Date.now() < deadline) {
+            await new Promise((wait) => setTimeout(wait, 100));
+          }
+          if (done) return;
+          const button = enabledSend() || document.querySelector(SEND);
           if (button && !button.disabled) {
             button.click();
           } else {
@@ -1466,11 +1715,17 @@ var CLF_DOM = (() => {
         }
       });
     } catch {
+      lastSendDebug = { stage: 'exception' };
       return false;
     }
   }
 
+  function sendDebug() {
+    return lastSendDebug ? { ...lastSendDebug } : null;
+  }
+
   return {
+    acknowledgeBlockingDialog,
     conversationId,
     conversationTitle,
     turns,
@@ -1507,6 +1762,9 @@ var CLF_DOM = (() => {
     hideProgress,
     replaceTurn,
     insertPrompt,
-    send
+    insertPromptDebug,
+    clearComposer,
+    send,
+    sendDebug
   };
 })();

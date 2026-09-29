@@ -26,7 +26,7 @@ import {
   ViewImageError,
   viewImage
 } from '../codex/view-image.js';
-import { logInfo, logWarn } from '../logger.js';
+import { logInfo } from '../logger.js';
 import { SandboxError, isNativeWindowsPath, resolvePath, strayVirtualPath } from '../sandbox.js';
 import { currentWorkspace } from '../workspace.js';
 import type { Capabilities, Root } from '../../shared/types.js';
@@ -50,8 +50,7 @@ import { DEFAULT_TRUNCATION_POLICY, EXEC_OUTPUT_CEILING_POLICY, unifiedExecManag
 import {
   execOwnershipDenied,
   forgetExecOwner,
-  noteExecOwner,
-  provenConversation
+  noteExecOwner
 } from '../codex/ownership.js';
 import {
   UnifiedExecError,
@@ -79,6 +78,7 @@ import {
   EXEC_COMMAND_YIELD_TIME_DESCRIPTION,
   MAX_OUTPUT_TOKENS_DESCRIPTION,
   WRITE_STDIN_CHARS_DESCRIPTION,
+  WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION,
   WRITE_STDIN_DESCRIPTION,
   WRITE_STDIN_SESSION_ID_DESCRIPTION,
   WRITE_STDIN_YIELD_TIME_DESCRIPTION
@@ -111,19 +111,17 @@ import {
   swarmStateForCaller,
   type Caller
 } from '../agents.js';
-import { repairPrimeFromResumeShadow } from '../session/continuation.js';
+import { workstreamConversation } from '../workstreams.js';
 import {
   currentCall,
-  currentCaller,
   noteChanges,
   noteCount,
   noteDetail,
   noteExec
 } from './call-context.js';
-import {
-  awaitFreshCallOrigin,
-  recordAgentMessage
-} from '../session/recorder.js';
+import { noteRulesRead } from '../rules-gate.js';
+import { reuseGateRefusal, settlePendingThroughPatch } from '../reuse-gate.js';
+import { recordAgentMessage } from '../session/recorder.js';
 import { findSessionByConversation } from '../session/store.js';
 import {
   adoptAgent,
@@ -131,9 +129,6 @@ import {
   formatFileInfo,
   friendlyError,
   guard,
-  IDENTITY_EVIDENCE_MS,
-  PRIME_EVIDENCE_MS,
-  SPAWN_EVIDENCE_MS,
   ok,
   pathArg,
   lineNumberArg,
@@ -143,6 +138,22 @@ import {
   type ToolResult
 } from './kernel.js';
 import { registerSessionTool as registerSessionSearchReadTool } from './session-tool.js';
+
+/** A reuse record: for each new name, the searches run, what they found and why none is reused. */
+const REUSE_SEARCH_SCHEMA = z
+              .array(
+                z
+                  .object({
+                    names: z.array(z.string().min(1)).min(1).describe('The new names or new file paths this entry accounts for.'),
+                    searched: z
+                      .array(z.string().min(1))
+                      .min(1)
+                      .describe('Searches you actually ran in this chat, quoted as run: a find query or the rg/grep/fd/ast-grep/probe command. Search for the concept and its likely owners, not for the new name.'),
+                    found: z.string().describe('Existing code those searches turned up, with paths, or "nothing relevant".'),
+                    why_new: z.string().describe('Why nothing found is reused or extended instead.')
+                  })
+                  .strict()
+              );
 
 /** Entries one `read` of a directory returns before it says it stopped. */
 const MAX_DIR_ENTRIES = 200;
@@ -344,6 +355,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               remaining -= section.bytes;
               successes++;
               sections.push(section.text);
+              if (section.lines) {
+                await noteRulesRead(section.lines.real, section.lines.first, section.lines.last, section.lines.total);
+              }
               if (section.image) images.push(section.image);
             } catch (err) {
               failures++;
@@ -505,7 +519,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               scopes.push({ real: resolved.real, virtual: resolved.virtual });
             }
           }
-          if (scopes.length === 0) return fail('No folders are approved');
+          if (scopes.length === 0) return fail('This app has no approved project folder, so nothing can be searched. File tools cannot work until one is approved in the app; say so in your reply instead of retrying.');
 
           const hits: string[] = [];
           const stopReasons = new Set<string>();
@@ -555,11 +569,14 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         description: APPLY_PATCH_DESCRIPTION,
         inputSchema: z
           .object({
-            patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION)
+            patch: z.string().describe(APPLY_PATCH_ARGUMENT_DESCRIPTION),
+            reuse_search: REUSE_SEARCH_SCHEMA.optional().describe(
+              'Required when the patch adds a new code file or a new class, function, method or declaration name: one entry per new name or group of names. The patch is refused without it.'
+            )
           })
           .strict()
       },
-      async ({ patch }) =>
+      async ({ patch, reuse_search }) =>
         guard('apply_patch', async () => {
           if (!caps.create && !caps.edit && !caps.move && !caps.deleteFile) {
             return fail(
@@ -573,12 +590,14 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           } catch (error) {
             return fail(`apply_patch verification failed: ${applyPatchErrorText(error)}`);
           }
+          const pendingRefusal = settlePendingThroughPatch(reuse_search);
+          if (pendingRefusal) return fail(pendingRefusal);
 
           // This connector exposes one local environment. Current Codex accepts the hidden
           // `*** Environment ID:` preamble only when spec_plan enabled multi-environment
           // selection; in the single-environment case the handler rejects it verbatim.
           if (args.environmentId !== null) {
-            return fail('apply_patch environment selection is unavailable for this turn');
+            return fail('This connector has a single environment, so the patch was not applied. Remove the "*** Environment ID:" line from the patch and send it again.');
           }
           const workspace = currentWorkspace();
           if (!workspace && swarmRunning()) {
@@ -588,12 +607,16 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           }
           const baseVirtual = workspace?.virtual ?? (ctx.roots[0] ? `/${ctx.roots[0].name}` : null);
           if (baseVirtual === null) {
-            return fail('No folder is approved, so there is nowhere to apply the patch.');
+            return fail('This app has no approved project folder, so the patch was not applied. File tools cannot work until one is approved in the app; say so in your reply instead of retrying.');
           }
           const base = await resolveIn(ctx.roots, baseVirtual);
+          const reuseRefusal = await reuseGateRefusal(args.hunks, reuse_search, base.real);
+          if (reuseRefusal) return fail(reuseRefusal);
+          if (reuse_search?.length) logInfo(`apply_patch reuse_search: ${JSON.stringify(reuse_search).slice(0, 2000)}`);
           return (await runParsedPatch(args, ctx.roots, base, caps)).result;
         })
     );
+
   }
 
   // ------------------------------------------------------- exec / write_stdin
@@ -715,6 +738,11 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
                 return fail(`apply_patch verification failed: ${interceptedPatch.error.message}`);
               }
               if (interceptedPatch.kind === 'body') {
+                const reuseRefusal = await reuseGateRefusal(interceptedPatch.args.hunks, undefined, dir.real);
+                if (reuseRefusal) {
+                  unifiedExecManager.releaseProcessId(processId);
+                  return fail(`${reuseRefusal} A shell apply_patch cannot carry the record: use the apply_patch tool.`);
+                }
                 try {
                   const patchRun = await runParsedPatch(interceptedPatch.args, ctx.roots, dir);
                   if (patchRun.result.isError || patchRun.content === null) return patchRun.result;
@@ -757,20 +785,17 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               env: execChildEnvironment(),
               tty: input.tty ?? DEFAULT_TTY
             });
-            // Which chat may later write to this session id. Codex gets this for free from a
-            // per-conversation manager; see codex/ownership.ts for why one is needed here.
+            // The admitted workstream claim owns every continuing process. Browser/request
+            // correlation is recorder metadata only and does not participate in process authority.
             if (output.processId === null) {
               forgetExecOwner(processId);
             } else {
-              let owner = provenConversation(currentCaller().requestId, currentCaller().conversationId);
               const call = currentCall();
-              if (!owner && call?.caller.requestId) {
-                owner = await awaitFreshCallOrigin('exec_command', call.startedAt, IDENTITY_EVIDENCE_MS, {
-                  requestId: call.caller.requestId
-                });
-                if (owner) call.caller.conversationId = owner;
-              }
-              noteExecOwner(output.processId, owner);
+              noteExecOwner(
+                output.processId,
+                call?.workstreamId ?? null,
+                call?.workstreamClaimId ?? null
+              );
             }
             const responseText = execCommandResponseText(output);
             // A search that found nothing exits 1 and has not failed. Recording it as an
@@ -838,28 +863,38 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             session_id: int32Number.describe(WRITE_STDIN_SESSION_ID_DESCRIPTION),
             chars: z.string().optional().describe(WRITE_STDIN_CHARS_DESCRIPTION),
             yield_time_ms: unsignedIntegerNumber.optional().describe(WRITE_STDIN_YIELD_TIME_DESCRIPTION),
-            max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION)
+            max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION),
+            declare_persistent: z.boolean().optional().describe(WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION)
           })
           .strict(),
         outputSchema: unifiedExecOutputSchema
       },
       async (input) =>
         reg.guarded('command', 'write_stdin', async () => {
-          // A session id is a small integer that means nothing outside the chat that was given
-          // it, and every chat reaches the same manager here. Refuse only what is proven to
-          // belong elsewhere; an unproven caller keeps working exactly as before.
-          let asking = provenConversation(currentCaller().requestId, currentCaller().conversationId);
           const call = currentCall();
-          if (!asking && call?.caller.requestId) {
-            asking = await awaitFreshCallOrigin('write_stdin', call.startedAt, IDENTITY_EVIDENCE_MS, {
-              requestId: call.caller.requestId
-            });
-            if (asking) call.caller.conversationId = asking;
-          }
-          if (execOwnershipDenied(input.session_id, asking)) {
+          if (
+            execOwnershipDenied(
+              input.session_id,
+              call?.workstreamId ?? null,
+              call?.workstreamClaimId ?? null
+            )
+          ) {
             return fail(
-              `write_stdin failed: session ${input.session_id} is not proven to belong to this ChatGPT conversation. Start your own with exec_command or retry after the extension reconnects.`
+              `write_stdin failed: session ${input.session_id} belongs to a different or superseded workstream claim. Start your own with exec_command under the current workstream_id.`
             );
+          }
+          // Persistence is declared, never inferred (the reaper's contract; see
+          // exec-reaper.ts). Declared before the write so a call that also observes the
+          // exit still made its declaration while the session was live, and failed loudly
+          // for a dead or unknown id instead of silently "declaring" nothing.
+          if (input.declare_persistent) {
+            if (!unifiedExecManager.declareSessionPersistent(input.session_id)) {
+              return fail(
+                `write_stdin failed: declare_persistent found no live exec session ${input.session_id}. ` +
+                  'Only a running session started by exec_command can be declared persistent; nothing was declared and nothing was written.'
+              );
+            }
+            logInfo(`tool write_stdin declared exec session ${input.session_id} persistent`);
           }
           try {
             const output = await unifiedExecManager.writeStdin({
@@ -878,8 +913,15 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               durationMs: output.wallTimeMs
             });
             logInfo(`tool write_stdin ${input.session_id} (${(input.chars ?? '').length} chars)`);
+            // Said out loud, because the reaper the declaration protects against is
+            // otherwise invisible from the tool surface.
+            const notes = input.declare_persistent
+              ? [
+                  `session ${input.session_id} is declared persistent: the orphan reaper will spare it until it exits or the daemon restarts.`
+                ]
+              : [];
             return {
-              content: [{ type: 'text' as const, text: execCommandResponseText(output) }],
+              content: [{ type: 'text' as const, text: withExecNotes(execCommandResponseText(output), notes) }],
               structuredContent: execCommandStructuredOutput(output)
             };
           } catch (error) {
@@ -963,7 +1005,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
     {
       title: 'Multi-agent run',
       description:
-        'Run ChatGPT workers. spawn always creates fresh worker chats for new parallel work; sleeping/terminal workers stay in this prime conversation’s durable history. ' +
+        'Run ChatGPT workers. spawn always creates fresh worker chats for new parallel work; sleeping/terminal workers stay in this prime workstream’s durable history. ' +
         'message: prime→worker or worker→prime; messaging a sleeping worker revives that exact existing chat when a slot is free. Replies arrive on later tool results, so never poll. ' +
         'status shows this prime’s full worker history, including sleeping/revivable and terminal/non-revivable workers, even while no run is active. finish reports a worker result and normally puts it to sleep.',
       inputSchema: z.object({
@@ -1042,29 +1084,22 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     },
     async (input) => {
-      // One clock for one MCP call. The dispatcher owns startedAt and the recorder later uses
-      // that exact value to consume any page request reserved while proving caller identity.
-      // Taking a second Date.now() here made callerNow reserve evidence under one timestamp
-      // and recordToolCall look for it under another, leaving the first request permanently
-      // reserved until TTL and breaking the very next worker control call.
-      const startedAt = currentCall()?.startedAt ?? Date.now();
       return guard('agents', async () => {
         if (!reg.agentToolsLive) return reg.featureDisabled('Multi-agent mode', 'Multi-agent mode (experimental)');
 
         if (input.action === 'spawn') {
-          if (!input.workers) return fail('agents action=spawn requires workers.');
-          // One atomic operation: it either claims this exact conversation as prime and
+          if (!input.workers) return fail('agents action=spawn needs workers=[{label: "short name", task: "what this worker must do"}]. Nothing was created; add it and call again.');
+          // One atomic operation: it either claims this exact admitted workstream as prime and
           // creates the workers, or it creates nothing at all. There is no "create the
           // workers and find out who the prime was later" — that ordering is what produced a
           // run whose workers could talk to a prime nobody could authenticate as.
           //
-          // And the identity behind it is the exact kind: a generic connector row would let
-          // an uninvolved chat that happened to call something else in the same window
-          // become the prime of this run.
+          // The connector has already authenticated that workstream before this handler runs;
+          // browser/request correlation cannot replace or override it.
           const staged = stageSpawn({
             workers: input.workers,
             context: input.context ?? null,
-            caller: await callerNow(startedAt, { exact: true })
+            caller: await callerNow()
           });
           let accepted = false;
           try {
@@ -1090,7 +1125,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
           const { created, becamePrime, runId } = staged;
           // Browser tabs are a publication side effect, never part of planning. They become
           // visible only after the exact broker revision above is durable.
-          requestWorkerBootstraps(created.map((worker) => worker.id));
+          requestWorkerBootstraps(created.map((worker) => worker.id), runId);
           await adoptAgent(PRIME_ID);
           const invited = created.filter((worker) => worker.state === 'invited');
           const sleeping = created.filter((worker) => worker.state === 'sleeping' && worker.revivable);
@@ -1099,7 +1134,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
               {
                 type: 'text' as const,
                 text:
-                  (becamePrime ? `This conversation is now the prime agent of run ${runId}. ` : '') +
+                  (becamePrime ? `This workstream is now the prime agent of run ${runId}. ` : '') +
                   `${created.length} worker(s) matched: ${created.map((info) => `${info.id} (${info.label}, ${info.state})`).join(', ')}. ` +
                   (invited.length > 0 ? 'New worker chats are opening with their briefs already in them. ' : '') +
                   (sleeping.length > 0
@@ -1129,13 +1164,13 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
           const batch = input.messages ?? [];
           const single = input.to && input.text ? [{ to: input.to, text: input.text }] : [];
           if (batch.length > 0 && single.length > 0) {
-            return fail('agents action=message takes either to+text or messages, not both.');
+            return fail('agents action=message takes either to and text (one message) or messages=[{to, text}] (several), not both. Nothing was sent; use one form and call again.');
           }
           const items = batch.length > 0 ? batch : single;
-          if (items.length === 0) return fail('agents action=message requires to and text, or a messages array.');
+          if (items.length === 0) return fail('agents action=message needs to and text (one message) or messages=[{to, text}]. Nothing was sent; add them and call again.');
           // Before any slot is reserved: a sleeping worker whose chat has since crossed the
           // context ceiling is not revivable, and this is the call that would otherwise wake it.
-          const caller = await callerNow(startedAt);
+          const caller = await callerNow();
           await measureSleepingWorkers(caller);
           // One call, one identity resolution, one all-or-nothing delivery: a prime
           // redirecting its whole run cannot end up with two of its three messages sent.
@@ -1164,7 +1199,7 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
           // Reopening a sleeping worker's chat is a browser side effect, so it happens only
           // after the broker revision that reserved its slot is durable — exactly as a spawn's
           // tabs do. Nothing has been typed into that chat yet at this point.
-          if (woken.length > 0) requestWorkerRevivals(woken);
+          if (woken.length > 0) requestWorkerRevivals(woken, staged.runId);
           for (const message of sent) await recordAgentMessage(message, 'sent');
           return {
             content: [
@@ -1189,8 +1224,8 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
         }
 
         if (input.action === 'finish') {
-          if (!input.result) return fail('agents action=finish requires result.');
-          const staged = stageFinishAgent(await callerNow(startedAt), input.result);
+          if (!input.result) return fail('agents action=finish needs result: your report to the prime (what you did, what changed, anything left). Nothing was finished; call again with it.');
+          const staged = stageFinishAgent(await callerNow(), input.result);
           let accepted = staged.repeat;
           try {
             if (!staged.repeat) {
@@ -1240,9 +1275,9 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
 
         // status. Read-only, and deliberately small: it is the run as its own members see it,
         // and `identify` is what decides whether this caller is one of them. An unrelated
-        // chat is told AGENTS_BUSY and nothing else — not who the prime is, not how many
-        // workers there are, not what any of them are doing.
-        const caller = await callerNow(startedAt);
+        // workstream is told it has no run of its own and nothing else — not who any other prime
+        // is, how many workers it has, or what any of them are doing.
+        const caller = await callerNow();
         await measureSleepingWorkers(caller);
         const status = statusForCaller(caller);
         const me = status.self;
@@ -1316,55 +1351,20 @@ function registerAgentsTool(reg: SurfaceRegistrar): void {
 }
 
 /**
- * Who is making this `agents` call, established for this call alone.
+ * Who is making this `agents` call.
  *
- * The prime holds no credential by design, and the dispatcher deliberately hands ordinary
- * tool calls no authority from "the only chat that has been active lately" — that is not
- * proof that the chat made this call, and stale page state once authenticated prime calls as
- * worker-1. So identity is proven here per call by joining ChatGPT's inbound MCP HTTP
- * `x-request-id` to the same request id reported from one concrete conversation's message
- * model. The page evidence may arrive just before or just after the MCP request; the id, not
- * timing, is the join. If its exact mate never appears, the broker refuses the operation.
- * Missing request-id evidence never falls back to a visible row, active/generating chat,
- * agent key, or recent browser state.
- *
- * The proven identity is then adopted for the rest of the call, so this result is recorded
- * against the right agent and carries the right inbox.
+ * The ordinary connector already admitted exactly one logical workstream before the handler
+ * runs. That workstream is caller identity. Browser/request correlation is not consulted.
+ * The current ChatGPT conversation is looked up only as optional routing metadata for the
+ * broker's tab/revival lifecycle.
  */
-async function callerNow(startedAt: number, options: { exact?: boolean } = {}): Promise<Caller> {
-  const base = currentCaller();
-  // `exact` marks the one action that binds a run: spawn. It is the call whose refusal the
-  // model cannot absorb, so it gets the longer ceiling; every other `agents` action can be
-  // declined and asked again on the next tool call.
-  const window = base.requestId ? (options.exact ? SPAWN_EVIDENCE_MS : IDENTITY_EVIDENCE_MS) : PRIME_EVIDENCE_MS;
-  const resolved =
-    base.conversationId ??
-    (await awaitFreshCallOrigin('agents', startedAt, window, {
-      ...options,
-      // ChatGPT's own id for this request, when it sent one. It names the conversation
-      // outright, so two workers calling at the same moment are no longer a hard case.
-      requestId: base.requestId
-    }));
+async function callerNow(): Promise<Caller> {
+  const call = currentCall();
+  const workstreamId = call?.workstreamId ?? null;
   const caller: Caller = {
-    ...base,
-    conversationId: resolved
+    workstreamId,
+    conversationId: workstreamId ? workstreamConversation(workstreamId) : null
   };
-  if (resolved) {
-    const call = currentCall();
-    if (call) call.caller.conversationId = resolved;
-    // A pre-fix Compact & Resume can leave this exact app-opened replacement chat with its own
-    // shadow session while the reusable-worker run is still bound to the source chat. Repair
-    // only that durably-proven historical failure before membership is evaluated; unrelated
-    // conversations still hit AGENTS_BUSY exactly as before.
-    await repairPrimeFromResumeShadow(resolved);
-  }
-  if (!resolved) {
-    logWarn(
-      base.requestId
-        ? `agents caller not identified: no page evidence matched HTTP request ${base.requestId.slice(0, 20)}…`
-        : 'agents caller not identified: this MCP request carried no request id and page evidence was insufficient'
-    );
-  }
   await adoptAgent(agentForCaller(caller));
   return caller;
 }
@@ -1900,7 +1900,13 @@ interface ReadOneOptions {
 async function readOne(
   requested: string,
   options: ReadOneOptions
-): Promise<{ text: string; bytes: number; image?: { data: string; mimeType: string } }> {
+): Promise<{
+  text: string;
+  bytes: number;
+  image?: { data: string; mimeType: string };
+  /** For a text file: its real path and the lines actually returned. */
+  lines?: { real: string; first: number; last: number; total: number | null };
+}> {
   const resolved = await resolveIn(options.roots, requested);
   const info = await statInfo(resolved.real, resolved.virtual, { scanContent: !options.canRead });
 
@@ -2029,6 +2035,7 @@ async function readOne(
   const text = `${header}${numbered.text === '' && visibleLastLine < result.firstLine ? '' : `\n${numbered.text}`}${note}`;
   return {
     text,
+    lines: { real: resolved.real, first: result.firstLine, last: visibleLastLine, total: result.totalLines },
     // Charge the aggregate call budget for what is actually serialized, including headers and
     // line-number prefixes. Counting only raw file bytes let thousands of short lines amplify a
     // nominal 512 KiB cap into a multi-megabyte MCP response.

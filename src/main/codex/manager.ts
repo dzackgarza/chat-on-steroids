@@ -8,6 +8,7 @@
  */
 
 import type { TruncationPolicy } from './truncate.js';
+import { startExecReaper } from '../exec-reaper.js';
 import {
   DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -16,6 +17,13 @@ import {
 import { UnifiedExecProcessManager } from './unified-exec.js';
 
 export const unifiedExecManager = new UnifiedExecProcessManager(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS);
+
+// The reaper shares the manager's lifetime and is reached the same way: both entrypoints
+// (desktop index.ts, headless daemon) import this module before any exec_command can run,
+// so starting it here is what guarantees the daemon gets a startup orphan sweep and a
+// periodic one without either entrypoint having to remember to ask. See exec-reaper.ts
+// and docs/exec-orphan-audit-2026-09-09.md.
+startExecReaper(unifiedExecManager);
 
 /**
  * The budget for output the model was given no way to ask about.

@@ -44,6 +44,7 @@ import {
   UNIFIED_EXEC_ENV
 } from './unified-exec-constants.js';
 import { terminateProcessTree } from '../exec.js';
+import { EXEC_SPAWN_MARKER_ENV, execSpawnMarkerValue } from '../exec-spawn-marker.js';
 import { prefixPowershellScriptWithUtf8, type ShellType } from './shell.js';
 
 // --------------------------------------------------------------------------- errors
@@ -622,6 +623,7 @@ export interface BackgroundTerminalInfo {
   cwd: string;
   pid: number;
   tty: boolean;
+  startedAt: number;
 }
 
 interface ProcessEntry {
@@ -631,12 +633,41 @@ interface ProcessEntry {
   hookCommand: string;
   tty: boolean;
   initialExecCommandActive: boolean;
+  startedAt: number;
   lastUsed: number;
+  /** Declared long-lived: the orphan reaper must leave this session alone. */
+  persistent: boolean;
 }
+
+/** What the reaper killed, so its log line can carry pid, age and command. */
+export interface ReapedExecSession {
+  processId: number;
+  pid: number;
+  idleMs: number;
+  command: string;
+  cwd: string;
+  tty: boolean;
+  /** Exit code when the process had already finished and only its unread result was dropped. */
+  exitedWith: number | null | undefined;
+}
+
+/** How many ended session ids keep their end timestamp for the escapee sweep. */
+const ENDED_SESSION_LEDGER_CAP = 512;
+
+export type SessionDisposition =
+  | { kind: 'active' }
+  | { kind: 'ended'; endedAt: number }
+  | { kind: 'unknown' };
 
 export class UnifiedExecProcessManager {
   private readonly processes = new Map<number, ProcessEntry>();
   private readonly reservedProcessIds = new Set<number>();
+  /**
+   * When a session id stopped being live, insertion-ordered and capped. The exec reaper
+   * uses this to bound the lifetime of descendants that outlived their session: a marked
+   * process whose session ended more than the configured lifetime ago is an orphan.
+   */
+  private readonly endedSessions = new Map<number, number>();
   private readonly maxWriteStdinYieldTimeMs: number;
 
   constructor(maxWriteStdinYieldTimeMs: number) {
@@ -656,6 +687,87 @@ export class UnifiedExecProcessManager {
   releaseProcessId(processId: number): void {
     this.reservedProcessIds.delete(processId);
     this.processes.delete(processId);
+    // Record when the id stopped being live, even for a reservation that never launched:
+    // an early-exit spawn (`sh -c 'server &'`) is released without ever being stored, and
+    // its backgrounded survivors are precisely what the ledger exists to put a clock on.
+    this.endedSessions.delete(processId);
+    this.endedSessions.set(processId, Date.now());
+    while (this.endedSessions.size > ENDED_SESSION_LEDGER_CAP) {
+      const oldest = this.endedSessions.keys().next().value;
+      if (oldest === undefined) break;
+      this.endedSessions.delete(oldest);
+    }
+  }
+
+  /**
+   * What the manager knows about a session id, for the reaper's escapee sweep.
+   *
+   * A reserved id counts as active: reservation happens before the child is stored, so a
+   * sweep racing that window must not read "not registered" as "the call ended". `unknown`
+   * means the id fell off the capped ledger, which only happens well after it ended.
+   */
+  sessionDisposition(processId: number): SessionDisposition {
+    if (this.processes.has(processId) || this.reservedProcessIds.has(processId)) return { kind: 'active' };
+    const endedAt = this.endedSessions.get(processId);
+    return endedAt === undefined ? { kind: 'unknown' } : { kind: 'ended', endedAt };
+  }
+
+  /**
+   * Declares a live session deliberately long-lived, exempting it from the idle reap.
+   *
+   * This is the declaration the reaper honors instead of guessing which servers are wanted.
+   * It is per-session and dies with the session; nothing survives a daemon restart, and the
+   * startup sweep deliberately does not consult it.
+   */
+  declareSessionPersistent(processId: number): boolean {
+    const entry = this.processes.get(processId);
+    if (!entry || entry.process.hasExited()) return false;
+    entry.persistent = true;
+    return true;
+  }
+
+  /**
+   * Kills every session whose owning tool call ended more than `lifetimeMs` ago.
+   *
+   * "Owning tool call ended" is read off `lastUsed`: exec_command stamps it at launch and
+   * every write_stdin poll refreshes it, so a session the model still talks to is never
+   * aged. Spared outright: sessions declared persistent, sessions whose initial
+   * exec_command is still collecting its first yield, and sessions whose interaction lock
+   * is held by an in-flight write_stdin. Everything else past the bound gets its whole
+   * process tree terminated — including sessions whose leader already exited, because on
+   * POSIX the leader's process group can still hold backgrounded survivors that
+   * `terminateProcess` deliberately skips.
+   */
+  async reapIdleSessions(lifetimeMs: number, now: number = Date.now()): Promise<ReapedExecSession[]> {
+    const reaped: ReapedExecSession[] = [];
+    for (const entry of [...this.processes.values()]) {
+      if (entry.persistent || entry.initialExecCommandActive) continue;
+      const idleMs = now - entry.lastUsed;
+      if (idleMs <= lifetimeMs) continue;
+      const release = entry.process.interactionLock.tryLock();
+      if (!release) continue;
+      try {
+        const current = this.processes.get(entry.processId);
+        if (!current || current.process !== entry.process) continue;
+        const exitedWith = entry.process.hasExited() ? entry.process.exitCode() : undefined;
+        // terminate() runs the tree kill whether or not the leader has exited, which is
+        // what clears a dead shell's surviving group members along with a live loop.
+        await entry.process.terminate();
+        this.releaseProcessId(entry.processId);
+        reaped.push({
+          processId: entry.processId,
+          pid: entry.process.pid,
+          idleMs,
+          command: entry.hookCommand,
+          cwd: entry.cwd,
+          tty: entry.tty,
+          exitedWith
+        });
+      } finally {
+        release();
+      }
+    }
+    return reaped;
   }
 
   async execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput> {
@@ -675,7 +787,9 @@ export class UnifiedExecProcessManager {
         command,
         shellType: request.shellType,
         cwd: request.cwd,
-        env: request.env,
+        // The reaper's ownership proof. Descendants inherit it, so a server the shell
+        // backgrounded before exiting stays attributable to this session and this run.
+        env: { ...request.env, [EXEC_SPAWN_MARKER_ENV]: execSpawnMarkerValue(request.processId) },
         tty: request.tty
       });
     } catch (error) {
@@ -697,7 +811,9 @@ export class UnifiedExecProcessManager {
         hookCommand: request.hookCommand,
         tty: request.tty,
         initialExecCommandActive: true,
-        lastUsed: start
+        startedAt: start,
+        lastUsed: start,
+        persistent: false
       });
     }
 
@@ -866,7 +982,8 @@ export class UnifiedExecProcessManager {
         command: entry.hookCommand,
         cwd: entry.cwd,
         pid: entry.process.pid,
-        tty: entry.tty
+        tty: entry.tty,
+        startedAt: entry.startedAt
       }));
   }
 

@@ -62,12 +62,11 @@ import {
   freezePrimeTransfer,
   thawPrimeTransfer
 } from '../agents.js';
-import { clearChatWorkspace, moveChatWorkspace, workspaceForChat } from '../workspace.js';
 import { clearGoalObjective, goalObjectiveFor, moveGoalObjective } from '../goal.js';
 import { writeDurableNow, writeDurableSoon } from '../durable.js';
 import { prepareHandoff, resumeBootstrapMatches } from './handoff.js';
 import { ensureHandoffRecorded, recordHandoff, rebindConversation } from './recorder.js';
-import { endResumeClaim, noteResumeClaim, resetResumeGate } from './resume-gate.js';
+import { endResumeClaim, noteResumeClaim } from './resume-gate.js';
 import {
   ensureCommittedResumeHandoff,
   findSessionByConversation,
@@ -84,7 +83,7 @@ import {
  * that an abandoned one releases the prime binding and lets an unattended run end rather
  * than staying transferable indefinitely.
  */
-export const CONTINUATION_TTL_MS = 10 * 60_000;
+export const CONTINUATION_TTL_MS = 5 * 60_000;
 
 export type ContinuationState =
   /** Waiting for ChatGPT's final answer to the compaction turn. */
@@ -334,8 +333,8 @@ export function continuationByToken(token: string): ContinuationView | null {
  * Current builds prevent the race before opening the browser, but an installed build can
  * already have created B as a small `origin.kind=resume` session and then aborted the real
  * continuation with {@link RESUME_SHADOW_COLLISION}. That leaves the user in the intended
- * replacement chat while the reusable-worker run is still bound to A, so every `agents` call
- * from B gets AGENTS_BUSY.
+ * replacement chat while the reusable-worker run is still bound to A, so no `agents` call from
+ * B reaches that run.
  *
  * This is intentionally much narrower than a takeover API. The durable recorder must prove
  * that B was app-opened as a resume of source session S, S must still own A, and B's authored
@@ -375,12 +374,12 @@ export async function repairPrimeFromResumeShadow(conversationId: string): Promi
   // recovery already moved the *same* run A→C, only C remains owned and this idempotent
   // projection repair is still allowed — that is the live 2.0.1 damage pattern this exists for.
   if (targetOwner === PRIME_ID && sourceOwner === PRIME_ID) return false;
-  // Once the same run's prime ownership has already reached B and A has no remaining Goal or
-  // workspace projection, there is nothing left for this browser poll to repair. The broker
+  // Once the same run's prime ownership has already reached B and A has no remaining Goal
+  // projection, there is nothing left for this browser poll to repair. The broker
   // recovery hook deliberately reports an already-satisfied A→B as success, so calling it again
   // would otherwise turn every /activity poll into another "moved missing projections" warning
   // (and another exact-handoff event scan) forever on resumed chats that have no Goal.
-  if (targetOwner === PRIME_ID && !workspaceForChat(fromConversationId) && !goalObjectiveFor(fromConversationId)) {
+  if (targetOwner === PRIME_ID && !goalObjectiveFor(fromConversationId)) {
     return false;
   }
   const failed = [...byToken.values()].find(
@@ -422,7 +421,6 @@ export async function repairPrimeFromResumeShadow(conversationId: string): Promi
   if (currentTargetOwner === PRIME_ID && currentSourceOwner === PRIME_ID) return false;
   if (
     currentTargetOwner === PRIME_ID &&
-    !workspaceForChat(fromConversationId) &&
     !goalObjectiveFor(fromConversationId)
   ) {
     return false;
@@ -431,16 +429,8 @@ export async function repairPrimeFromResumeShadow(conversationId: string): Promi
   // The durable session rebind never landed in this legacy race, so normal
   // publishCommittedProjection() never ran either. Once the exact app-created resume shadow +
   // positive proof above identifies which A→B attempt this is, repair only projections that are
-  // still missing on the descendant. A descendant can have accumulated newer Goal/workspace
-  // state before an upgraded build gets its first chance to heal the old collision; that newer
-  // target state wins. The stale A projection is still removed so opening A later cannot keep
-  // using authority that belongs to the continued chat.
-  let workspaceChanged = false;
-  if (workspaceForChat(conversationId)) {
-    workspaceChanged = clearChatWorkspace(fromConversationId);
-  } else {
-    workspaceChanged = moveChatWorkspace(fromConversationId, conversationId);
-  }
+  // still missing on the descendant. Workspace ownership is workstream-scoped and therefore
+  // survives a frontend replacement without any A→B projection move.
   let goalChanged = false;
   if (goalObjectiveFor(conversationId)) {
     if (goalObjectiveFor(fromConversationId)) {
@@ -453,17 +443,17 @@ export async function repairPrimeFromResumeShadow(conversationId: string): Promi
   // The recovery hook uses success semantics: replaying an already-repaired target returns true
   // by design. Here this boolean means "changed on this call" and drives a user-visible warning,
   // so an already-owned target must not be counted as a fresh broker mutation. Missing Goal or
-  // workspace projections above are still repaired normally.
+  // Goal projections above are still repaired normally.
   const repaired =
     currentTargetOwner === PRIME_ID
       ? false
       : (recoveryHooks.repairPrimeTransfer?.(fromConversationId, conversationId) ?? false);
-  if (repaired || workspaceChanged || goalChanged) {
+  if (repaired || goalChanged) {
     logWarn(
       `resume-shadow repair (${proof}) moved missing projections into chat ${conversationId}`
     );
   }
-  return repaired || workspaceChanged || goalChanged;
+  return repaired || goalChanged;
 }
 
 /**
@@ -705,7 +695,6 @@ function publishCommittedProjection(
   swarm: 'absent' | 'frozen' | 'recovery'
 ): void {
   rebindConversation(entry.sessionId, entry.from, toConversationId);
-  moveChatWorkspace(entry.from, toConversationId);
   moveGoalObjective(entry.from, toConversationId);
   if (swarm === 'frozen') {
     if (!commitPrimeTransfer(entry.from, toConversationId)) {
@@ -799,7 +788,7 @@ async function reconcileCommitting(entry: Continuation, toConversationId: string
     return { status: 'rejected', reason };
   }
 
-  if (/^[0-9a-f-]{8,64}$/i.test(toConversationId)) {
+  if (/^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(toConversationId)) {
     let target;
     try {
       target = await findSessionByConversation(toConversationId, { requireUnique: true });
@@ -1096,7 +1085,6 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
           }
         }
         rebindConversation(entry.sessionId, entry.from, entry.to);
-        moveChatWorkspace(entry.from, entry.to);
         moveGoalObjective(entry.from, entry.to);
         const repaired = recoveryHooks.repairPrimeTransfer?.(entry.from, entry.to) ?? false;
         if (!repaired) commitPrimeTransfer(entry.from, entry.to);
@@ -1106,7 +1094,7 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
       } else if (entry.state === 'committing' && session && session.conversationId === entry.from) {
         if (waitingExpired) {
           // The WAL proves the durable session move never landed. Restart must not turn an
-          // already-expired ten-minute transaction into a fresh one merely because its
+          // already-expired five-minute transaction into a fresh one merely because its
           // ephemeral transfer lock disappeared with the process.
           entry.state = 'aborted';
           entry.to = null;
@@ -1127,7 +1115,7 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
     } else if (entry.state !== 'aborted') {
       if (waitingExpired) {
         // Terminal records are retained up to 2× TTL so duplicate/replayed acknowledgements can
-        // still be answered consistently, but a nonterminal wait gets only the actual 10-minute
+        // still be answered consistently, but a nonterminal wait gets only the actual 5-minute
         // lifetime. In particular, never mint a fresh prime-transfer lease on restart.
         entry.state = 'aborted';
         entry.error = 'Recovery found the continuation had already expired.';
@@ -1158,17 +1146,4 @@ export async function restoreContinuations(snapshot: ContinuationSnapshot | null
     // require an immediate durable write and therefore continue to fail closed.
     logWarn(`continuation recovery could not persist its repaired snapshot: ${err instanceof Error ? err.message : String(err)}`);
   }
-}
-
-/** Test seam. */
-export function resetContinuationsForTests(): void {
-  byToken.clear();
-  openingBySession.clear();
-  commitLocks.clear();
-  recoveryHooks = {};
-  // The gate is part of this module's state even though it lives next door, and a claim
-  // outlives a cleared transaction by RESUME_CLAIM_WINDOW_MS. Left behind, it makes the
-  // *next* test's unrelated new chat wait for a replacement that will never come.
-  resetResumeGate();
-  changed();
 }

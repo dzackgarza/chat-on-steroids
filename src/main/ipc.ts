@@ -27,7 +27,6 @@ import {
   cancelWorkerCommands,
   onBridgeChange,
   startBridge,
-  stopBridge,
   unpair
 } from './bridge.js';
 import { extensionDir } from './extension-path.js';
@@ -320,12 +319,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         authorityPersistError = error instanceof Error ? error : new Error(String(error));
       }
     }
-    // The extension bridge serves both features: recording needs it to observe the
-    // chat, and multi-agent mode needs it to open worker tabs. Either one being on is
-    // enough, and this must match the startup rule in index.ts exactly — a bridge that
-    // runs at startup but not after a settings save is the worst of both.
-    if (next.sessions.record || next.multiAgent.enabled) await startBridge();
-    else await stopBridge();
+    // Identity and workstream leases need the paired browser even without recording.
+    await startBridge();
     // Permissions and the second tunnel id both decide whether the optional Desktop
     // connector should be published. Without this, enabling desktop access or pasting its
     // tunnel id left the connector unpublished until the user happened to reconnect, with
@@ -618,7 +613,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       if (!(await persistAgentAuthorityNow())) {
         throw new Error('The agent clear could not be made durable. Retry the clear action.');
       }
-      if (outcome.cleared === 'worker') cancelWorkerCommands(outcome.reason, id);
+      if (outcome.cleared === 'worker') cancelWorkerCommands(outcome.reason, id, outcome.runId);
     }
     // The prime's report stays in the main process: the renderer needs the outcome, not
     // the message queued for the prime agent.

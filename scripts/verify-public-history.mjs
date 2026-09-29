@@ -12,6 +12,32 @@ const blockedText = [
   { label: 'private Windows user path', value: ['C:', 'Users', 'totec'].join('\\') },
 ];
 
+/**
+ * Maintainer-identity findings that already exist in published history.
+ *
+ * Both are GitHub web-UI merge commits: GitHub stamped the author identity, they live on
+ * `origin/main` and are not ancestors of local `HEAD`, and this checkout never pushes — so
+ * nothing done here can change them. Without this list every run exited 1, which meant the
+ * check could no longer say anything: an operator had to diff two failure lines by eye to
+ * see whether a change had added a third, and a permanently red gate is not a gate.
+ *
+ * The list can only ever excuse the *maintainer-identity* finding on these exact commits.
+ * Blocked text in a message or a tree still fails on them like anywhere else, and an entry
+ * that stops matching is itself a failure (see `staleAcceptances`) so this cannot rot into
+ * a place where findings go to be forgotten. Only a SHA and a reason are stored: writing
+ * the address here is the thing the check exists to prevent.
+ */
+const acceptedIdentityFindings = new Map([
+  [
+    '9e27c0fafc20bf2c81509844d5f92868678b4168',
+    'GitHub web-UI merge of PR #20, authored by GitHub on origin/main; unreachable from HEAD',
+  ],
+  [
+    '03acfbaad9d753d09487761e97cc1eade8eb8b22',
+    'GitHub web-UI merge of PR #19, authored by GitHub on origin/main; unreachable from HEAD',
+  ],
+]);
+
 function runGit(args, { allowFailure = false, encoding = 'utf8' } = {}) {
   const result = spawnSync('git', args, {
     cwd: process.cwd(),
@@ -79,6 +105,8 @@ function checkMessageFile(messagePath) {
 
 function checkHistory() {
   const failures = [];
+  /** Allowlist entries this run actually used, so an entry that no longer applies is caught. */
+  const usedAcceptances = new Set();
   const commits = String(runGit(['rev-list', '--all']).stdout)
     .split(/\r?\n/)
     .filter(Boolean);
@@ -95,11 +123,15 @@ function checkHistory() {
     const [authorName = '', authorEmail = '', committerName = '', committerEmail = '', ...body] =
       record.split('\0');
     const location = `commit ${commit}`;
-    failures.push(
+    const identity = [
       ...checkMaintainerIdentity(authorName, authorEmail, `${location} author`),
       ...checkMaintainerIdentity(committerName, committerEmail, `${location} committer`),
-      ...findBlockedText(body.join('\0'), `${location} message`),
-    );
+    ];
+    // Only the identity findings are excusable, and only on a listed commit. Blocked text in
+    // the message is a different fact and is never waived.
+    if (identity.length > 0 && acceptedIdentityFindings.has(commit)) usedAcceptances.add(commit);
+    else failures.push(...identity);
+    failures.push(...findBlockedText(body.join('\0'), `${location} message`));
   }
 
   const tags = String(runGit(['tag', '--list']).stdout)
@@ -124,7 +156,21 @@ function checkHistory() {
 
   const head = runGit(['rev-parse', '--verify', 'HEAD'], { allowFailure: true });
   if (head.status === 0) failures.push(...checkIndexedOrCommittedFiles('HEAD'));
-  return { failures, commits: commits.length, tags: tags.length };
+
+  // An acceptance for a commit that is present and *clean* is excusing nothing, and leaving
+  // it would let the list grow into cover for findings nobody has checked. A commit this
+  // repository does not contain is a different case — a fresh clone without the origin refs,
+  // or the scratch repositories the gate's own tests run it in — and the entry simply does
+  // not apply there.
+  const present = new Set(commits);
+  for (const commit of acceptedIdentityFindings.keys()) {
+    if (present.has(commit) && !usedAcceptances.has(commit)) {
+      failures.push(
+        `accepted-finding list names ${commit}, which produced no maintainer-identity finding this run — remove the entry`,
+      );
+    }
+  }
+  return { failures, commits: commits.length, tags: tags.length, accepted: usedAcceptances.size };
 }
 
 function fail(failures) {
@@ -144,7 +190,10 @@ if (mode === '--message') {
 } else if (mode) {
   throw new Error(`Unknown argument: ${mode}`);
 } else {
-  const { failures, commits, tags } = checkHistory();
+  const { failures, commits, tags, accepted } = checkHistory();
   if (failures.length > 0) fail(failures);
-  else console.log(`Public-history privacy check passed (${commits} commits, ${tags} tags).`);
+  else {
+    const waived = accepted > 0 ? `, ${accepted} accepted historical finding(s)` : '';
+    console.log(`Public-history privacy check passed (${commits} commits, ${tags} tags${waived}).`);
+  }
 }

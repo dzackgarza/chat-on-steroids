@@ -9,18 +9,15 @@ import { connect, disconnect, getStatus, onStatusChange, shutdownConnection } fr
 import { registerIpc } from './ipc.js';
 import { logError, logInfo, logWarn } from './logger.js';
 import { unifiedExecManager } from './codex/manager.js';
+import { stopExecReaper } from './exec-reaper.js';
 import { initSecretsPath } from './secrets.js';
 import { setBrowserOpener, shutdownBridge, startBridge } from './bridge.js';
 import { flushSessions, initSessionStore, pruneSessions } from './session/store.js';
 import {
   flushRecorder,
-  queueDeterministicAttributionRepair,
-  setAgentBinder,
-  setAgentConversationLookup
+  queueDeterministicAttributionRepair
 } from './session/recorder.js';
 import {
-  agentConversation,
-  bindConversation,
   onRetiredWorkersPersist,
   onRetiredWorkersPersistNow,
   onSwarmPersist,
@@ -245,10 +242,6 @@ void app.whenReady().then(async () => {
   // that was proved yesterday remains the same workflow today even if its ChatGPT tab closed.
   await restoreRequestCorrelations();
   if (windowActivation.isDisabled()) return;
-  setAgentConversationLookup(agentConversation);
-  // The prime's chat is the user's own, so no extension report can name it. It is bound
-  // when the recorder manages to place the prime's first call. See recordToolCall.
-  setAgentBinder(bindConversation);
   // Before anything can call an agent tool, and before a run is restored: the broker
   // decides whether a previous run has been abandoned partly from which ChatGPT tabs are
   // open, and without this it can only answer "I cannot see" — which it treats, on
@@ -346,12 +339,9 @@ void app.whenReady().then(async () => {
   // traffic, so never make startup/reload wait behind years of old session history.
   queueDeterministicAttributionRepair();
 
-  // The bridge serves recording and multi-agent mode both: recording needs the
-  // extension to observe the chat, and multi-agent mode needs it to open worker tabs.
-  // Either switch being on starts it. ipc.ts applies the same rule on a settings save.
-  if (getConfig().sessions.record || getConfig().multiAgent.enabled) {
-    void startBridge();
-  }
+  // Every connector conversation needs browser binding and workstream recovery,
+  // independently of optional recording and multi-agent features.
+  void startBridge();
   // Retention governs recordings already stored on disk, independent of whether recording is
   // currently enabled. The tray app can stay alive for days, so run once now and keep a coarse
   // maintenance timer rather than making expiry depend on the next process restart.
@@ -406,7 +396,13 @@ app.on('will-quit', (event) => {
       {
         name: 'process cleanup',
         budgetMs: 15_000,
-        run: () => [unifiedExecManager.terminateAllProcesses(), stopComputerHelper()]
+        // The reaper's timer is stopped here because this phase is its subject matter:
+        // once every session is being terminated there is nothing left for it to sweep.
+        run: () => [
+          Promise.resolve(stopExecReaper()),
+          unifiedExecManager.terminateAllProcesses(),
+          stopComputerHelper()
+        ]
       },
       // Phase 3: recorder work can enqueue both session projections and named durable state.
       { name: 'recorder flush', budgetMs: 10_000, run: () => [flushRecorder()] },
