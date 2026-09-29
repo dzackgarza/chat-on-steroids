@@ -29,6 +29,7 @@ import {
   WORKSTREAM_LEASE_MS,
   continueWorkstream,
   startWorkstream,
+  workstreamClaimLine,
   workstreamWorkspace,
   workstreamIdSchema,
   type WorkstreamSetupResult,
@@ -46,6 +47,14 @@ function rulesNotice(id: string): string {
     "looked up yet is not a missing tool. " +
     "Until this chat has read every line of it, the app refuses every tool except read, find and view_image. " +
     "Reading it is a step to do, not a blocker to report: never end your turn on it."
+  );
+}
+
+/** Tells the claiming chat to print the line that binds this workstream to it. */
+function claimNotice(lock: string): string {
+  return (
+    `\nNow write this exact line as visible text in your reply, on a line of its own, before your next tool call: ${workstreamClaimLine(lock)}\n` +
+    "It tells the app which chat holds this workstream, so the app can revive this same chat if it stalls. Write it once."
   );
 }
 
@@ -257,7 +266,7 @@ function registerWorkstreamSetupTool(
             content: [
               {
                 type: "text" as const,
-                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + rulesNotice(result.id),
+                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
               },
             ],
           };
@@ -272,7 +281,7 @@ function registerWorkstreamSetupTool(
           content: [
             {
               type: "text" as const,
-              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + rulesNotice(result.id),
+              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
             },
           ],
         };

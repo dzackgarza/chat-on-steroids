@@ -65,7 +65,7 @@ import {
   RECOVERY_BACKOFF_MS,
   WORKSTREAM_LEASE_MS,
   workstreamIdSchema,
-  workstreamClaimPending,
+  WORKSTREAM_CLAIM_LINE,
   workstreamPrompt,
   workstreamStatus,
 } from "./workstreams.js";
@@ -996,8 +996,6 @@ const OBSERVATION_KINDS = new Set([
   // Not stored as transcript content. These request records populate the exact
   // requestId -> conversationId correlation registry.
   "tool_evidence",
-  // Not stored. The workstream locks this chat's own ChatGPT record holds (bridge binds them).
-  "workstream_claim",
 ]);
 // Deliberately excludes `observer_lost`: only the app may append that outcome. An observer
 // cannot report its own absence, so a page claiming it would be fabricating a closure the
@@ -2229,11 +2227,13 @@ async function handle(
         await bindWorkstreamFrontend("", id);
       }
     }
-    // The page read its own ChatGPT record and reports the workstream locks it holds. Only the
-    // current lock of a row matches, and only the claiming chat's record carries it.
+    // The `workstream` result tells the claiming chat to print its lock in a claim line. Only
+    // that chat has the lock, and only a row's current lock binds, so the line pins the row to
+    // exactly the chat whose visible message carries it.
     for (const item of observations) {
-      if (item.kind !== "workstream_claim" || !item.text) continue;
-      for (const lock of item.text.split(" ")) {
+      if (item.kind !== "assistant_message" || !item.text) continue;
+      for (const [, lock] of item.text.matchAll(WORKSTREAM_CLAIM_LINE)) {
+        if (!lock) continue;
         const bound = await bindWorkstreamConversation(lock, id);
         if (bound) logInfo(`workstream ${bound}: held by chat ${id}`);
       }
@@ -2710,7 +2710,6 @@ async function handle(
         // REQUEST_ID_GRACE_MS to file its history cannot change the workspace and must not add
         // a cross-chat 15-second tax to the machine-settle barrier.
         pendingTools: pendingToolsFor(live.conversationId),
-        claimPending: workstreamClaimPending(),
         autoContinue: getConfig().autoContinue,
         managedWorkstream: managedWorkstreamForConversation(
           live.conversationId,

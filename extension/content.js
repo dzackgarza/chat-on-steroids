@@ -711,12 +711,8 @@
   let pendingTools = 0;
   /** Controller-managed repository workstream; its controller owns five-minute recovery. */
   let managedWorkstream = false;
-  /** The app holds a live workstream claim it has not bound to a chat yet. */
-  let claimPending = false;
   /** The owner's Home switch: when false, this page types nothing into any chat on its own. */
   let autoContinue = false;
-  /** When this page last read its own record for workstream locks. */
-  let claimReadAt = 0;
   /**
    * Whitespace-squeezed texts the app itself asked to be typed into this chat, from
    * `/activity`. A composer draft matching one of these is the app's own manufactured wedge
@@ -1253,7 +1249,6 @@
     job = null;
     pendingTools = 0;
     managedWorkstream = false;
-    claimPending = false;
     autoContinue = false;
     staleDraftHints = [];
     autoCompactReady = false;
@@ -2024,42 +2019,20 @@
    * tool is a call; a message authored by a tool is its result. A call with no result after
    * it is still running, and a turn waiting on a tool is not stalled.
    */
-  async function readOwnRecord(chat) {
-    const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
-    if (!session.ok) return null;
-    const { accessToken } = await session.json();
-    const response = await fetch(`/backend-api/conversation/${chat}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      credentials: 'include',
-      signal: AbortSignal.timeout(15_000)
-    });
-    return response.ok ? response.json() : null;
-  }
-
-  /**
-   * Reports the workstream locks in this chat's own record. A lock is a secret that only the
-   * claiming chat's `workstream` tool result carries, so the app binds a workstream to the chat
-   * whose record holds its current lock, and to no other.
-   */
-  async function reportClaims() {
-    const chat = CLF_DOM.conversationId();
-    if (!chat) return;
-    try {
-      const record = await readOwnRecord(chat);
-      if (!record || !alive || CLF_DOM.conversationId() !== chat) return;
-      const locks = [...new Set(JSON.stringify(record).match(/wl_[A-Za-z0-9_-]{43}/g) || [])].slice(-32);
-      if (locks.length > 0) emit({ kind: 'workstream_claim', text: locks.join(' ') });
-    } catch (error) {
-      console.warn('[CLF] workstream claim read failed', error);
-    }
-  }
-
   async function refreshToolClock() {
     const chat = CLF_DOM.conversationId();
     if (!chat) return;
     try {
-      const record = await readOwnRecord(chat);
-      if (!record) return;
+      const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
+      if (!session.ok) return;
+      const { accessToken } = await session.json();
+      const response = await fetch(`/backend-api/conversation/${chat}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        credentials: 'include',
+        signal: AbortSignal.timeout(15_000)
+      });
+      if (!response.ok) return;
+      const record = await response.json();
       let newest = null;
       for (const node of Object.values(record.mapping || {})) {
         const message = node && node.message;
@@ -5430,12 +5403,7 @@
       job = data.job || null;
       pendingTools = Number.isFinite(Number(data.pendingTools)) ? Number(data.pendingTools) : 0;
       managedWorkstream = data.managedWorkstream === true;
-      claimPending = data.claimPending === true;
       autoContinue = data.autoContinue === true;
-      if (claimPending && generating && Date.now() - claimReadAt > TOOL_CLOCK_READ_MS) {
-        claimReadAt = Date.now();
-        void reportClaims();
-      }
       if (Array.isArray(data.staleDrafts)) {
         const hints = data.staleDrafts.filter((draft) => typeof draft === 'string' && draft);
         const changed = hints.length !== staleDraftHints.length || hints.some((hint, at) => hint !== staleDraftHints[at]);

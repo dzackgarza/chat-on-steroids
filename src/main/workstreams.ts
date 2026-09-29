@@ -164,16 +164,9 @@ export function managedWorkstreamForConversation(
   );
 }
 
-/** Whether a live claim has no chat bound yet, so generating pages should report their locks. */
-export function workstreamClaimPending(now = Date.now()): boolean {
-  ready();
-  return [...rows.values()].some(
-    (row) =>
-      row.phase === "active" &&
-      row.conversationId === null &&
-      now < row.lastActivity + WORKSTREAM_LEASE_MS,
-  );
-}
+/** The line a claiming chat prints so the app can bind the row to that exact chat. */
+export const workstreamClaimLine = (lock: string): string => `Workstream claim: ${lock}`;
+export const WORKSTREAM_CLAIM_LINE = /Workstream claim: (wl_[A-Za-z0-9_-]{43})/g;
 
 /** Current browser route for one logical workstream, for observer/reinjection only. */
 export function workstreamForConversation(
