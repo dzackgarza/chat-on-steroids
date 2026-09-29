@@ -26,6 +26,7 @@ import { rawPromises as fs } from "../rawfs.js";
 import { SandboxError, resolvePath, toVirtualPath } from "../sandbox.js";
 import { logWarn } from "../logger.js";
 import {
+  WORKSTREAM_LEASE_MS,
   continueWorkstream,
   startWorkstream,
   workstreamWorkspace,
@@ -57,11 +58,24 @@ function workstreamRefusal(
       return 'That workstream is already registered. Call this tool with action="continue" and the same name to claim it.';
     case "WORKSTREAM_PATH_TAKEN":
       return `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path. One path has one workstream; claim "${refusal.holder}" with action="continue" instead.`;
-    case "WORKSTREAM_HELD":
-      return (
-        "WORKSTREAM_HELD: another chat holds this workstream and made a tool call under it within the last five minutes. " +
-        "Do not work on it here. The lock frees five minutes after its holder's last tool call."
+    case "WORKSTREAM_HELD": {
+      const held =
+        "WORKSTREAM_HELD: another chat holds this workstream. Do not work on it here. The lock frees five minutes after its holder's last tool call. ";
+      if (refusal.freesAt == null)
+        return (
+          held +
+          `A tool call under it is running now. Call \`sleep\` with seconds=${SLEEP_MAX_SECONDS}, then call this tool with action="continue" again. Do not end your turn.`
+        );
+      const seconds = Math.min(
+        SLEEP_MAX_SECONDS,
+        Math.max(1, Math.ceil((refusal.freesAt - Date.now()) / 1000) + 1),
       );
+      return (
+        held +
+        `It frees at ${new Date(refusal.freesAt).toISOString()}. Call \`sleep\` with seconds=${seconds}, then call this tool with action="continue" again. ` +
+        "If its holder makes another call first, you get this refusal again with a later time; repeat. Do not end your turn."
+      );
+    }
     case "WORKSTREAM_NOT_FOUND":
       return 'No workstream has that name. Check the name you were given; to create a new one, call this tool with action="start".';
     case "WORKSTREAM_UNAVAILABLE":
@@ -92,7 +106,10 @@ export function buildServer(
     },
   );
 
-  if (surface === "core") registerWorkstreamSetupTool(server, liveContext);
+  if (surface === "core") {
+    registerWorkstreamSetupTool(server, liveContext);
+    registerSleepTool(server);
+  }
 
   const registrar = createRegistrar(server, ctx, surface);
   if (surface === "core") {
@@ -122,6 +139,54 @@ export function buildServer(
   }
 
   return server;
+}
+
+/** The longest single sleep: the workstream lease, so one call outlasts any held lock. */
+const SLEEP_MAX_SECONDS = WORKSTREAM_LEASE_MS / 1000;
+
+/**
+ * A plain wait. Registered directly on the Core server, like setup, because it touches no
+ * workspace and needs no workstream_id: a chat refused a held lock must be able to wait for
+ * it to free without first holding anything. It admits no workstream call, so it renews no
+ * lease — a holder that sleeps past its lease can lose its lock.
+ */
+function registerSleepTool(server: McpServer): void {
+  server.registerTool(
+    "sleep",
+    {
+      title: "Wait",
+      description:
+        `Wait the given number of seconds, then return. Needs no workstream_id. Use it to wait for a time the app told you, ` +
+        `for example a held workstream lock to free, instead of ending your turn. It does not renew your workstream lock. ` +
+        `At most ${SLEEP_MAX_SECONDS} seconds per call.`,
+      inputSchema: z.object({
+        seconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(SLEEP_MAX_SECONDS)
+          .describe(`Seconds to wait, 1 to ${SLEEP_MAX_SECONDS}.`),
+      }),
+    },
+    async ({ seconds }, ctx) =>
+      guard("sleep", async () => {
+        const signal = ctx.mcpReq.signal;
+        const started = Date.now();
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, seconds * 1000);
+          signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+        });
+        const slept = Math.round((Date.now() - started) / 1000);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: signal.aborted ? `Cancelled after ${slept} s.` : `Slept ${slept} s. It is now ${new Date().toISOString()}.`,
+            },
+          ],
+        };
+      }),
+  );
 }
 
 /**

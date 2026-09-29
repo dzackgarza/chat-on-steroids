@@ -110,6 +110,7 @@ const CORE: SurfaceDefinition = {
   required: true,
   tools: [
     "workstream",
+    "sleep",
     "read",
     "view_image",
     "find",

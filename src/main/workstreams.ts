@@ -297,6 +297,8 @@ export type WorkstreamSetupResult =
         | "WORKSTREAM_PAUSED";
       /** The workstream that already owns the requested path. */
       holder?: string;
+      /** WORKSTREAM_HELD: when the holder's lease runs out, or null while a call of its is running. */
+      freesAt?: number | null;
     };
 
 export type WorkstreamAdmitResult =
@@ -364,8 +366,8 @@ export async function startWorkstream(
  * WORKSTREAM_LEASE_MS, or held open by a running call, refuses the claim.
  *
  * The claim is itself a received tool call, so it starts the new holder's lease. The holder's
- * conversation is unknown until workstream-binding.ts finds the chat whose record holds the
- * new id; a row reserved in `opening` keeps the replacement chat its command ACK bound.
+ * conversation is unknown until a generating page reports the new id from its own record
+ * (bindWorkstreamConversation); a row reserved in `opening` keeps the replacement chat its command ACK bound.
  */
 export async function continueWorkstream(
   logicalWorkstream: string,
@@ -376,12 +378,12 @@ export async function continueWorkstream(
     workstreamIdSchema.parse(logicalWorkstream);
     const prior = rows.get(logicalWorkstream);
     if (!prior) return { ok: false, code: "WORKSTREAM_NOT_FOUND" };
-    if (
-      ["active", "advancing"].includes(prior.phase) &&
-      (now < prior.lastActivity + WORKSTREAM_LEASE_MS ||
-        runningToolCallsForWorkstream(prior.id) > 0)
-    )
-      return { ok: false, code: "WORKSTREAM_HELD" };
+    if (["active", "advancing"].includes(prior.phase)) {
+      if (runningToolCallsForWorkstream(prior.id) > 0)
+        return { ok: false, code: "WORKSTREAM_HELD", freesAt: null };
+      if (now < prior.lastActivity + WORKSTREAM_LEASE_MS)
+        return { ok: false, code: "WORKSTREAM_HELD", freesAt: prior.lastActivity + WORKSTREAM_LEASE_MS };
+    }
     // Setup has no browser-provenance dependency. A `blocked` row is a controller-side
     // delivery failure (e.g. the app-opened chat's conversation never bound); the model's own
     // explicit `continue` is the attach that reclaims it. Only an in-flight replacement

@@ -22,7 +22,7 @@ export function serverInstructions(
   platform: NodeJS.Platform = process.platform,
 ): string {
   return (
-    "Before using ordinary tools, establish this chat's workstream identity with the `workstream` setup tool. Use action=start with a new logical workstream name to register and claim that repository/task identity; use action=continue with an already-registered name to claim it. Every other Core/Desktop call requires the returned workstream_id.\n\n" +
+    "Before using ordinary tools, establish this chat's workstream identity with the `workstream` setup tool. Use action=start with a new logical workstream name to register and claim that repository/task identity; use action=continue with an already-registered name to claim it. Every other Core/Desktop call requires the returned workstream_id. When the app tells you to wait for a time, call `sleep` (no workstream_id needed) and then retry; do not end your turn to wait.\n\n" +
     (surface === "desktop"
       ? desktopInstructions(ctx)
       : coreInstructions(ctx, platform))
