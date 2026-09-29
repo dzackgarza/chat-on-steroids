@@ -599,6 +599,20 @@
   display: none;
 }
 
+/* The running turn's tool clock. Quiet text, not a pill: it changes every second and must not
+   pull the eye the way a status does. Fixed-width digits keep it from shaking as it counts. */
+.clf-tool-clock {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0.6;
+}
+
+.clf-tool-clock[hidden] {
+  display: none;
+}
+
 .clf-pill-text {
   min-width: 0;
   overflow: hidden;
