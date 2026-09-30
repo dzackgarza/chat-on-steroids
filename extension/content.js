@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 14;
+  const RECORDER_VERSION = 15;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -2558,7 +2558,7 @@
   // 6: adds request-id ownership evidence used by deterministic MCP attribution.
   // 7: keys streaming commentary and native activity by ChatGPT thought/message identity,
   //    so React row replacement, raw text UUID rotation and refresh cannot mint duplicates.
-  const FIBER_VERSION = 10;
+  const FIBER_VERSION = 11;
   const FIBER_TIMEOUT_MS = 1500;
   const FIBER_MAX_ROWS = 400;
   /** Assistant turns whose per-call evidence is accepted from one scan. */

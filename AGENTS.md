@@ -655,13 +655,11 @@ correlation.ts        was requestId→conversationId stored, and restored after 
 recorder.ts            did the historical/page record use the available evidence honestly?
 ```
 
-ChatGPT can place `metadata.request_id` on the user-message branch that opened the active
-generation. That Fiber descriptor can have `conversationId: null`, even while the browser route
-has the concrete conversation id. Preserve the triggering user section when the local generation
-opens. Join its scan-qualified `data-clf-fiber-turn` stamp to the descriptor, then submit the exact
-request id through the app's correlation handshake. This path is page/recording evidence only.
-It does not grant workstream ownership, agent identity, workspace, terminal authority or a
-recorder thread.
+ChatGPT's current view model (`entries[].turn.items`, read by `fiber.js`) exposes no
+`metadata.request_id`, so the `fiber.js` link of this chain now reports every call with
+`requestId: null`. A chat's link to its workstream comes from the `Workstream claim:` line
+instead: `fiber.js` reports the model's public commentary as assistant messages, and the
+bridge binds the workstream when that text reaches `/events`.
 
 **Acceptance.** Correlation and browser identity are live-only claims. Use the installed extension,
 the real ChatGPT page and connector observations; never accept a synthetic Fiber/DOM transcript.
@@ -724,7 +722,11 @@ turn state, Fiber cache, rendered replacement state, pre-service-worker queue.
 props minus a denylist), never tool argument values, validates the exact CLF connector
 names, and fails closed on unfamiliar React shapes. Its `postMessage` output is
 page-controlled evidence useful for joining page to local truth — **never a credential**.
-Its protocol version and the content-side expectations move together.
+Its protocol version and the content-side expectations move together. It reads ChatGPT's
+view model: each `div[data-turn-key]` exchange joins by `turnKey` to one `entries[]` item,
+whose `turn.items` hold the user message, reasoning groups (commentary, thought headlines,
+`mcp-tool-call`s) and the final `assistant-message`. Commentary and thoughts carry no id;
+`fiber.js` names each by the nearest preceding id-bearing item plus its ordinal.
 
 **Must hold.** ChatGPT is an SPA: every async result proves it still belongs to its
 navigation epoch before mutating state. Turn boundaries must stay **event-driven**: Chrome's
