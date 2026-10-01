@@ -3294,6 +3294,11 @@ mode that produced most of the incidents in this section.
 2. **Observe direct state.** Read the worker's live state and recent transcript, the working tree,
    worker-authored commit history since the last tick, and any live process the worker claims to
    be waiting on. Use the repository's canonical queue/frontier instrument where one exists.
+   With `sleepWake.enabled`, a verified push discards the chat's tab while its turn keeps
+   running at OpenAI, so `just state` reads `generating:false`, a stale `lastPageToolAt` and a
+   transcript that stops at the push, for a chat that is working. Read `GET /sleep/status`,
+   the row's `lastActivity` and the `workstreamId` of in-flight calls before calling it stopped
+   (2026-10-01: three sends went to a slept new-qual-site while it committed every minute).
 3. **Check semantic alignment before throughput.** Inspect what the newest substantive work
    actually does. Does it satisfy the current node? Does it preserve the invariant? Is it crossing
    a phase boundary, reimplementing a dependency, or turning an audit into authoring? If the
