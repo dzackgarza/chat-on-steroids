@@ -3647,6 +3647,8 @@ nodes. Publication remains downstream of those substantive acceptance obligation
 are probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
 `placement-audit`.
 
+**2026-10-01 18:41 UTC: the owner resumed `new-qual-site`.** It is the only active managed stream; its live `TODO.md` selects its frontier. Everything else stays under the pause below.
+
 **2026-09-28 08:2x UTC: the owner paused the whole fleet** (research, the orchestrator and every other
 workstream). Nothing runs. Resume nothing until a later explicit owner instruction.
 
