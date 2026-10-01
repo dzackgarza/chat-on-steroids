@@ -3647,7 +3647,7 @@ nodes. Publication remains downstream of those substantive acceptance obligation
 are probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
 `placement-audit`.
 
-**2026-10-01 18:41 UTC: the owner resumed `new-qual-site`.** It is the only active managed stream; its live `TODO.md` selects its frontier. Everything else stays under the pause below.
+**2026-10-01 18:41 UTC: the owner resumed `new-qual-site` and started `math-notes-ipad`.** These are the only active managed streams. new-qual's live `TODO.md` selects its frontier. `math-notes-ipad` (`/home/dzack/gitclones/math-notes-app`, branch `ipad-port`) exists to build out the iPad app on that branch, ahead of that repository's v1-before-iPad sequencing, which still governs its `main`; it verifies Swift through `gh workflow run ios.yml --ref ipad-port` and never pushes `main`. The older `math-notes-app` and `math-notes-app-batch2` rows were bound to `/research` and stay as they are. Everything else stays under the pause below.
 
 **2026-09-28 08:2x UTC: the owner paused the whole fleet** (research, the orchestrator and every other
 workstream). Nothing runs. Resume nothing until a later explicit owner instruction.
