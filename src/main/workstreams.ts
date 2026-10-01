@@ -60,6 +60,9 @@ const rowSchema = z
     error: z.string().nullable(),
     retiredKeys: z.array(z.string()),
     retiredConversations: z.array(z.string()),
+    /** Chats whose recorded claim line named this row, under its current lock or a retired
+     * one. Exact evidence of which workstream a chat holds, kept across reclaims. */
+    claimedBy: z.array(z.string()).default([]),
   })
   .strict();
 export type Workstream = z.infer<typeof rowSchema>;
@@ -346,6 +349,7 @@ export async function startWorkstream(
       error: null,
       retiredKeys: [],
       retiredConversations: [],
+      claimedBy: [],
     });
     await save();
     return { ok: true, id: logicalWorkstream, workstreamId };
@@ -412,6 +416,7 @@ export async function continueWorkstream(
       error: null,
       retiredKeys,
       retiredConversations: [...prior.retiredConversations],
+      claimedBy: [...prior.claimedBy],
     });
     await save();
     return {
@@ -460,6 +465,7 @@ export async function reserveWorkstream(
       error: null,
       retiredKeys: [...(prior?.retiredKeys ?? [])],
       retiredConversations: [...(prior?.retiredConversations ?? [])],
+      claimedBy: [...(prior?.claimedBy ?? [])],
     });
     await save();
     return { ok: true, id: logicalWorkstream, workstreamId: lock };
@@ -584,6 +590,17 @@ export async function bindWorkstreamConversation(
 ): Promise<string | null> {
   return exclusive(async () => {
     ready();
+    // A claim line names its row even after the lock rotated: every reclaim nulls the row's
+    // conversation, and a slept or `chat_error` page may never store the newer claim line.
+    const claimed = [...rows.values()].find(
+      (candidate) => candidate.lock === lock || candidate.retiredKeys.includes(lock),
+    );
+    if (claimed && !claimed.claimedBy.includes(conversationId)) {
+      for (const other of rows.values())
+        other.claimedBy = other.claimedBy.filter((id) => id !== conversationId);
+      claimed.claimedBy = [...claimed.claimedBy, conversationId].slice(-8);
+      await save();
+    }
     const row = [...rows.values()].find((candidate) => candidate.lock === lock);
     if (!row) return null;
     if (row.conversationId === conversationId) return row.id;
@@ -932,6 +949,13 @@ export async function nextWorkstreamActions(
           (now >= row.nextCheck && row.conversationId === null)),
     );
   });
+}
+
+/** The workstream a chat last claimed by a recorded claim line, or null without that evidence. */
+export function claimedWorkstreamOf(conversationId: string): string | null {
+  return (
+    [...rows.values()].find((row) => row.claimedBy.includes(conversationId))?.id ?? null
+  );
 }
 
 export function currentWorkstreamAction(

@@ -40,6 +40,7 @@ import {
 import {
   autoAdvancingWorkstreamForCommand,
   bindWorkstreamConversation,
+  claimedWorkstreamOf,
   bindWorkstreamReplacement,
   blockWorkstreamAction,
   configureWorkstream,
@@ -221,6 +222,11 @@ function mayOwnUnattributedWorkstreamCall(
     // workstream admission boundary proves that it cannot be. This is what lets the steward's
     // orchestrator call invoke the normal send/revive path without deadlocking on itself.
     if (target && target.id !== workstreamId) return false;
+    // The same proof survives a reclaim: the target's own recorded claim line names another
+    // workstream. Without this, one unbound stream's calls blocked every send to every chat
+    // once reclaims had unbound the rows (2026-10-01, math-notes-ipad vs new-qual-site).
+    const claimed = claimedWorkstreamOf(conversationId);
+    if (!target && claimed && claimed !== workstreamId) return false;
   }
   return mayOwnUnattributedCall(conversationId, arrivedAt);
 }
