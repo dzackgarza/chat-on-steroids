@@ -774,13 +774,24 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
 export async function nextWorkstreamActions(
-  now = Date.now(),
+  now: number,
+  injecting: boolean,
 ): Promise<Workstream[]> {
   return exclusive(async () => {
     ready();
     for (const row of rows.values()) {
       // Swarm workers are driven by agents.ts alone (see workerOwnsWorkstream).
       if (workerOwnsWorkstream(row.id)) continue;
+      // An archive is performed by the extension, which is offered none while auto-continuation
+      // is off (GET /workstreams/archive), so a row already parked there would never leave it.
+      // Return it to `recovering` with its attempts intact; switching the owner's flag back on
+      // re-enters the same archive on the next sweep.
+      if (!injecting && row.phase === "archiving") {
+        row.phase = "recovering";
+        row.actionId = null;
+        row.commandId = null;
+        row.nextCheck = now;
+      }
       // A durable five-minute failure remains a failure until a real new model/tool action
       // begins. Controller restart/resume must not convert it back into a fresh active lease.
       if (
@@ -893,6 +904,11 @@ export async function nextWorkstreamActions(
         row.nextCheck = now;
         continue;
       }
+      // With auto-continuation off nothing delivers a revive or performs an archive, so
+      // escalating would spend the attempts on sends that are dropped and then park the row in
+      // an `archiving` no browser action will ever finish, where the chat's own `continue` is
+      // refused. The row stays `recovering`: the steward's signal, and still attachable.
+      if (!injecting) continue;
       if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;

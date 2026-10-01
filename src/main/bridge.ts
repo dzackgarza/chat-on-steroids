@@ -5939,8 +5939,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           receipt.error ?? "initial_delivery_failed",
         );
     }
-    const actions = await nextWorkstreamActions(now);
     const injecting = getConfig().autoContinue;
+    const actions = await nextWorkstreamActions(now, injecting);
     for (const command of [...commands]) {
       if (
         command.spec.type === "send" &&
