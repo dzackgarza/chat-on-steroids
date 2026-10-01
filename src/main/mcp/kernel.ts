@@ -23,8 +23,10 @@ import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
 import {
   admitWorkstreamCall,
+  bindWorkstreamConversation,
   workstreamWorkspace,
 } from "../workstreams.js";
+import { awaitRequestCorrelation } from "../session/correlation.js";
 import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Capabilities, Root } from "../../shared/types.js";
@@ -266,6 +268,21 @@ type McpCallContext = Pick<ServerContext, "sessionId">;
  * conversations had named an unclaimed `agents` request inside the same window — and both
  * were refused WORKER_IDENTITY_LOST. Nothing about timing needs to be assumed now.
  */
+/**
+ * Binds an admitted claim to the chat that page evidence proves issued this request. The claim
+ * line a chat prints is the other route, and it is lost whenever the page stores nothing
+ * (`chat_error`): on 2026-10-01 new-qual-site reclaimed its row from such a page, so the row
+ * stayed unbound while the chat worked, and its next stall blocked as `conversation_unbound`
+ * instead of recovering. Only the row's current lock binds, so a stale claim changes nothing.
+ */
+const CALLER_BIND_WAIT_MS = 60_000;
+function bindAdmittedCaller(requestId: string | null, lock: string): void {
+  if (!requestId) return;
+  void awaitRequestCorrelation(requestId, CALLER_BIND_WAIT_MS).then(async (proof) => {
+    if (proof) await bindWorkstreamConversation(lock, proof.conversationId);
+  });
+}
+
 function requestIdOf(mcpCtx: McpCallContext | undefined): string | null {
   // server.ts normalizes x-request-id exactly once at raw HTTP ingress and binds that value
   // to this async request. Re-reading the SDK header here would create a second parser/source
@@ -1034,6 +1051,7 @@ export function createRegistrar(
               "this call with the workstream_id it returns.",
           );
         }
+        bindAdmittedCaller(requestIdOf(mcpCtx), workstream_id as string);
         return dispatch(
           name,
           args,
