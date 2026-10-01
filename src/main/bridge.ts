@@ -1692,7 +1692,11 @@ async function handle(
     // decides whether a turn should be interrupted, and a refusal or an acceptance that does
     // not say what state the chat was in forces it to guess or to go round the app.
     const state = target ? conversationTurnState(target) : null;
-    if (target && ifGenerating === "refuse" && state?.generating) {
+    // A reload is itself the caller's explicit page action, aimed at exactly the chat whose turn
+    // the recorder still calls generating (a page that stored `chat_error`, or a renderer stuck
+    // behind a turn it will never resolve). Refusing it here left `just revive` unable to reach
+    // the one state it exists for.
+    if (target && ifGenerating === "refuse" && !reloadFirst && state?.generating) {
       return json(
         res,
         409,
