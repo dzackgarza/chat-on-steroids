@@ -3618,6 +3618,10 @@ Consult when an instrument is about to change what you do. None of it is the job
   `node steward-dashboard/tools/reload-extension.mjs` (`chrome.runtime.reload()` in its service
   worker). 2026-10-02 07:00: four expiries on two chats, then both delivered on the first try
   after the reload. Do not replace chats for this; nothing is wrong with them.
+  If sends still expire after the reload, including `just new`, read the Chrome processes: a
+  renderer at gigabytes of RSS with the host load climbing starves every page. Restart
+  `chat-on-steroids-browser.service`; the chats keep running server-side. 2026-10-02 11:01: a
+  1.8 GB renderer at 61% CPU; after the restart the next say delivered to the same chat.
 - `native-insert-no-text` repeating on one chat (`execCommand('insertText')` false with the
   composer focused, selection inside it, no Stop button, document focused) is that
   conversation's page, not the browser: other chats type fine meanwhile. It has hit only long
