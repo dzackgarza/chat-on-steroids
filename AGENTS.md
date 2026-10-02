@@ -3613,6 +3613,11 @@ Consult when an instrument is about to change what you do. None of it is the job
   tab slept, the page will not type over it, and a retry expires the same way. Use `just
   interrupt`, which presses Stop first (2026-10-02: math-notes-ipad, three expiries, then one
   interrupt delivered).
+- When every send `expires` across different chats and verbs while the pages themselves load
+  and show a ready composer, the extension has stopped redeeming commands. Reload it:
+  `node steward-dashboard/tools/reload-extension.mjs` (`chrome.runtime.reload()` in its service
+  worker). 2026-10-02 07:00: four expiries on two chats, then both delivered on the first try
+  after the reload. Do not replace chats for this; nothing is wrong with them.
 - `native-insert-no-text` repeating on one chat (`execCommand('insertText')` false with the
   composer focused, selection inside it, no Stop button, document focused) is that
   conversation's page, not the browser: other chats type fine meanwhile. It has hit only long
