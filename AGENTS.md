@@ -3608,6 +3608,12 @@ Consult when an instrument is about to change what you do. None of it is the job
   tab slept, the page will not type over it, and a retry expires the same way. Use `just
   interrupt`, which presses Stop first (2026-10-02: math-notes-ipad, three expiries, then one
   interrupt delivered).
+- `native-insert-no-text` repeating on one chat (`execCommand('insertText')` false with the
+  composer focused, selection inside it, no Stop button, document focused) is that
+  conversation's page, not the browser: other chats type fine meanwhile. It has hit only long
+  conversations (new-qual-site at 2400+ nodes, math-notes-ipad after nine hours). After the
+  second occurrence, hand off to a fresh chat (`just new` with the workstream brief); retries
+  and interrupts waste the window, and an interrupt that fails here also stops the turn.
 - ChatGPT enforces subscription usage limits with a fixed reset time. When sends stop working
   (the page says "Our systems have detected unusual activity coming from your system", "You've
   hit your rate limit", or fresh chats will not open), read the state from a chatgpt.com page:
