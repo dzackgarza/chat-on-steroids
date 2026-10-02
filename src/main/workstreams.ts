@@ -10,7 +10,7 @@ import { runningToolCallsForWorkstream } from "./mcp/call-context.js";
 import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
-import { workerOwnsWorkstream } from "./agents.js";
+import { retirePrimeRuns, workerOwnsWorkstream } from "./agents.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -1119,6 +1119,8 @@ export async function finishWorkstreamArchive(
       // frontend. The replacement ACK installs the next route in bindWorkstreamReplacement().
       if (!row.retiredConversations.includes(row.conversationId))
         row.retiredConversations.push(row.conversationId);
+      const slept = retirePrimeRuns(row.conversationId, `prime chat of workstream ${row.id} was replaced`);
+      if (slept > 0) logWarn(`workstream ${row.id}: slept ${slept} worker(s) of the replaced prime ${row.conversationId}`);
       row.conversationId = null;
     }
     row.actionId = `replace-${row.lock}`;

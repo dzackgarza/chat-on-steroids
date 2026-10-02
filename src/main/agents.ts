@@ -2637,6 +2637,28 @@ export function sleepWorkerConversation(conversationId: string, reason: string):
 }
 
 /**
+ * Ends the worker runs a retired prime chat owned.
+ *
+ * Replacing a prime leaves its run attached to a chat no one will ever read from again, while the
+ * replacement spawns a run of its own. On 2026-10-02 fifteen such workers (nine runs) sat idle for
+ * up to six hours, each kept tab-mounted, until the shared renderer starved every page and no new
+ * chat could open. Sleeping the workers and parking the run releases their tabs; their reports and
+ * bindings stay in dormant history as for any parked run. Returns the number of workers slept.
+ */
+export function retirePrimeRuns(conversationId: string, reason: string): number {
+  let slept = 0;
+  for (const owner of [...runs.values()]) {
+    if (owner.primeConversationId !== conversationId) continue;
+    for (const agent of [...owner.agents.values()]) {
+      if (agent.info.role !== 'worker' || isOver(agent.info.state)) continue;
+      if (inRun(owner, () => sleepAgent(agent, reason))) slept += 1;
+    }
+    releaseQuiescentRun({ runId: owner.runId, reason });
+  }
+  return slept;
+}
+
+/**
  * Sleeps a worker by slot id. Used by sweeps that already know which row they proved quiet,
  * and which run it is in.
  */
