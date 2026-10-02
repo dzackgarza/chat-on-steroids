@@ -1299,6 +1299,11 @@ prints, in full.
 **When a chat's context fills, hand off.** Read its transcript and open a new chat with a very
 simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
 progress. Nothing more.
+A brief that states what is already done is acceptance evidence the new chat will act on, so
+take it from the repository's record (commits by path, the node's own ledger), never from the
+old chat's prose: on 2026-10-02 a brief saying a copy pass "has read algebra, analysis,
+topology" meant wiki pages, and the replacement closed the node with 1,600 corpus cards unread.
+Name the ongoing task, never "the next" unit, or the chat stops after one.
 
 ### The steward's job
 
