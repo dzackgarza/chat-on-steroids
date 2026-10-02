@@ -596,9 +596,12 @@ export async function bindWorkstreamConversation(
       (candidate) => candidate.lock === lock || candidate.retiredKeys.includes(lock),
     );
     if (claimed && !claimed.claimedBy.includes(conversationId)) {
+      const previous = claimed.claimedBy[claimed.claimedBy.length - 1] ?? null;
       for (const other of rows.values())
         other.claimedBy = other.claimedBy.filter((id) => id !== conversationId);
       claimed.claimedBy = [...claimed.claimedBy, conversationId].slice(-8);
+      // A new chat claiming the workstream is a prime change whichever path opened it.
+      if (previous && !workerOwnsWorkstream(claimed.id)) retireReplacedPrimeRuns(claimed.id, previous);
       await save();
     }
     const row = [...rows.values()].find((candidate) => candidate.lock === lock);
@@ -1092,6 +1095,13 @@ export async function blockWorkstreamAction(
   });
 }
 
+/** Sleeps the worker runs of a workstream whose prime chat was just replaced, and says so. */
+function retireReplacedPrimeRuns(workstreamId: string, previousConversationId: string): void {
+  const slept = retirePrimeRuns(workstreamId, previousConversationId, `prime chat of workstream ${workstreamId} was replaced`);
+  if (slept > 0)
+    logWarn(`workstream ${workstreamId}: slept ${slept} worker(s) of the replaced prime ${previousConversationId}`);
+}
+
 export async function finishWorkstreamArchive(
   id: string,
   actionId: string,
@@ -1119,8 +1129,7 @@ export async function finishWorkstreamArchive(
       // frontend. The replacement ACK installs the next route in bindWorkstreamReplacement().
       if (!row.retiredConversations.includes(row.conversationId))
         row.retiredConversations.push(row.conversationId);
-      const slept = retirePrimeRuns(row.id, row.conversationId, `prime chat of workstream ${row.id} was replaced`);
-      if (slept > 0) logWarn(`workstream ${row.id}: slept ${slept} worker(s) of the replaced prime ${row.conversationId}`);
+      retireReplacedPrimeRuns(row.id, row.conversationId);
       row.conversationId = null;
     }
     row.actionId = `replace-${row.lock}`;
@@ -1156,6 +1165,8 @@ export async function bindWorkstreamReplacement(
     );
     if (!row) return null;
     const previousConversationId = row.conversationId;
+    if (previousConversationId && previousConversationId !== conversationId)
+      retireReplacedPrimeRuns(row.id, previousConversationId);
     if (
       row.conversationId &&
       row.conversationId !== conversationId &&
