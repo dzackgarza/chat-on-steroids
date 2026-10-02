@@ -80,7 +80,7 @@ export function noteUsageLimitSignal(text: string | null | undefined, observedAt
     const hold = Math.min(MAX_HOLD_MS, FIRST_HOLD_MS * 2 ** (strikes - 1));
     blockedUntil = Math.max(blockedUntil, now + hold);
     logWarn(
-      `ChatGPT usage limit (strike ${strikes}): holding every send until ${new Date(blockedUntil).toISOString()}`,
+      `ChatGPT usage limit (strike ${strikes}): holding every send until ${new Date(blockedUntil).toISOString()}; signal: ${JSON.stringify((text ?? "").slice(0, 200))}`,
     );
   }
   if (reading || now - lastReadAt < READ_INTERVAL_MS) return;
