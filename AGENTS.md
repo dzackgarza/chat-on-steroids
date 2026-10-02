@@ -3603,6 +3603,11 @@ Consult when an instrument is about to change what you do. None of it is the job
 - Never scan a recording with `jq`; an invalid surrogate escape aborts it mid-file and a
   healthy chat looks frozen for hours. Use `grep` and `sed`.
 - Give `just say` the full conversation id. A prefix opens a new chat and types into that.
+- A `say` that `expired` ("no page redeemed") while `just state` reads `generating:false` is
+  usually a page still showing a dead turn's Stop button: the recorder lost that turn when the
+  tab slept, the page will not type over it, and a retry expires the same way. Use `just
+  interrupt`, which presses Stop first (2026-10-02: math-notes-ipad, three expiries, then one
+  interrupt delivered).
 - ChatGPT enforces subscription usage limits with a fixed reset time. When sends stop working
   (the page says "Our systems have detected unusual activity coming from your system", "You've
   hit your rate limit", or fresh chats will not open), read the state from a chatgpt.com page:
