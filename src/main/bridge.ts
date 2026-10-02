@@ -1479,7 +1479,8 @@ async function handle(
     route === "/workstreams/auto-advance" ||
     route === "/workstreams/pause" ||
     route === "/workstreams/resume" ||
-    route === "/workstreams/replace"
+    route === "/workstreams/replace" ||
+    route === "/workstreams/context"
   ) {
     if (!(await localSenderAuthorised(req)))
       return json(res, 401, { error: "unauthorised" }, origin);
@@ -1513,6 +1514,15 @@ async function handle(
       const paused = await pauseWorkstream(id.data);
       await sweepWorkstreams();
       return json(res, paused ? 200 : 404, { paused }, origin);
+    }
+    // The context is the brief every auto-continuation re-sends. A stale one re-steers a worker
+    // on each advance: on 2026-10-02 new-qual-site's original brief overrode the owner's later
+    // redirect within twelve minutes of auto-continuation being switched on.
+    if (route === "/workstreams/context") {
+      if (typeof body["context"] !== "string" || body["context"].length > 40_000)
+        return json(res, 400, { error: "context_required_max_40000" }, origin);
+      const configured = await configureWorkstream(id.data, body["context"]);
+      return json(res, configured ? 200 : 404, { configured }, origin);
     }
     if (route === "/workstreams/replace") {
       const replacing = await replaceWorkstream(id.data);
