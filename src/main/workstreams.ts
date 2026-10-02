@@ -1119,7 +1119,7 @@ export async function finishWorkstreamArchive(
       // frontend. The replacement ACK installs the next route in bindWorkstreamReplacement().
       if (!row.retiredConversations.includes(row.conversationId))
         row.retiredConversations.push(row.conversationId);
-      const slept = retirePrimeRuns(row.conversationId, `prime chat of workstream ${row.id} was replaced`);
+      const slept = retirePrimeRuns(row.id, row.conversationId, `prime chat of workstream ${row.id} was replaced`);
       if (slept > 0) logWarn(`workstream ${row.id}: slept ${slept} worker(s) of the replaced prime ${row.conversationId}`);
       row.conversationId = null;
     }

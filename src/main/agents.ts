@@ -2645,10 +2645,14 @@ export function sleepWorkerConversation(conversationId: string, reason: string):
  * chat could open. Sleeping the workers and parking the run releases their tabs; their reports and
  * bindings stay in dormant history as for any parked run. Returns the number of workers slept.
  */
-export function retirePrimeRuns(conversationId: string, reason: string): number {
+export function retirePrimeRuns(workstreamId: string, conversationId: string | null, reason: string): number {
   let slept = 0;
   for (const owner of [...runs.values()]) {
-    if (owner.primeConversationId !== conversationId) continue;
+    // A run follows its workstream across prime replacements and keeps the prime chat it was
+    // started from, so the replaced chat's id alone rarely matches (2026-10-02: runs still named
+    // a never-promoted WEB: route and a chat replaced six hours earlier). Sleeping is reversible:
+    // the new prime can wake any worker it still needs by messaging it.
+    if (owner.primeWorkstreamId !== workstreamId && owner.primeConversationId !== conversationId) continue;
     for (const agent of [...owner.agents.values()]) {
       if (agent.info.role !== 'worker' || isOver(agent.info.state)) continue;
       if (inRun(owner, () => sleepAgent(agent, reason))) slept += 1;
