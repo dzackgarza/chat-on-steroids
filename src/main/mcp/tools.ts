@@ -69,7 +69,10 @@ function workstreamRefusal(
       return `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path. One path has one workstream; claim "${refusal.holder}" with action="continue" instead.`;
     case "WORKSTREAM_HELD": {
       const held =
-        "WORKSTREAM_HELD: another chat holds this workstream. Do not work on it here. The lock frees five minutes after its holder's last tool call. ";
+        "WORKSTREAM_HELD: this workstream's lock is held, either by another chat or by this chat's own earlier claim. " +
+        "If this chat was already given a workstream_id for it (in a claim result or in the message that started this turn), keep using that id on your calls and do not call this tool again. " +
+        "Otherwise do not work on it here; the lock frees five minutes after its holder's last tool call. " +
+        "The `sleep` named below is this connector's own tool, which is how a chat waits for a lock; it is not the forbidden foreground shell sleep. ";
       if (refusal.freesAt == null)
         return (
           held +
