@@ -897,6 +897,12 @@ export async function nextWorkstreamActions(
       // immediately, and a delivered one starts the response window below.
       if (row.phase === "recovering" && row.commandId !== null) continue;
       if (row.phase !== "recovering" || now < row.nextCheck) continue;
+      // Every reclaim clears the binding, and a slept or chat_error page rarely stores the new
+      // claim line, so an unbound row usually still has exact evidence of its holder: the last
+      // chat whose recorded claim line named it. Revive that chat rather than block (2026-10-02:
+      // new-qual-site and math-notes-ipad both blocked as unbound with their holders recorded).
+      if (!row.conversationId && row.claimedBy.length > 0)
+        row.conversationId = row.claimedBy[row.claimedBy.length - 1]!;
       if (!row.conversationId) {
         // The holder's chat was never found, so there is no chat to revive. A fresh chat would
         // be a second holder of work the first may still be doing: stop and say so.
