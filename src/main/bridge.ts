@@ -6027,7 +6027,12 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           continue;
         }
         if (row.phase === "opening" && receipt && !receipt.committed) {
-          noteUsageLimitSignal(receipt.error, receipt.completedAt);
+          // A throttled fresh chat is ChatGPT's short new-conversation backpressure (the notice
+          // clears in about 30 s); freshChatBackoff below owns it. Feeding it to the account-wide
+          // usage hold also froze every send to every chat: four false holds on 2026-10-02 while
+          // conversation/init reported no send block.
+          if (!freshChatThrottled(receipt.error))
+            noteUsageLimitSignal(receipt.error, receipt.completedAt);
           if (foreignComposerDraft(receipt.error)) {
             // The extension keeps text it cannot prove the app typed (it may be the user's), so
             // every fresh chat would fail the same way. Retrying hid this for good (2026-09-27).
