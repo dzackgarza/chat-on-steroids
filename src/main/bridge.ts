@@ -5956,7 +5956,7 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         );
     }
     const injecting = getConfig().autoContinue;
-    const actions = await nextWorkstreamActions(now, injecting);
+    const actions = await nextWorkstreamActions(now, injecting, now < sendBlockedUntil(now));
     for (const command of [...commands]) {
       if (
         command.spec.type === "send" &&

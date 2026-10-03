@@ -796,6 +796,7 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
 export async function nextWorkstreamActions(
   now: number,
   injecting: boolean,
+  sendsHeld = false,
 ): Promise<Workstream[]> {
   return exclusive(async () => {
     ready();
@@ -935,6 +936,12 @@ export async function nextWorkstreamActions(
       // an `archiving` no browser action will ever finish, where the chat's own `continue` is
       // refused. The row stays `recovering`: the steward's signal, and still attachable.
       if (!injecting) continue;
+      // Under a usage-limit hold the bridge delivers no revive (chatgpt-limits.ts), so an
+      // attempt spent now is a revive never sent. 2026-10-02 23:50: strike 2 held sends for 30
+      // minutes, and the throttled chats of all three streams ran out of attempts undelivered and
+      // were archived for fresh chats, which the same throttling then kept from opening. The row
+      // waits in `recovering` with its pending revive, which goes out when the hold lifts.
+      if (sendsHeld) continue;
       if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
