@@ -14,7 +14,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 import { logError, logInfo, logWarn } from "./logger.js";
 
@@ -31,12 +31,35 @@ const LIMIT_PHRASES = [
   "chatgpt_rate_limited",
 ];
 
-let blockedUntil = 0;
+/**
+ * The hold and its escalation survive a restart. Kept in memory only, a restart reopened sends
+ * mid-hold and reset the strike count: on 2026-10-03 00:12 a deploy restart dropped strike 2's
+ * hold nine minutes early while ChatGPT was still answering "Too many requests".
+ */
+const HOLD_FILE = `${process.env.HOME}/.config/chat-on-steroids/state/usage-hold.json`;
+type HoldState = { blockedUntil: number; strikes: number; lastStrikeAt: number };
+
+function loadHold(): HoldState {
+  if (!existsSync(HOLD_FILE)) return { blockedUntil: 0, strikes: 0, lastStrikeAt: 0 };
+  const state = JSON.parse(readFileSync(HOLD_FILE, "utf8")) as HoldState;
+  for (const key of ["blockedUntil", "strikes", "lastStrikeAt"] as const)
+    assert(Number.isFinite(state[key]), `${HOLD_FILE} carries a numeric ${key}`);
+  return state;
+}
+
+function saveHold(): void {
+  const state: HoldState = { blockedUntil, strikes, lastStrikeAt };
+  writeFileSync(`${HOLD_FILE}.tmp`, JSON.stringify(state));
+  renameSync(`${HOLD_FILE}.tmp`, HOLD_FILE);
+}
+
+const loaded = loadHold();
+let blockedUntil = loaded.blockedUntil;
 let lastReadAt = 0;
 let reading: Promise<void> | null = null;
 /** Escalation: consecutive limit episodes hold longer. */
-let strikes = 0;
-let lastStrikeAt = 0;
+let strikes = loaded.strikes;
+let lastStrikeAt = loaded.lastStrikeAt;
 /** First hold, doubling per strike up to the cap. */
 const FIRST_HOLD_MS = 15 * 60_000;
 const MAX_HOLD_MS = 4 * 60 * 60_000;
@@ -79,6 +102,7 @@ export function noteUsageLimitSignal(text: string | null | undefined, observedAt
     lastStrikeAt = now;
     const hold = Math.min(MAX_HOLD_MS, FIRST_HOLD_MS * 2 ** (strikes - 1));
     blockedUntil = Math.max(blockedUntil, now + hold);
+    saveHold();
     logWarn(
       `ChatGPT usage limit (strike ${strikes}): holding every send until ${new Date(blockedUntil).toISOString()}; signal: ${JSON.stringify((text ?? "").slice(0, 200))}`,
     );
@@ -89,6 +113,7 @@ export function noteUsageLimitSignal(text: string | null | undefined, observedAt
     .then((resetsAt) => {
       if (resetsAt && resetsAt + RESET_MARGIN_MS > blockedUntil) {
         blockedUntil = resetsAt + RESET_MARGIN_MS;
+        saveHold();
         logWarn(`ChatGPT published a send-block reset at ${new Date(resetsAt).toISOString()}; hold extended to it`);
       } else if (resetsAt === null) {
         logInfo("ChatGPT usage-limit signal: conversation/init publishes no send block; the escalating hold stands");
