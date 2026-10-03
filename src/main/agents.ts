@@ -3757,6 +3757,18 @@ export function workerOwnsWorkstream(workstreamId: string): boolean {
   return false;
 }
 
+/**
+ * Whether the worker behind this workstream row has ended for good: failed or finished, and not
+ * revivable. Its row then has nothing left to open or recover.
+ */
+export function workerEndedForWorkstream(workstreamId: string): boolean {
+  for (const owner of [...runs.values(), ...dormantRuns.values()])
+    for (const agent of owner.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId)
+        return isOver(agent.info.state) && agent.info.revivable !== true;
+  return false;
+}
+
 export function dormantWorkerNoticeForWorkstream(
   workstreamId: string | null | undefined,
 ): string | null {

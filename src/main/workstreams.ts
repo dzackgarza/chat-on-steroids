@@ -10,7 +10,7 @@ import { runningToolCallsForWorkstream } from "./mcp/call-context.js";
 import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
-import { retirePrimeRuns, workerOwnsWorkstream } from "./agents.js";
+import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream } from "./agents.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -801,6 +801,18 @@ export async function nextWorkstreamActions(
   return exclusive(async () => {
     ready();
     for (const row of rows.values()) {
+      // A worker that ended for good leaves its row in whatever phase it was opened in, holding a
+      // command no browser will redeem (2026-10-02/03: workers 56, 57, 58, 66 and 67 failed
+      // chatgpt_rate_limited and their rows sat `opening`, each paused by hand). Park the row.
+      if (
+        workerEndedForWorkstream(row.id) &&
+        ["opening", "active", "advancing", "recovering"].includes(row.phase)
+      ) {
+        row.phase = "paused";
+        row.commandId = null;
+        row.actionId = null;
+        continue;
+      }
       // Swarm workers are driven by agents.ts alone (see workerOwnsWorkstream).
       if (workerOwnsWorkstream(row.id)) continue;
       // An archive is performed by the extension, which is offered none while auto-continuation
