@@ -98,9 +98,15 @@ export function noteUsageLimitSignal(text: string | null | undefined, observedAt
   if (now - observedAt > SIGNAL_FRESH_MS) return;
   if (now - lastStrikeAt > STRIKE_RESET_MS) strikes = 0;
   if (now - lastStrikeAt >= STRIKE_DEBOUNCE_MS) {
-    strikes++;
+    // "Too many requests" is a request-rate 429, not the subscription limit: on 2026-10-03 it
+    // fired seven times while ChatGPT published no send block and the chats kept working through
+    // it, and its doubling holds froze the fleet for 2h, then 4h, then 4h again. It holds for the
+    // first-hold window only and does not escalate; the usage-limit notices still double.
+    const lower = (text ?? "").toLowerCase();
+    const rateOnly = !LIMIT_PHRASES.some((phrase) => phrase !== "too many requests" && lower.includes(phrase));
+    if (!rateOnly) strikes++;
     lastStrikeAt = now;
-    const hold = Math.min(MAX_HOLD_MS, FIRST_HOLD_MS * 2 ** (strikes - 1));
+    const hold = rateOnly ? FIRST_HOLD_MS : Math.min(MAX_HOLD_MS, FIRST_HOLD_MS * 2 ** (strikes - 1));
     blockedUntil = Math.max(blockedUntil, now + hold);
     saveHold();
     logWarn(
