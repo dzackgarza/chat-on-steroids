@@ -6684,6 +6684,11 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
         !conversation ||
         provisionalRoute(conversation) ||
         !["active", "advancing"].includes(row.phase) ||
+        // Same definition as the closing half above: a worker row's phase does not follow its
+        // worker, so only a managed (live) chat is reopened. Using the row phase here reopened
+        // every slept worker's tab that the closing half had just reaped (2026-10-03 03:02-03:09,
+        // a reopen/close loop of eight worker chats).
+        !managed.has(conversation) ||
         kept.has(conversation) ||
         tabs.some((tab) => {
           const shown = tabConversation(tab.url);
