@@ -161,6 +161,7 @@ import {
   workerConversationGone,
   workerRevivalDeliveredSince,
   liveAgentConversations,
+  workerOwnsWorkstream,
   type WorkerRevival,
 } from "./agents.js";
 import {
@@ -6604,8 +6605,13 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
   for (const tab of blanks) if (!tabBlankSince.has(tab.id)) tabBlankSince.set(tab.id, now);
 
   const managed = new Set<string>(liveAgentConversations().map(currentBrowserRoute));
+  // A worker's row keeps the phase it was opened in after the worker sleeps, so for worker rows
+  // liveAgentConversations() alone says whether the chat is live. Counting the rows kept every
+  // slept worker's tab mounted: on 2026-10-03 thirteen tabs (ten of them workers, six asleep
+  // under replaced primes) grew renderers to 2.9 GB, and no chat could open until the browser
+  // was restarted at 02:16; 30 minutes later a renderer was back at 1.2 GB.
   for (const row of workstreamStatus())
-    if (row.conversationId && !["paused", "blocked"].includes(row.phase))
+    if (row.conversationId && !["paused", "blocked"].includes(row.phase) && !workerOwnsWorkstream(row.id))
       managed.add(currentBrowserRoute(row.conversationId));
   const commandTargets = new Set(
     commands.map((command) => commandTabTargets.get(command.id)).filter(Boolean),
