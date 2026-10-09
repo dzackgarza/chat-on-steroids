@@ -6701,6 +6701,11 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
       logWarn(`tab reaper: ${row.id} has no tab for ${conversation}; opening one`);
       await openInBrowser(`https://chatgpt.com/c/${conversation}`);
     }
+  // Chrome exits when its last page closes, and the service then restarts it onto a fresh
+  // chatgpt.com page that the next pass reaps again. On 2026-10-09 08:30-08:38, with no chat
+  // bound, that looped the browser six times in eight minutes. Leave one page standing.
+  const survivors = pages.filter((tab) => !leaks.some((leak) => leak.id === tab.id));
+  if (survivors.length === 0 && leaks.length > 0) leaks.pop();
   for (const leak of leaks) {
     await browserTabs.close(leak.id);
     tabFirstSeen.delete(leak.id);
