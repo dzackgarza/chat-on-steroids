@@ -240,6 +240,8 @@ systemctl --user status chat-on-steroids-browser.service
 
 When ChatGPT login expires on the remote server, synchronize the session from the local authenticated browser using Chrome DevTools Protocol (CDP).
 
+The session file `~/.config/chat-on-steroids/chatgpt-session.json` has two consumers on `rack`: the daemon reads it on every usage-limit check (`src/main/chatgpt-limits.ts`, re-read per call, so no restart follows a refresh), and Step 3 can seed the headless Chrome from it. Its `accessToken` is a JWT that lives ten days from issue; decode its `exp` claim to see when the next resync is due. The file's `expires` field is the 90-day NextAuth session and says nothing about the token.
+
 ### Prerequisites
 
 - Local Chrome running with `--remote-debugging-port=9222` and logged into `https://chatgpt.com/`.
@@ -294,7 +296,27 @@ scp ~/.config/chat-on-steroids/chatgpt-session.json dzack@rack:~/.config/chat-on
 ssh dzack@rack "chmod 600 ~/.config/chat-on-steroids/chatgpt-session.json"
 ```
 
+Verify the daemon's path by replaying its request with Node on `rack`. ChatGPT's edge answers `curl` with a 403 HTML page whatever the token, so `curl` proves nothing here.
+
+```bash
+ssh dzack@rack '/home/dzack/.nvm/versions/node/v25.6.1/bin/node --input-type=module -e "
+import { readFileSync } from \"node:fs\";
+const s = JSON.parse(readFileSync(\"/home/dzack/.config/chat-on-steroids/chatgpt-session.json\", \"utf8\"));
+const r = await fetch(\"https://chatgpt.com/backend-api/conversation/init\", { method: \"POST\", headers: {
+  Authorization: \"Bearer \" + s.accessToken, \"ChatGPT-Account-Id\": s.accountId,
+  Cookie: Object.entries(s.cookies).map(([k, v]) => k + \"=\" + v).join(\"; \"),
+  \"Content-Type\": \"application/json\", Origin: \"https://chatgpt.com\", Referer: \"https://chatgpt.com/\",
+  \"User-Agent\": \"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36\" },
+  body: JSON.stringify({ gizmo_id: null, requested_default_model: null, conversation_id: null, timezone_offset_min: 0 }) });
+console.log(r.status, (await r.text()).slice(0, 120));
+"'
+```
+
+A `200` with a `blocked_features` list is the proof.
+
 ### Step 3: Inject Cookies into Remote Headless Chrome
+
+Run the Step 4 probe first. The headless Chrome holds its own ChatGPT login and refreshes its own session cookies, so this step is only for a probe that reports no account. `Network.setCookies` with a `url` creates host-only cookies on `chatgpt.com`, which then sit next to the browser's own `.chatgpt.com` domain cookies of the same names.
 
 Execute the injection script on `rack` to apply cookies via CDP and navigate to ChatGPT:
 
@@ -348,4 +370,4 @@ print(\"Remote auth state:\", res)
 '"
 ```
 
-Successful output indicates `hasToken: true` with the authenticated email address.
+Successful output indicates `hasToken: true` with the authenticated email address. On `rack` the page's own `/api/auth/session` answers a 403 HTML page to some script-initiated calls, so repeat the probe a few times: one `200` with the email is the proof, and a run of non-JSON answers is not a logged-out browser.
