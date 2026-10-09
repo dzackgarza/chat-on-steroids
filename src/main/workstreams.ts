@@ -734,12 +734,21 @@ export async function resumeWorkstream(id: string): Promise<boolean> {
 export async function replaceWorkstream(id: string): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
-    if (
-      !row ||
-      !["active", "recovering"].includes(row.phase) ||
-      !row.conversationId
-    )
-      return false;
+    if (!row) return false;
+    // A row whose chat never bound (opened by `just new`, so the app never saw it acknowledge)
+    // has no chat to archive and no holder recovery can find. An explicit replace is the
+    // steward's decision that no other chat holds it, so open a fresh one directly; automatic
+    // recovery still blocks instead (2026-10-09: lean-cas-dsl stuck conversation_unbound).
+    if (!row.conversationId && ["active", "recovering", "blocked"].includes(row.phase)) {
+      row.phase = "opening";
+      row.actionId = `replace-${row.lock}`;
+      row.commandId = null;
+      row.attempts = 0;
+      row.error = null;
+      await save();
+      return true;
+    }
+    if (!["active", "recovering"].includes(row.phase) || !row.conversationId) return false;
     row.phase = "archiving";
     row.attempts = 3;
     row.nextCheck = 0;
