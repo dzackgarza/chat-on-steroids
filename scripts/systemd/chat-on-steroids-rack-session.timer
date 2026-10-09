@@ -1,0 +1,11 @@
+[Unit]
+Description=Copy the ChatGPT browser session to rack hourly
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=1h
+Persistent=true
+Unit=chat-on-steroids-rack-session.service
+
+[Install]
+WantedBy=timers.target

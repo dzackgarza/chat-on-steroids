@@ -1,0 +1,8 @@
+[Unit]
+Description=Copy the ChatGPT browser session to rack for Chat On Steroids
+Documentation=file:///home/dzack/gitclones/chat-on-steroids/MIGRATION-TO-REMOTE-RACK.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/dzack/gitclones/chat-on-steroids
+ExecStart=/usr/bin/env node node_modules/tsx/dist/cli.mjs scripts/sync-rack-session.ts
