@@ -1,5 +1,5 @@
 [Unit]
-Description=Copy the ChatGPT browser session to rack hourly
+Description=Check the ChatGPT token rack holds hourly; copy a renewed one when it nears expiry
 
 [Timer]
 OnBootSec=5m

@@ -242,13 +242,13 @@ Rack's daemon reads `~/.config/chat-on-steroids/chatgpt-session.json` on every u
 
 ### Refreshing the file
 
-`scripts/sync-rack-session.ts` reads the session out of the local Chrome over CDP (`--remote-debugging-port=9222`, with a ChatGPT tab open), writes the file with mode 600, proves it with the daemon's own `readSendBlock()`, and copies it to rack with `scp -p`. A bad read fails before anything leaves the local machine. `curl` cannot stand in for that proof: ChatGPT's edge answers it with a 403 HTML page whatever the token.
+`scripts/sync-rack-session.ts` keeps the file current. The local copy is the record of what rack holds. The script decodes the `exp` claim of the token in it and exits while more than a day of life remains. Inside that last day it reads the session out of the local Chromium over CDP (`--remote-debugging-port=9222`), starting Chromium through `systemd-run` and opening a ChatGPT tab through DevTools when either is missing. Once the browser holds a renewed token, it writes the file with mode 600, proves it with the daemon's own `readSendBlock()`, and copies it to rack with `scp -p`. A bad read fails before anything leaves the local machine. `curl` cannot stand in for that proof: ChatGPT's edge answers it with a 403 HTML page whatever the token.
 
 ```bash
 node node_modules/tsx/dist/cli.mjs scripts/sync-rack-session.ts
 ```
 
-The systemd user timer in `scripts/systemd/` runs it hourly, so rack stays within an hour of the browser's token. Install it once on the local machine:
+The systemd user timer in `scripts/systemd/` runs the check hourly, so the copy happens once per token lifetime. Install it once on the local machine:
 
 ```bash
 ln -s "$PWD"/scripts/systemd/chat-on-steroids-rack-session.{service,timer} ~/.config/systemd/user/
