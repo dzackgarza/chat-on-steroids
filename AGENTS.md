@@ -1700,6 +1700,14 @@ repository, never something said in chat.
   *Remedy:* preserve the prior contract, classify the authored material as material needing later
   audit, and restore the phase boundary. A policy edit may correct a false rule; it may not launder
   work into the phase merely because reverting or auditing it is inconvenient.
+- **A mathematical repository is measured against its consumer.** A worker or steward
+  calls its checks "integration", ties a node's acceptance to how a port or migration
+  calls it, and then reports the library as blocked on that consumer. On 2026-10-09
+  research's issue-401 node waited on the stopped `sage-indefinite-port`, and the steward
+  relayed that to the owner as a decision. The owner's ruling: research is general mathematics,
+  accepted by true assertions at each operation's owner, and no consumer gates it.
+  *Remedy:* rewrite any such acceptance as mathematical assertions at the owner; a
+  consumer's needs may order the work, never accept it.
 - **The steward rewards honest reporting of a stall instead of resolving the stall.** A worker
   can accurately say a process died, a gate is red, or nothing has landed and still leave the
   repository stopped for another tick.
