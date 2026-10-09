@@ -3747,6 +3747,17 @@ export function dormantWorkerNotice(conversationId: string | null | undefined): 
  * "Continue workstream … RECOVERY NOTICE" prompt, every tool there was then refused with
  * WORKER_SLEEPING, and the fleet accumulated dozens of near-empty chats (2026-09-27).
  */
+/** The workstream rows of every worker in runs, live or dormant, primed by this workstream. */
+export function workerWorkstreamsOf(primeWorkstreamId: string): string[] {
+  const ids: string[] = [];
+  for (const owner of [...runs.values(), ...dormantRuns.values()]) {
+    if (owner.primeWorkstreamId !== primeWorkstreamId) continue;
+    for (const agent of owner.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId) ids.push(agent.info.workstreamId);
+  }
+  return ids;
+}
+
 export function workerOwnsWorkstream(workstreamId: string): boolean {
   for (const run of runs.values())
     for (const agent of run.agents.values())

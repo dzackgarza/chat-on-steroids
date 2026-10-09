@@ -10,7 +10,7 @@ import { runningToolCallsForWorkstream } from "./mcp/call-context.js";
 import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
-import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream } from "./agents.js";
+import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream, workerWorkstreamsOf } from "./agents.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -689,9 +689,14 @@ export async function pauseWorkstream(id: string): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
     if (!row) return false;
-    row.phase = "paused";
-    row.commandId = null;
-    row.actionId = null;
+    // A paused stream's swarm workers stop with it. Pausing only the prime row left 23
+    // math-notes-ipad worker rows active for up to 86 hours after the owner paused that
+    // stream (found 2026-10-09).
+    for (const target of [row, ...workerWorkstreamsOf(id).flatMap((workerId) => rows.get(workerId) ?? [])]) {
+      target.phase = "paused";
+      target.commandId = null;
+      target.actionId = null;
+    }
     await save();
     return true;
   });
