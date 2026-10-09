@@ -168,6 +168,25 @@ async function main(): Promise<void> {
 
   // The tab an expired command was opened in. The marker is unique per command, so matching
   // on it can only ever reach the tab the opener above created for that command.
+  // Chrome exits when its last page closes, and every close below can be the last one: a
+  // command tab given up on, a reaped duplicate, a slept chat, a remount. On 2026-10-09 that
+  // exited the browser at 10:30 (a give-up closed the page the reaper had left) and again at
+  // 10:33. Every close goes through here, which opens a blank page first when the target is the
+  // only page, so closing a tab never closes the browser.
+  const closePage = async (devtoolsPort: string, id: string): Promise<void> => {
+    const listed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`);
+    if (!listed.ok) throw new Error(`CDP /json/list answered ${listed.status} ${listed.statusText}`);
+    const pages = ((await listed.json()) as Array<{ id?: string; type?: string }>).filter(
+      (target) => target.type === 'page',
+    );
+    if (pages.length === 1 && pages[0]?.id === id) {
+      const opened = await fetch(`http://127.0.0.1:${devtoolsPort}/json/new?about:blank`, { method: 'PUT' });
+      if (!opened.ok) throw new Error(`CDP /json/new answered ${opened.status} ${opened.statusText}`);
+    }
+    const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${encodeURIComponent(id)}`);
+    if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
+  };
+
   setBrowserCloser(async (url: string) => {
     const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
     const marker = new URL(url).searchParams.get('clf');
@@ -185,8 +204,7 @@ async function main(): Promise<void> {
         continue;
       }
       if (!carries) continue;
-      const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${target.id}`);
-      if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
+      await closePage(devtoolsPort, target.id);
     }
   });
 
@@ -205,8 +223,7 @@ async function main(): Promise<void> {
     },
     close: async (id: string) => {
       const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
-      const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${encodeURIComponent(id)}`);
-      if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
+      await closePage(devtoolsPort, id);
     },
   });
 
@@ -231,10 +248,7 @@ async function main(): Promise<void> {
           target.url.includes(`/c/${conversationId}`)
       );
       if (existing && !options?.remountExisting) return;
-      if (existing?.id) {
-        const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${existing.id}`);
-        if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
-      }
+      if (existing?.id) await closePage(devtoolsPort, existing.id);
       const res = await fetch(`http://127.0.0.1:${devtoolsPort}/json/new?${encodeURIComponent(url)}`, {
         method: 'PUT'
       });
@@ -250,8 +264,7 @@ async function main(): Promise<void> {
           target.type === 'page' && typeof target.url === 'string' && target.url.includes(`/c/${conversationId}`)
       );
       if (!tab?.id) throw new Error('no open tab is showing that conversation');
-      const closed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/close/${tab.id}`);
-      if (!closed.ok) throw new Error(`CDP /json/close answered ${closed.status} ${closed.statusText}`);
+      await closePage(devtoolsPort, tab.id);
     }
   });
   // Slept conversations survive a daemon restart as durable state; restore them (keyless,
