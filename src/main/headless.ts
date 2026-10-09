@@ -173,7 +173,15 @@ async function main(): Promise<void> {
   // exited the browser at 10:30 (a give-up closed the page the reaper had left) and again at
   // 10:33. Every close goes through here, which opens a blank page first when the target is the
   // only page, so closing a tab never closes the browser.
-  const closePage = async (devtoolsPort: string, id: string): Promise<void> => {
+  // Closes run one at a time: two concurrent closes (the reaper and a sleep) each saw two pages,
+  // each closed one, and together left none (browser exit at 14:00:52 on 2026-10-09).
+  let closing: Promise<void> = Promise.resolve();
+  const closePage = (devtoolsPort: string, id: string): Promise<void> => {
+    const next = closing.then(() => closeOnePage(devtoolsPort, id));
+    closing = next.catch(() => undefined);
+    return next;
+  };
+  const closeOnePage = async (devtoolsPort: string, id: string): Promise<void> => {
     const listed = await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`);
     if (!listed.ok) throw new Error(`CDP /json/list answered ${listed.status} ${listed.statusText}`);
     const pages = ((await listed.json()) as Array<{ id?: string; type?: string }>).filter(
