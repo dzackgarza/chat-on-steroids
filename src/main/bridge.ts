@@ -6666,7 +6666,7 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
         (shown !== null && conversationTurnState(shown)?.generating === true));
     const why = !conversation
       ? "no conversation and no command"
-      : !managed.has(conversation) && !openTurn
+      : !managed.has(conversation) && !openTurn && !commandConversations.has(conversation)
         ? "conversation is not managed"
         : kept.has(conversation) && !coveredOnlyByCommand
           ? "duplicate tab"
