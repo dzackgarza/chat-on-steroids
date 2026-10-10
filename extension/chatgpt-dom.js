@@ -837,6 +837,32 @@ var CLF_DOM = (() => {
     );
   }
 
+  /**
+   * ChatGPT's own lifecycle state for the exchange that holds this turn.
+   *
+   * The 2026-09-27 thread layout renders the turn object's `status` on the exchange's
+   * container as `data-talvt-turn-state`: `in_progress` while the model works, then
+   * `complete` or `cancelled`. In that layout the Fiber helper finds no turn sections, so it
+   * never reports `end_turn`, and before this was read every managed turn ended only through
+   * the five-minute stall verdict (2026-10-10: research turns that finished in about a minute
+   * were closed as stalled five minutes after they started).
+   *
+   * A brand-new exchange briefly reads `complete` before it switches to `in_progress`, but at
+   * that moment it holds only the user's message. Callers pass a generation-owned assistant
+   * turn, so that window never reaches them. `absent` means the older layout; `unrecognised`
+   * means ChatGPT introduced a state this file does not know, which is never read as an end.
+   */
+  const TURN_LIFECYCLE_STATES = new Set(['in_progress', 'complete', 'cancelled']);
+  function turnLifecycle(turn) {
+    return safe(() => {
+      const node = turn && turn.node;
+      const holder = node && node.closest ? node.closest('[data-talvt-turn-state]') : null;
+      if (!holder) return 'absent';
+      const state = holder.getAttribute('data-talvt-turn-state') || '';
+      return TURN_LIFECYCLE_STATES.has(state) ? state : 'unrecognised';
+    }, 'absent');
+  }
+
   /** Marks ChatGPT's own progress/reasoning containers so our CSS can make them legible. */
   function markProgress(turn) {
     return safe(() => {
@@ -1739,6 +1765,7 @@ var CLF_DOM = (() => {
     progressLine,
     progressItems,
     interrupted,
+    turnLifecycle,
     markProgress,
     toolBlocks,
     activityItems,

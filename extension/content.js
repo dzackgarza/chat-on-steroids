@@ -1482,7 +1482,14 @@
    */
   function endOutcome(turn) {
     if (userStopped) return { outcome: 'stopped' };
-    if (turn && CLF_DOM.interrupted(turn)) {
+    // ChatGPT's own turn status, where the thread layout exposes it (CLF_DOM.turnLifecycle).
+    // It is the page's statement that the exchange is over, which the transient
+    // `data-interrupted` marker below is not, so it is read first.
+    const lifecycle = turn ? CLF_DOM.turnLifecycle(turn) : 'absent';
+    if (lifecycle === 'cancelled') {
+      return { outcome: 'stopped', detail: 'ChatGPT marked the turn cancelled' };
+    }
+    if (turn && lifecycle !== 'complete' && CLF_DOM.interrupted(turn)) {
       return { outcome: 'interrupted', detail: 'ChatGPT marked the turn interrupted' };
     }
     // Only this turn's failures. An error inside another turn's section is that turn's,
@@ -1496,6 +1503,9 @@
       return (errorFirstSeen.get(error.node) ?? turnId) === turnId;
     });
     if (failures.length > 0) return { outcome: 'failed', detail: failures[0].text };
+    // A connector call this app is still serving keeps the turn open whatever the page says:
+    // the model is waiting on our answer, not finished.
+    if (lifecycle === 'complete' && !toolCallOpen) return { outcome: 'completed' };
     // Degraded fallback only. If the MAIN-world Fiber helper has ever answered on this page,
     // its end_turn bit is the authority on successful completion and mere visible prose is
     // never enough to close a quiet turn: interim commentary is public assistant prose too.
