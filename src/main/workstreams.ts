@@ -784,8 +784,15 @@ export async function recoverWorkstreamNow(
   });
 }
 
+// A fresh chat has read nothing; a bound chat has the repository contract in its own context
+// already. Telling a bound chat to read AGENTS.md again made research reread a 3500-line file
+// on every restart (2026-10-10: 16 of 24 calls in 25 minutes were rereads).
+export const FRESH_CHAT_ORIENTATION =
+  "Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. ";
+export const BOUND_CHAT_ORIENTATION =
+  "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. Preserve other workers’ changes, finish the substantive work, and keep the workstream moving. Keep every command/tool action under five minutes. These managed workstreams are source/architecture/definition/card work, not release pipelines: do not push/publish, start watchers/servers, use foreground shell sleeps (the connector's own `sleep` tool is allowed when a refusal names it), declare persistent terminal sessions, or run broad/heavy test/build suites unless the CURRENT repository contract explicitly requires that exact action. Prefer focused owner-local checks. A command or test approaching five minutes is a major failure signal: stop it, re-read the explicit assigned task/DAG/phase boundary, check for drift or over-broad validation, and resume with a narrower action rather than waiting.";
+  "Preserve other workers’ changes, finish the substantive work, and keep the workstream moving. Keep every command/tool action under five minutes. These managed workstreams are source/architecture/definition/card work, not release pipelines: do not push/publish, start watchers/servers, use foreground shell sleeps (the connector's own `sleep` tool is allowed when a refusal names it), declare persistent terminal sessions, or run broad/heavy test/build suites unless the CURRENT repository contract explicitly requires that exact action. Prefer focused owner-local checks. A command or test approaching five minutes is a major failure signal: stop it, re-read the explicit assigned task/DAG/phase boundary, check for drift or over-broad validation, and resume with a narrower action rather than waiting.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
@@ -797,13 +804,13 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
     row.error?.startsWith("five_minute_")
       ? row.error.startsWith("five_minute_action_overrun:")
         ? `\nRECOVERY NOTICE: Your previous action exceeded the hard five-minute action ceiling: ${row.error.slice("five_minute_action_overrun:".length)}. This is not normal waiting. In these repository workstreams, no single command, test, build, or tool action should take more than five minutes. Treat this as a major red flag for drift, an over-broad or unacceptably slow test/build, unnecessary heavyweight work, or work outside the assigned phase such as push/publication. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints before doing anything else. Verify that you are still on the repository-selected unit and are not attempting push/publication or broad validation unless explicitly required. Resume with a narrower source action or focused owner-local check; do not rerun the same long command.\n`
-        : "\nRECOVERY NOTICE: This workstream made no substantive movement for five minutes. There is no autonomous waiting/wake-up state after tool activity stops; five minutes without movement means the worker is stalled. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints, verify you are still on the selected unit, check for drift such as broad tests/builds or push/publication work, and resume immediately with a narrower substantive action.\n"
+        : "\nRECOVERY NOTICE: This workstream made no substantive movement for five minutes. There is no autonomous waiting/wake-up state after tool activity stops; five minutes without movement means the worker is stalled. Verify you are still on the selected unit, check for drift such as broad tests/builds or push/publication work, and resume immediately with a narrower substantive action.\n"
       : "";
   const claim =
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
       : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call; do not call \`workstream\` again.`;
-  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${STEWARD_CONTINUATION}`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
 }
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
