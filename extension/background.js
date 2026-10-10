@@ -1,3 +1,17 @@
+
+// Chrome exits when its last tab closes, and the browser service then restarts it, dropping
+// every chat's observer (2026-10-10 00:28: a clean browser exit with no daemon-side close). Every
+// close in this worker goes through here, which opens a blank tab first when the target is the
+// last one.
+async function removeTabKeepingBrowser(tabIds) {
+  const closing = new Set(Array.isArray(tabIds) ? tabIds : [tabIds]);
+  const tabs = await chrome.tabs.query({});
+  if (tabs.length > 0 && tabs.every((tab) => closing.has(tab.id))) {
+    await chrome.tabs.create({ url: 'about:blank', active: false });
+  }
+  await chrome.tabs.remove(tabIds);
+}
+
 /**
  * Service worker: the only part of the extension that talks to the app.
  *
@@ -2462,7 +2476,7 @@ const HANDLERS = {
       !targetsExistingConversation
     ) {
       try {
-        await chrome.tabs.remove(senderTabId);
+        await removeTabKeepingBrowser(senderTabId);
       } catch {
         // onRemoved/sweep custody will handle an already-gone tab.
       }
@@ -2615,7 +2629,7 @@ async function reuseOpenChatTab(openedTabId, conversation, commandId) {
     // This document now owns the command durably. The marked fallback can no longer redeem it,
     // so removing that tab cannot destroy the only owner or cause duplicate user-message sends.
     try {
-      await chrome.tabs.remove(openedTabId);
+      await removeTabKeepingBrowser(openedTabId);
     } catch {
       // The fallback may already have been closed by the user. Ownership is still safely here.
     }
@@ -2732,7 +2746,7 @@ async function closeStaleDuplicates(conversation, tabIds, keepTabId) {
     try {
       const tab = await chrome.tabs.get(id);
       if (conversationForTab(tab) !== conversation) continue;
-      await chrome.tabs.remove(id);
+      await removeTabKeepingBrowser(id);
     } catch {
       // Already closed, or the browser refused; either way the duplicate is not ours to force.
     }
@@ -2952,7 +2966,7 @@ async function reconcileMarkedCommandTabs(now = Date.now()) {
     }
     if (!freshRoot) continue;
     try {
-      await chrome.tabs.remove(tab.id);
+      await removeTabKeepingBrowser(tab.id);
     } catch {
       // The tab may already be gone; custody cleanup below is still correct.
     }
@@ -2979,7 +2993,7 @@ async function sweepCommandTabs(now = Date.now()) {
     if (now - entry.openedAt < COMMAND_TAB_TTL_MS) continue;
     if (!chrome.tabs || typeof chrome.tabs.remove !== 'function') continue;
     try {
-      await chrome.tabs.remove(tabId);
+      await removeTabKeepingBrowser(tabId);
       // onRemoved normally clears the custody row synchronously with the browser close, but
       // do not depend on that listener having run before this await resumes. A successful
       // remove proves this tab no longer needs custody.
@@ -3268,7 +3282,7 @@ function offerDeferredRevivalToTab(entry, tab) {
           const preference = revivalPreference(id);
           if (preference) {
             if (tab.id === preference.preferredTabId) {
-              void chrome.tabs.remove(preference.fallbackTabId).catch(() => undefined);
+              void removeTabKeepingBrowser(preference.fallbackTabId).catch(() => undefined);
             }
             void clearRevivalPreference(id).catch(() => undefined);
           }
@@ -3664,7 +3678,7 @@ async function archiveWorkstreamChat(action) {
     }
   } finally {
     if (typeof temporaryHost?.id === 'number') {
-      await chrome.tabs.remove(temporaryHost.id).catch(() => undefined);
+      await removeTabKeepingBrowser(temporaryHost.id).catch(() => undefined);
     }
   }
   if (archivedResult?.archived !== true) throw new Error(lastError);
@@ -3680,7 +3694,7 @@ async function acknowledgeWorkstreamArchive(action, matches) {
   // an already archived conversation and trying to click Stop on its error page.
   if (!acknowledged.ok && acknowledged.status !== 409) return;
   for (const open of await chrome.tabs.query({ url: 'https://chatgpt.com/*' })) {
-    if (matches(open) && typeof open.id === 'number') await chrome.tabs.remove(open.id);
+    if (matches(open) && typeof open.id === 'number') await removeTabKeepingBrowser(open.id);
   }
   await chrome.storage.local.remove('workstreamArchiveReceipt');
 }
@@ -3734,7 +3748,7 @@ async function reconcileRetiredWorkstreamTabs() {
   for (let index = 0; index < stale.length; index += 32) {
     const batch = stale.slice(index, index + 32);
     try {
-      await chrome.tabs.remove(batch);
+      await removeTabKeepingBrowser(batch);
       closed += batch.length;
     } catch {
       // Chrome can reject a whole batch because one member closed/navigated between query and
@@ -3743,7 +3757,7 @@ async function reconcileRetiredWorkstreamTabs() {
       // failures remain authoritative in the controller ledger and retry on the next sweep.
       for (const tabId of batch) {
         try {
-          await chrome.tabs.remove(tabId);
+          await removeTabKeepingBrowser(tabId);
           closed += 1;
         } catch {
           // Retried by the next one-minute sweep/startup reconciliation.
