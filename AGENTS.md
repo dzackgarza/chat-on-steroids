@@ -368,8 +368,11 @@ registrar):
 - **Reuse gate** (`reuse-gate.ts`): a patch that adds a new code file or a definition name that
   no tracked file already defines must carry `reuse_search`. Per name, it gives the searches
   run, what they found, and why none is reused. Each search must match a `find` call or
-  rg/grep/fd/ast-grep/probe command this conversation actually ran, and a search for the
-  invented name does not count. Around every `exec_command`/`write_stdin` the workspace is
+  rg/grep/fd/ast-grep/probe command this conversation actually ran, and a search that looks
+  only for invented names does not count; one that includes a new name among other terms does
+  (2026-10-10: a helper named `cokernel` voided the real search `'cokernel|elementary_divisors'`
+  and the bare refusal locked lean-cas-dsl-leaves out for 80 minutes). A refusal says, per
+  quoted search, why it failed, and lists the chat's searches that would count. Around every `exec_command`/`write_stdin` the workspace is
   diffed against the pre-command HEAD, so shell-written definitions become pending, and every
   tool except reading ones is refused until an `apply_patch` carries a covering `reuse_search`.
   Names already defined elsewhere (Sage's `one()`, `zero()`, `_repr_`) are overrides, not
