@@ -3289,6 +3289,13 @@ The tick is a session-only cron job (`13,43 * * * *`) whose prompt is saved verb
 2026-09-26 ticks stopped twice unnoticed. After any continuation, check that the job exists
 and recreate it from that file.
 
+Every tick starts from `steward-dashboard/completion.md`: one completion measure per active stream,
+named with its durable source, and a row per tick with the value and its delta. A value that has
+not risen across two ticks is a drifting or blocked stream to change that tick. On 2026-10-10 the
+steward reported twelve hours of commits as progress while lean-cas-dsl held at 6 of 15 required
+assertions and research's step 2 had no denominator; a promise in chat to report differently does
+not survive the context window, the ledger does.
+
 Run these steps in order. Skipping the early ones and starting from chat liveness is the failure
 mode that produced most of the incidents in this section.
 
