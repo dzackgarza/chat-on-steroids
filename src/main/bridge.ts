@@ -6616,6 +6616,11 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
   const commandTargets = new Set(
     commands.map((command) => commandTabTargets.get(command.id)).filter(Boolean),
   );
+  // The chats an in-flight command was opened into, by browser route.
+  const commandConversations = new Set<string>();
+  for (const command of commands)
+    if ((command.spec.type === "send" || command.spec.type === "revive") && command.spec.conversationId)
+      commandConversations.add(currentBrowserRoute(command.spec.conversationId));
   const kept = new Set<string>();
   const keptByCommand = new Set<string>();
   const leaks: Array<{ id: string; url: string; why: string }> = [];
@@ -6639,15 +6644,18 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
       continue;
     }
     if (now - (tabFirstSeen.get(tab.id) ?? now) < TAB_REAP_GRACE_MS) continue;
-    // A command tab opened into a chat whose turn is running has not taken that turn over: the
-    // page will not type until the turn ends, and the command may still expire. Closing the tab
-    // already observing the turn in its favour left sage-categories with no observer mid-turn on
-    // 2026-09-25 (closed 01:40:08, command expired 01:40:38, turn detached 01:41:28). Keep one
-    // plain tab beside the command tab until the turn ends.
+    // A command tab opened into an existing chat has not taken that chat over. Its page defers
+    // custody to the tab already holding the chat (`defer_revival`, preferredElsewhere), and
+    // that tab is the one that stops the turn and types. Closing it as a duplicate leaves the
+    // command with no deliverer until it expires: on 2026-09-25 sage-categories lost its
+    // observer mid-turn (closed 01:40:08, expired 01:40:38), and on 2026-10-10 every interrupt
+    // to lean-cas-dsl expired the same way, the custody tab closed the moment its Stop ended the
+    // turn (closed 16:24:49, expired 16:26:17; closed 16:35:19, expired 16:36:19). Keep one
+    // plain tab beside the command tab for as long as the command is in flight.
     const coveredOnlyByCommand =
       conversation !== null &&
       keptByCommand.has(conversation) &&
-      conversationTurnState(conversation)?.generating === true;
+      commandConversations.has(conversation);
     // A tab whose chat has an open turn is live work, not a leak, whatever the row table says
     // yet. sage-categories' replacement started its turn in WEB:ae891aaf at 09:18:02 on
     // 2026-09-25 before its row bound that route; this reaper closed it at 09:23:08 as
