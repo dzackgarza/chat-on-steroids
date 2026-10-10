@@ -5227,7 +5227,22 @@
     if (goalBusy || nativeBusy || compactCapture || (job && job.busy)) return;
     if (Date.now() - stopForPushAt < STOP_FOR_PUSH_RETRY_MS) return;
     const stop = CLF_DOM.stopButton();
-    if (!stop) return;
+    if (!stop) {
+      // No Stop control while this document still holds a turn open: the turn ended, stalled
+      // or stopped rendering without this document seeing it end (a tab that adopted the app's
+      // open turn at boot, a chat ChatGPT no longer draws). Nothing on the page will ever close
+      // that recorded turn — an `unknown` quiet outcome never closes — and the queued message
+      // waits on it until the app gives up: every interrupt to such a chat expired on
+      // 2026-10-10. The caller already decided this turn ends, so end the recorded one, as a
+      // stop. Typing still waits for a submit-ready composer, which a live turn never has.
+      if (!generating) return;
+      stopForPushAt = Date.now();
+      userStopped = true;
+      emit({ kind: 'chat_error', text: 'The app ended a turn this page no longer shows as running, because a queued message asked to interrupt it.' });
+      observe();
+      notifyCommandReadiness();
+      return;
+    }
     stopForPushAt = Date.now();
     stop.click();
     // The same flag the click listener sets when the user presses Stop: this turn ended
