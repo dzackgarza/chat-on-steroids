@@ -1157,6 +1157,8 @@ git status --short
 git diff -- <files you plan to touch>
 ```
 
+This repository is an approved sandbox root, which is not an invitation to work other projects inside it: clone another repository to `~/gitclones/<name>` and work there. On 2026-10-09 a full `zettlr-pandoc` clone (1.6 GB, 24 commits never pushed anywhere else), three upstream source copies and a stray `sage-mypy-plugin` patch were found here and moved out.
+
 Assume unrelated changes belong to someone else. **Never** `reset`, `checkout`, `clean`,
 broad-format, or overwrite unrelated work to simplify your patch. If the exact lines you
 planned to edit changed underneath you, reread and integrate — do not replay an old patch.
