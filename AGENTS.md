@@ -3698,6 +3698,8 @@ are probes of the core, never products (sage `AGENTS.md`). research's top-priori
 
 **2026-10-09: the owner started `lean-cas-dsl`** (`/home/dzack/gitclones/lean-cas-dsl`, cloned from `dzackgarza/lean-cas-dsl`; its `AGENTS.md` "Current task: construct B0" governs). The active managed streams are `research` and `lean-cas-dsl`; every other row stays paused.
 
+**2026-10-10, owner rule: an active stream's work that lives in another repository gets its own temporary workstream there until that task is done, whatever that repository's standing status.** The worker that needs it never "commissions" it, and a paused repository is not a reason to leave the task undone. Opened under this rule: `lean-cas-dsl-leaves` (leaf decoding of released descriptor forms for B0) and `lean-categories` (named output forms of `colim.bil_w_form.cokernel` for the B0 lattice discriminants). Each is closed when its task is delivered; `lean-categories` otherwise stays paused.
+
 **2026-10-08: the owner resumed `research` as the only active managed stream.** It works from its `HANDOFF.md` first, then its `TODO.md` DAG. `new-qual-site`, `math-notes-ipad` and every other row are paused, and `sage-indefinite-port` stays stopped (2026-10-07). This supersedes the 2026-10-04 allocation below; resume nothing else until a later explicit owner instruction.
 
 **2026-10-04: the owner explicitly resumed the fleet under the three-stream allocation above.** `new-qual-site`, `math-notes-ipad`, and `sage-indefinite-port` are the active managed repository streams, and the `orchestrator` is active to steward them. This supersedes the 2026-09-28 blanket pause only for those rows; every other managed repository remains paused until a later explicit owner instruction.
