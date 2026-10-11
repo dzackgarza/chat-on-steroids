@@ -66,6 +66,12 @@
   const MAX_CALLS = 200;
   /** ChatGPT's own assistant turn sections, which is where a turn's message model hangs. */
   const TURN_SECTION = 'section[data-testid^="conversation-turn"]';
+  /**
+   * The turn container of ChatGPT's typed-item thread (observed 2026-10-11). It has no turn
+   * sections and no `messages` array: the parent Fiber's `turn` prop carries `items` typed
+   * `user-message`, `assistant-message`, `reasoning`, `mcp-tool-call` and groups of them.
+   */
+  const ITEM_TURN = '[data-talvt-turn-state]';
   /** ChatGPT-rendered authored prose. Tool rows and this extension's own surfaces are excluded. */
   const MARKDOWN = '.markdown';
   const TOOL = 'span[class*="tool-message"], div.pointer-events-none.contents';
@@ -1096,6 +1102,9 @@
     } catch {
       return out;
     }
+    // The section thread and the typed-item thread are two layouts of one page, never both.
+    // With no sections mounted, the turns are read from the typed-item model instead.
+    if (sections.length === 0) return itemTurnsOf(scanToken);
     // A descriptor index is valid for one scan only. Stale stamps must disappear when a
     // still-mounted section becomes unreadable, but clearing every stamp up front is not
     // harmless: these attributes are observed by the isolated-world MutationObserver, so
@@ -1179,6 +1188,118 @@
       } catch {
         // One hostile/stale DOM node must not cost the remaining turns their evidence.
       }
+    }
+    return out;
+  }
+
+  /**
+   * The `turn` model of one typed-item turn container: the nearest Fiber ancestor whose props
+   * carry `turn.items`. Null when the container is not (yet) bound to a turn model.
+   */
+  function itemTurnModelOf(container) {
+    let at = fiberOf(container);
+    for (let up = 0; at && up < MAX_CLIMB; up++, at = at.return) {
+      const props = at.memoizedProps;
+      if (!props || typeof props !== 'object') continue;
+      const turn = props.turn;
+      if (turn && typeof turn === 'object' && Array.isArray(turn.items)) {
+        return { turn, conversationId: str(props.conversationId) };
+      }
+    }
+    return null;
+  }
+
+  /** The items of one turn in model order, groups flattened in place. */
+  function flatItems(items, out) {
+    for (let at = 0; at < items.length; at++) {
+      const item = items[at];
+      if (!item || typeof item !== 'object') continue;
+      out.push(item);
+      if (Array.isArray(item.items)) flatItems(item.items, out);
+    }
+    return out;
+  }
+
+  /**
+   * One turn of the typed-item thread, in the same descriptor shape the section reader
+   * produces.
+   *
+   * Identity: the turn key is the user message id ChatGPT stamps as `data-turn-key`. Final
+   * answers carry their own `messageId`. Public interim prose (`reasoning` items presented as
+   * `preamble`) carries no id; the n-th preamble of a turn is `<turnKey>:preamble:<n>`, which
+   * is stable because a turn's items are append-only. Thought summaries and tool calls become
+   * activities. Per-call attribution (`calls`, `requests`) stays with the connector-row reader.
+   */
+  function itemTurnOf(container, model, index, budget) {
+    const keyed = container.closest ? container.closest('[data-turn-key]') : null;
+    const turnKey = keyed ? str(keyed.getAttribute('data-turn-key')) : null;
+    if (!turnKey) return null;
+    const items = flatItems(model.turn.items, []);
+    const messages = [];
+    const activities = [];
+    let preambles = 0;
+    let thoughts = 0;
+    let finalAnswerId = null;
+    for (let order = 0; order < items.length; order++) {
+      const item = items[order];
+      const type = str(item.type);
+      if (type === 'user-message') {
+        const id = str(item.messageId);
+        const text = budgetedText(typeof item.message === 'string' ? item.message : '', budget, MAX_RENDERED_TEXT);
+        if (!id || !text) continue;
+        const sent = num(item.sentAtMs);
+        messages.push({ messageId: id, rawMessageId: id, role: 'user', stable: true, order, createTime: sent ? sent / 1000 : null, rawText: text, renderedHtml: '' });
+      } else if (type === 'assistant-message') {
+        const id = str(item.messageId);
+        const text = budgetedText(typeof item.content === 'string' ? item.content : '', budget, MAX_RENDERED_TEXT);
+        if (!id || !text) continue;
+        if (item.phase === 'final_answer') finalAnswerId = id;
+        messages.push({ messageId: id, rawMessageId: id, role: 'assistant', stable: item.completed === true, order, createTime: null, rawText: text, renderedHtml: '' });
+      } else if (type === 'reasoning' && item.presentation === 'preamble') {
+        const id = `${turnKey}:preamble:${preambles++}`;
+        const text = budgetedText(typeof item.content === 'string' ? item.content : '', budget, MAX_RENDERED_TEXT);
+        if (!text) continue;
+        messages.push({ messageId: id, rawMessageId: id, role: 'assistant', stable: item.completed === true, order, createTime: null, rawText: text, renderedHtml: '' });
+      } else if (type === 'reasoning' && item.presentation === 'thought') {
+        const id = `${turnKey}:thought:${thoughts++}`;
+        const label = typeof item.content === 'string' ? item.content.slice(0, MAX_TEXT) : '';
+        if (label) activities.push({ messageId: id, label, order });
+      } else if (type === 'mcp-tool-call') {
+        const id = str(item.callId);
+        const label = str(item.functionName);
+        if (id && label) activities.push({ messageId: id, label: label.slice(0, MAX_TEXT), order });
+      }
+    }
+    if (messages.length === 0 && activities.length === 0) return null;
+    const ended = model.turn.status === 'complete' && finalAnswerId;
+    return {
+      index,
+      turnId: turnKey,
+      conversationId: model.conversationId,
+      conversationConflict: false,
+      endMessageId: ended ? finalAnswerId : null,
+      calls: [],
+      requests: [],
+      messages,
+      activities
+    };
+  }
+
+  /** The newest typed-item turns, stamped for the isolated world like the section reader's. */
+  function itemTurnsOf(scanToken) {
+    const out = [];
+    const containers = document.querySelectorAll(ITEM_TURN);
+    const first = Math.max(0, containers.length - MAX_TURNS);
+    const budget = { remaining: MAX_RESPONSE_TEXT };
+    for (let at = 0; at < containers.length; at++) {
+      const container = containers[at];
+      const model = at >= first ? itemTurnModelOf(container) : null;
+      const entry = model ? itemTurnOf(container, model, out.length, budget) : null;
+      const wanted = entry ? `${scanToken}:${entry.index}` : null;
+      const current = container.getAttribute('data-clf-fiber-turn');
+      if (wanted === null && current !== null) container.removeAttribute('data-clf-fiber-turn');
+      else if (wanted !== null && current !== wanted) container.setAttribute('data-clf-fiber-turn', wanted);
+      if (entry) out.push(entry);
     }
     return out;
   }
