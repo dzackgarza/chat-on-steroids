@@ -813,7 +813,7 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
   const claim =
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
-      : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call; do not call \`workstream\` again.`;
+      : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call. Do not reclaim it routinely. If an ordinary call returns WORKSTREAM_SETUP_REQUIRED, follow that refusal: call \`workstream\` with action="continue" and workstream="${row.id}", then retry using its returned workstream_id. WORKSTREAM_BUSY instead requires retrying with the existing workstream_id, not reclaiming.`;
   return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
 }
 
