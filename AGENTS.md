@@ -540,30 +540,30 @@ method `workstream` and persist the logical workstream id explicitly.
 For a current identity failure, inspect id issuance, durable restoration, browser-command
 reservation, and then kernel dispatch. A stale connector schema must be refreshed.
 
-### Workstream leases and automatic recovery
+### Workstream leases and recovery
 
-`workstreams.ts` owns durable exclusive claims for every logical workstream. Two minutes
-without a tool call, message or worker-started turn permits immediate recovery/takeover; a
-running tool call holds the lease without an elapsed-time action ceiling, and thought-summary
-rows never renew it. Recovery on a page that is still reporting presses Stop and continues in
-place; only a page that has stopped reporting is reloaded first. A new claim
+`workstreams.ts` owns durable exclusive claims for every logical workstream. Admitted tool
+calls renew the five-minute lease; running calls hold it open. Lease expiry alone never
+starts revival or replacement. The steward diagnoses stalled work from the actual task,
+tool results and browser state. An intentional pause resumes the same holder without
+inventing activity or treating the wait as a failed conversation. A new claim
 invalidates the old opaque token and cancels pending recovery; retained terminals owned by
 the old claim are stopped and already-admitted old calls must settle before successor
 execution. Browser polls and replayed observations are not activity. The app's own
 continuation prompts cannot renew their own lease.
 
-The bridge maintenance sweep owns bounded recovery: one same-chat continuation push gets a
-30-second recovery window. Renewed activity ends the episode; otherwise the old lock is
+After an explicit recovery decision or a failed delivery, the bridge maintenance sweep owns
+bounded recovery. It tracks the same-chat command's delivery and response. Renewed activity
+ends the episode; when that recovery is exhausted, the old lock is
 fenced, the extension stops and archives the actual ChatGPT thread and verifies the stored
 successful archive mutation response, and the bridge opens a replacement frontend with the saved project
 context and generic steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
 
-Controller-started managed workstreams are also **turn-driven**, not only timeout-driven.
+Controller-started managed workstreams are **turn-driven**.
 Their fresh observed `turn_end(completed)` schedules the next workstream prompt immediately;
-fresh failed/stopped/interrupted endings enter bounded recovery immediately. The five-minute
-lease is therefore the silent/wedged fallback, not the normal mechanism for moving from one
-finished unit to the next. Model-created workstream identities are non-driving unless a local
+fresh failed/stopped/interrupted endings enter bounded recovery immediately.
+Model-created workstream identities are non-driving unless a local
 controller explicitly enables auto-advance. Auto-advancing managed conversations stay
 page-mounted instead of entering tabless sleep: the observed turn boundary is their scheduler
 signal, so hiding it behind quiescence/fallback wake would defeat immediate advancement.

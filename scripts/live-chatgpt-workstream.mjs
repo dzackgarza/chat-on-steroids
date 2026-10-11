@@ -9,6 +9,7 @@
  * archived, and proves that a distinct replacement conversation exists.
  */
 import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -192,6 +193,23 @@ try {
     return row;
   }, START_TIMEOUT_MS);
   oldConversation = first.conversationId;
+
+  // Exercise a real orchestrator-owned wait across the lease boundary. Neither the
+  // passage of time nor resume is evidence that this healthy conversation failed.
+  await bridgePost('/workstreams/pause', { id });
+  const paused = (await bridgeGet('/workstreams')).workstreams.find((row) => row.id === id);
+  assert.equal(paused.phase, 'paused');
+  assert.equal(typeof paused.expiresAt, 'number');
+  console.log('Waiting across the paused workstream lease boundary');
+  await sleep(Math.max(0, paused.expiresAt - Date.now() + POLL_MS));
+  await bridgePost('/workstreams/resume', { id });
+  const resumed = (await bridgeGet('/workstreams')).workstreams.find((row) => row.id === id);
+  assert.equal(resumed.phase, 'active', 'an intentional pause must not trigger recovery');
+  assert.equal(resumed.conversationId, oldConversation);
+  assert.equal(resumed.lastActivity, paused.lastActivity, 'resume must not invent worker activity');
+  const retained = await chatGptConversation(oldConversation);
+  assert.equal(retained.ok, true);
+  assert.equal(retained.body.is_archived, false);
 
   await bridgePost('/workstreams/replace', { id });
 

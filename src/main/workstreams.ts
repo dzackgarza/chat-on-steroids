@@ -19,9 +19,9 @@ export function provisionalRoute(conversationId: string): boolean {
 
 /**
  * The lock's lifetime: five minutes after the last tool call the app received under it. Only
- * an admitted tool call renews it. Page activity (thinking, prose, turn boundaries) never does,
- * because a model that thinks or talks without calling tools is the stall. A running tool call
- * holds the lock open; elapsed action time alone does not establish a stall.
+ * an admitted tool call renews it. Page activity (thinking, prose, turn boundaries) never does.
+ * A running tool call holds the lock open. Lease expiry is not a diagnosis of stalled work
+ * and never initiates conversation recovery; the steward owns that decision.
  */
 export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
@@ -722,14 +722,11 @@ export async function resumeWorkstream(id: string): Promise<boolean> {
       )
     )
       return false;
-    // Resuming management is not repository/model progress. Preserve the prior activity
-    // timestamp so a chat that was already stale before the pause does not receive a fresh
-    // five-minute lease merely because someone re-enabled its controller.
-    row.phase = row.error?.startsWith("five_minute_")
-      ? "recovering"
-      : "active";
+    // Resume the existing holder without inventing activity or interpreting an intentional
+    // wait as a failed conversation. Older controllers persisted timer-only diagnoses.
+    row.phase = "active";
+    if (row.error?.startsWith("five_minute_")) row.error = null;
     row.attempts = 0;
-    if (row.phase === "recovering") row.nextCheck = Date.now();
     await save();
     return true;
   });
@@ -853,18 +850,6 @@ export async function nextWorkstreamActions(
         row.commandId = null;
         row.nextCheck = now;
       }
-      // A durable five-minute failure remains a failure until a real new model/tool action
-      // begins. Controller restart/resume must not convert it back into a fresh active lease.
-      if (
-        row.phase === "active" &&
-        row.error?.startsWith("five_minute_")
-      ) {
-        row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.commandId = null;
-        row.actionId = null;
-      }
       // Older builds permanently blocked an auto-advancing replacement when the fresh-chat
       // send itself expired. `commandId` still being present distinguishes that case from an
       // archive failure (which clears it), while attempts===3 and an existing conversation
@@ -899,42 +884,6 @@ export async function nextWorkstreamActions(
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
         row.error = null;
-      }
-      if (
-        row.phase === "advancing" &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
-        runningToolCallsForWorkstream(row.id) === 0
-      ) {
-        row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.commandId = null;
-        row.actionId = null;
-        row.error = "five_minute_no_movement";
-      }
-      if (
-        row.phase === "active" &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
-        now >= row.nextCheck &&
-        runningToolCallsForWorkstream(row.id) === 0
-      ) {
-        row.phase = "recovering";
-        row.nextCheck = now;
-        row.error = "five_minute_no_movement";
-      }
-      // A bound replacement chat whose model never attached is a stalled frontend like any
-      // other: the bind started its lease, and expiry revives/replaces that exact chat.
-      if (
-        row.phase === "opening" &&
-        row.conversationId &&
-        row.commandId === null &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS
-      ) {
-        row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.actionId = null;
-        row.error = "five_minute_no_movement";
       }
       // A revive in flight is judged by its own outcome, never by a timer racing its delivery:
       // the command's deadline bounds the wait, a failed or lost command releases the row
