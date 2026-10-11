@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 16;
+  const RECORDER_VERSION = 17;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -9525,11 +9525,62 @@
     listen(globalThis, 'touchmove', notePresentationScrollInput, { capture: true, passive: true });
     listen(globalThis, 'keydown', notePresentationScrollInput, true);
   }
+  /**
+   * A conversation page whose history read ChatGPT throttled.
+   *
+   * Observed 2026-10-11: with the account's history budget spent, ChatGPT answers the page's
+   * `GET /backend-api/conversations/<id>` with 429 ("Too many requests", Retry-After 12-34 s).
+   * The page then renders no turns and no submit-ready composer, so a command opened into it
+   * waits out its whole deadline and expires, and the app's retry opens another tab that
+   * spends another history read. One reload after the backoff loads the conversation. The
+   * attempt count lives in this tab's sessionStorage so it survives the reload and is reset
+   * once the conversation renders; a pending command's ?clf marker survives the reload too.
+   */
+  const HISTORY_RETRY_MS = 35_000;
+  const HISTORY_RETRY_LIMIT = 3;
+  const historyRetry = { state: 'idle', chat: null };
+
+  function historyThrottled(chat) {
+    if (!globalThis.performance || typeof performance.getEntriesByType !== 'function') return false;
+    const path = `/backend-api/conversations/${chat}`;
+    return performance
+      .getEntriesByType('resource')
+      .some((entry) => entry.name.includes(path) && entry.responseStatus === 429);
+  }
+
+  function recoverThrottledHistory() {
+    const chat = CLF_DOM.conversationId();
+    if (!chat || historyRetry.state === 'scheduled') return;
+    const key = `clf-history-retry:${chat}`;
+    if (document.querySelector('[data-talvt-turn-state], section[data-testid^="conversation-turn"]')) {
+      if (sessionStorage.getItem(key) !== null) sessionStorage.removeItem(key);
+      historyRetry.state = 'idle';
+      return;
+    }
+    if (!historyThrottled(chat)) return;
+    const attempts = Number(sessionStorage.getItem(key) || 0);
+    if (attempts >= HISTORY_RETRY_LIMIT) {
+      if (historyRetry.state !== 'exhausted') {
+        historyRetry.state = 'exhausted';
+        emit({ kind: 'chat_error', text: `ChatGPT throttled loading this conversation (HTTP 429) through ${HISTORY_RETRY_LIMIT} reloads; the account's history-read budget is exhausted.` });
+      }
+      return;
+    }
+    sessionStorage.setItem(key, String(attempts + 1));
+    historyRetry.state = 'scheduled';
+    historyRetry.chat = chat;
+    setTimeout(() => {
+      if (CLF_DOM.conversationId() === historyRetry.chat) location.reload();
+      else historyRetry.state = 'idle';
+    }, HISTORY_RETRY_MS);
+  }
+
   watchComposer();
   watchToolRows();
   watchTranscript();
 
   every(OBSERVE_MS, () => {
+    recoverThrottledHistory();
     observe();
     syncTheme();
     injectControl();
