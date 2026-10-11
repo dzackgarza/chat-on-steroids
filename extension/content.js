@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 17;
+  const RECORDER_VERSION = 18;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -9532,15 +9532,34 @@
    * `GET /backend-api/conversations/<id>` with 429 ("Too many requests", Retry-After 12-34 s).
    * The page then renders no turns and no submit-ready composer, so a command opened into it
    * waits out its whole deadline and expires, and the app's retry opens another tab that
-   * spends another history read. One reload after the backoff loads the conversation. The
-   * attempt count lives in this tab's sessionStorage so it survives the reload and is reset
-   * once the conversation renders; a pending command's ?clf marker survives the reload too.
+   * spends another history read. ChatGPT then shows "Could not load this ChatGPT conversation"
+   * with its own Retry button and does not fetch again by itself, even after a reload.
+   * Pressing that Retry after the backoff loads the conversation; a reload is the fallback
+   * when the error panel is not mounted. The attempt count lives in this tab's sessionStorage
+   * so it survives a reload and is reset once the conversation renders; a pending command's
+   * ?clf marker survives the reload too.
    */
   const HISTORY_RETRY_MS = 35_000;
-  const HISTORY_RETRY_LIMIT = 3;
+  const HISTORY_RETRY_LIMIT = 6;
+  const HISTORY_LOAD_ERROR = 'Could not load this ChatGPT conversation';
   const historyRetry = { state: 'idle', chat: null };
 
+  /** ChatGPT's own Retry button beside its history-load error, or null when not shown. */
+  function historyLoadErrorRetry() {
+    for (const node of document.querySelectorAll('main div, main p, main span')) {
+      if (node.children.length !== 0 || (node.textContent || '').trim() !== HISTORY_LOAD_ERROR) continue;
+      let scope = node.parentElement;
+      for (let up = 0; scope && up < 4; up++, scope = scope.parentElement) {
+        const button = [...scope.querySelectorAll('button')].find((candidate) => (candidate.textContent || '').trim() === 'Retry');
+        if (button) return button;
+      }
+      return null;
+    }
+    return null;
+  }
+
   function historyThrottled(chat) {
+    if (historyLoadErrorRetry()) return true;
     if (!globalThis.performance || typeof performance.getEntriesByType !== 'function') return false;
     const path = `/backend-api/conversations/${chat}`;
     return performance
@@ -9562,7 +9581,7 @@
     if (attempts >= HISTORY_RETRY_LIMIT) {
       if (historyRetry.state !== 'exhausted') {
         historyRetry.state = 'exhausted';
-        emit({ kind: 'chat_error', text: `ChatGPT throttled loading this conversation (HTTP 429) through ${HISTORY_RETRY_LIMIT} reloads; the account's history-read budget is exhausted.` });
+        emit({ kind: 'chat_error', text: `ChatGPT could not load this conversation (history read throttled, HTTP 429) through ${HISTORY_RETRY_LIMIT} retries; the account's history-read budget is exhausted. Retry later, when ChatGPT loads conversations again.` });
       }
       return;
     }
@@ -9570,8 +9589,11 @@
     historyRetry.state = 'scheduled';
     historyRetry.chat = chat;
     setTimeout(() => {
-      if (CLF_DOM.conversationId() === historyRetry.chat) location.reload();
-      else historyRetry.state = 'idle';
+      historyRetry.state = 'idle';
+      if (CLF_DOM.conversationId() !== historyRetry.chat) return;
+      const retry = historyLoadErrorRetry();
+      if (retry) retry.click();
+      else location.reload();
     }, HISTORY_RETRY_MS);
   }
 
