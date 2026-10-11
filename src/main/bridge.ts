@@ -325,8 +325,16 @@ async function bindWorkstreamFrontend(
  * every rewrite and resolve late ids through it.
  */
 const browserRoutePromotions = new Map<string, string>();
+/**
+ * When each promotion was reported in this run. A client route is not unique to one chat:
+ * since 2026-10-11 ChatGPT opens every new chat of a browser profile at the same
+ * `local-chatgpt:<uuid>` route, so a promotion recorded before a fresh-chat command existed
+ * names an earlier chat. Restored promotions have no time here and count as earlier.
+ */
+const browserRoutePromotionAt = new Map<string, number>();
 const ROUTE_PROMOTIONS_STATE = "browser-route-promotions";
 function noteBrowserRoutePromotion(from: string, to: string): void {
+  browserRoutePromotionAt.set(from, Date.now());
   if (browserRoutePromotions.get(from) === to) return;
   browserRoutePromotions.delete(from);
   browserRoutePromotions.set(from, to);
@@ -352,6 +360,28 @@ async function restoreBrowserRoutePromotions(): Promise<void> {
     if (from && to && from !== to) browserRoutePromotions.set(from, to);
   }
 }
+/**
+ * Drops a client route's promotion recorded before `since`, which belongs to an earlier chat
+ * opened at the same route. Returns whether one was dropped.
+ */
+function forgetEarlierBrowserRoutePromotion(route: string, since: number): boolean {
+  if (!/^(?:WEB|local-chatgpt):/i.test(route) || !browserRoutePromotions.has(route)) return false;
+  if ((browserRoutePromotionAt.get(route) ?? 0) >= since) return false;
+  browserRoutePromotions.delete(route);
+  browserRoutePromotionAt.delete(route);
+  writeDurableSoon(ROUTE_PROMOTIONS_STATE, {
+    version: 1,
+    promotions: [...browserRoutePromotions.entries()],
+  });
+  return true;
+}
+
+/** Whether this command types into a chat that does not exist until it is sent. */
+function opensFreshChat(spec: CommandSpec): boolean {
+  if (spec.type === "worker" || spec.type === "resume") return true;
+  return spec.type === "send" && spec.conversationId === null;
+}
+
 function currentBrowserRoute(conversationId: string): string {
   let current = conversationId;
   for (let hop = 0; hop < 8; hop++) {
@@ -4135,7 +4165,12 @@ async function handle(
       }
     }
 
-    // A fresh chat's ACK can name the provisional WEB:<uuid> route its tab already left.
+    // A fresh chat's ACK can name the provisional WEB:<uuid> route its tab already left. It can
+    // also name a local-chatgpt:<uuid> route an earlier new chat was opened at: that earlier
+    // chat's promotion must not resolve this one (it bound every fresh send of 2026-10-11 to
+    // the previous throwaway chat and left it typed_unverified).
+    if (receipt.conversationId && opensFreshChat(command.spec))
+      forgetEarlierBrowserRoutePromotion(receipt.conversationId, command.createdAt);
     if (receipt.conversationId)
       receipt.conversationId = currentBrowserRoute(receipt.conversationId);
     if (receipt.committed && receipt.conversationId) {
