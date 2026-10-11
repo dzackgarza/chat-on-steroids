@@ -1054,6 +1054,9 @@ const OBSERVATION_KINDS = new Set([
   // Not stored as transcript content. These request records populate the exact
   // requestId -> conversationId correlation registry.
   "tool_evidence",
+  // Not stored either: a claim line the page read from rendered prose, which binds a
+  // workstream to this chat (see the claim-line loop in `/events`).
+  "workstream_claim",
 ]);
 // Deliberately excludes `observer_lost`: only the app may append that outcome. An observer
 // cannot report its own absence, so a page claiming it would be fabricating a closure the
@@ -2303,7 +2306,8 @@ async function handle(
     // that chat has the lock, and only a row's current lock binds, so the line pins the row to
     // exactly the chat whose visible message carries it.
     for (const item of observations) {
-      if (item.kind !== "assistant_message" || !item.text) continue;
+      if (item.kind !== "assistant_message" && item.kind !== "workstream_claim") continue;
+      if (!item.text) continue;
       for (const [, lock] of item.text.matchAll(WORKSTREAM_CLAIM_LINE)) {
         if (!lock) continue;
         const bound = await bindWorkstreamConversation(lock, id);

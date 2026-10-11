@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 14;
+  const RECORDER_VERSION = 15;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -1334,6 +1334,37 @@
     }
     return null;
   }
+
+  /**
+   * Claim lines the chat has printed, read from the rendered assistant prose.
+   *
+   * The `workstream` result tells the claiming chat to print `Workstream claim: wl_…`, and the
+   * app binds a workstream to the chat whose visible message carries its lock. That line used to
+   * reach the app only inside Fiber's assistant_message observations, and Fiber reads no turns
+   * in ChatGPT's 2026-09-27 thread layout. A chat that claimed after that change could never be
+   * bound: on 2026-10-10 research ran unbound for eight hours, unreachable by auto-advance and
+   * by every steward message. The DOM still renders the line, so read it there and report each
+   * lock once per conversation as a `workstream_claim`, which the app does not store as
+   * transcript content.
+   */
+  const CLAIM_LINE = /Workstream claim: (wl_[A-Za-z0-9_-]{43})/g;
+  const reportedClaims = new Set();
+  function reportClaimLines() {
+    if (!conversationId) return;
+    for (const turn of CLF_DOM.turns()) {
+      if (turn.role !== 'assistant') continue;
+      for (const node of turn.nodes) {
+        const prose = CLF_DOM.messageText(node, 'assistant');
+        for (const [line, lock] of prose.matchAll(CLAIM_LINE)) {
+          const key = `${conversationId}\u0000${lock}`;
+          if (reportedClaims.has(key)) continue;
+          reportedClaims.add(key);
+          emit({ kind: 'workstream_claim', text: line });
+        }
+      }
+    }
+  }
+  setInterval(reportClaimLines, 10_000);
 
   /** The logical turn a given section node currently belongs to, or null once it is gone. */
   function turnForNode(node, turns = CLF_DOM.turns()) {

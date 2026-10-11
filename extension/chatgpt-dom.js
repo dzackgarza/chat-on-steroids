@@ -1755,6 +1755,7 @@ var CLF_DOM = (() => {
     conversationId,
     conversationTitle,
     turns,
+    messageText,
     presentationTurns,
     messages,
     messagesIn,

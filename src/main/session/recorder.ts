@@ -2050,7 +2050,8 @@ export interface ChatObservation {
     | "turn_start"
     | "turn_end"
     | "chat_error"
-    | "tool_evidence";
+    | "tool_evidence"
+    | "workstream_claim";
   time: number;
   /** True when `time` is ChatGPT's own authored create_time, not local observation time. */
   authoredTime?: boolean;
@@ -2410,6 +2411,9 @@ async function recordChatObservationsNow(
       // Also not stored, and for the same reason: this is the page describing which calls
       // it made, which is a fact about attribution rather than something that happened in
       // the chat. The calls themselves are recorded by the connector, once each.
+      // A claim line read from the page: routing evidence for the bridge, not chat content.
+      case "workstream_claim":
+        continue;
       case "tool_evidence":
         if (item.calls && item.calls.length > 0) {
           noteCallEvidence(
