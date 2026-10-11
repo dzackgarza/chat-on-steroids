@@ -574,6 +574,7 @@ function enqueue(entries) {
       provisional: typeof entry.provisional === 'string' ? entry.provisional : null,
       agent: typeof entry.agent === 'string' ? entry.agent : null,
       agentCommandId: typeof entry.agentCommandId === 'string' ? entry.agentCommandId : null,
+      workstreamCommandId: typeof entry.workstreamCommandId === 'string' ? entry.workstreamCommandId : null,
       event: entry.event
     });
   }
@@ -660,6 +661,7 @@ function nextJournalBatch(preferredConversationId = null) {
       : null;
   let agent;
   let agentCommandId;
+  let workstreamCommandId;
   const mine = [];
   for (const entry of journal) {
     if (!conversationId) {
@@ -675,9 +677,10 @@ function nextJournalBatch(preferredConversationId = null) {
       agent = entry.agent;
       agentCommandId = entry.agentCommandId;
     }
+    if (!workstreamCommandId && entry.workstreamCommandId) workstreamCommandId = entry.workstreamCommandId;
     if (mine.length >= BATCH) break;
   }
-  return conversationId ? { conversationId, mine, agent, agentCommandId } : null;
+  return conversationId ? { conversationId, mine, agent, agentCommandId, workstreamCommandId } : null;
 }
 
 async function drainOnce(preferredConversationId = null) {
@@ -691,13 +694,14 @@ async function drainOnce(preferredConversationId = null) {
     // concrete conversation overtake it. Other conversations remain independent.
     const batch = nextJournalBatch(preferredConversationId);
     if (!batch) break;
-    const { conversationId, mine, agent, agentCommandId } = batch;
+    const { conversationId, mine, agent, agentCommandId, workstreamCommandId } = batch;
     const result = await call('/events', {
       method: 'POST',
       body: JSON.stringify({
         conversationId,
         agent,
         agentCommandId,
+        workstreamCommandId,
         events: mine.map((entry) => entry.event)
       })
     });
@@ -3245,7 +3249,7 @@ chrome.tabs.onUpdated.addListener((id, changeInfo) => {
  * receive both its static manifest injection and this recovery injection.
  */
 const CHATGPT_TAB_URLS = ['https://chatgpt.com/*', 'https://chat.openai.com/*'];
-const PAGE_RECORDER_VERSION = 15;
+const PAGE_RECORDER_VERSION = 16;
 
 let deferredRecoveryWork = null;
 

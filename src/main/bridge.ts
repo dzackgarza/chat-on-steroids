@@ -2302,6 +2302,16 @@ async function handle(
         await bindWorkstreamFrontend("", id);
       }
     }
+    // A page opened by a workstream command reports that command's id with every batch. When
+    // the command's deadline passed before its ACK, this is the only exact evidence left of
+    // which chat the row's opening prompt started (2026-10-11: research ran unbound for hours
+    // because every replacement chat's ACK expired and the claim line never reached the app).
+    const workstreamCommandId =
+      typeof body["workstreamCommandId"] === "string" ? body["workstreamCommandId"] : null;
+    if (workstreamCommandId) {
+      const replaced = await bindWorkstreamReplacement(workstreamCommandId, id);
+      if (replaced) logInfo(`workstream ${replaced.id}: bound to chat ${id} by its opening command`);
+    }
     // The `workstream` result tells the claiming chat to print its lock in a claim line. Only
     // that chat has the lock, and only a row's current lock binds, so the line pins the row to
     // exactly the chat whose visible message carries it.

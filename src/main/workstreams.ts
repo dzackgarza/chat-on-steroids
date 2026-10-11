@@ -56,6 +56,13 @@ const rowSchema = z
     attempts: z.number().int().min(0).max(3),
     nextCheck: z.number(),
     commandId: z.string().nullable(),
+    /**
+     * The opening command whose delivery deadline passed with the row still unbound. ChatGPT
+     * can start that chat anyway; its page then reports this id with its observations, which
+     * is the same exact rendezvous the ACK would have been. Only the latest failed command is
+     * kept, and only an unbound row with no newer command pending accepts it.
+     */
+    lateCommandId: z.string().nullable().optional(),
     actionId: z.string().nullable(),
     error: z.string().nullable(),
     retiredKeys: z.array(z.string()),
@@ -1199,9 +1206,15 @@ export async function bindWorkstreamReplacement(
   return exclusive(async () => {
     const row = [...rows.values()].find(
       (candidate) =>
-        candidate.commandId === commandId &&
-        (candidate.phase === "opening" ||
-          (candidate.phase === "active" && candidate.actionId === null)),
+        (candidate.commandId === commandId &&
+          (candidate.phase === "opening" ||
+            (candidate.phase === "active" && candidate.actionId === null))) ||
+        // A failed opening command whose chat ChatGPT started anyway (see `lateCommandId`).
+        (candidate.lateCommandId === commandId &&
+          candidate.phase === "active" &&
+          candidate.actionId === null &&
+          candidate.commandId === null &&
+          candidate.conversationId === null),
     );
     if (!row) return null;
     const previousConversationId = row.conversationId;
@@ -1224,6 +1237,7 @@ export async function bindWorkstreamReplacement(
     // and this browser binding. Once the concrete conversation is known it has no remaining
     // controller meaning and must not survive as stale state on an active row.
     row.commandId = null;
+    row.lateCommandId = null;
     await save();
     return {
       id: row.id,
@@ -1257,6 +1271,7 @@ export async function releaseFailedWorkstreamReplacementBind(
     )
       return false;
     row.commandId = null;
+    if (row.conversationId === null) row.lateCommandId = commandId;
     await save();
     return true;
   });

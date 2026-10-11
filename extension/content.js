@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 15;
+  const RECORDER_VERSION = 16;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -329,6 +329,8 @@
   // app will only accept lost-ACK recovery when this full random id still names the leased worker
   // command that opened this document. It comes only from the extension's redeemed command.
   let agentCommandId = null;
+  /** The workstream opening command this page redeemed, reported so a late ACK can still bind. */
+  let workstreamCommandId = null;
 
   const queue = [];
   const queueSizes = new WeakMap();
@@ -953,6 +955,7 @@
       conversationId,
       agent,
       agentCommandId,
+      workstreamCommandId,
       event: { time: Date.now(), ...bounded }
     };
     // Streaming canonical messages replace their older unsent snapshot. Keeping every
@@ -9170,6 +9173,7 @@
     if (attempt) markDeliveryStep(attempt, 'sent');
     agent = boot.agent || null;
     agentCommandId = agent && typeof boot.id === 'string' ? boot.id : null;
+    workstreamCommandId = boot.workstreamActionId && typeof boot.id === 'string' ? boot.id : null;
 
     // A revival already names and repeatedly proved the exact conversation before the send.
     // Once ChatGPT accepts that user message there is nothing left to discover, and waiting on
