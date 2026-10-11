@@ -24,6 +24,12 @@ hours-long streams.
 
 **Current owner state (2026-10-09): the owner started `lean-cas-dsl` (`/home/dzack/gitclones/lean-cas-dsl`, task: construct B0 per its `AGENTS.md`) beside `research`. These two are the only active managed streams.** The 2026-10-08 entry below still governs everything else.
 
+**2026-10-11 build orchestration:** required Lean builds run in the background. Workers continue
+useful adjacent work or are temporarily paused while the orchestrator owns the build and consumes
+its result. The orchestrator resumes such a build pause without another owner decision. Worker
+turns are for substantive work, not waiting or repeated build polling; elapsed time and proxy
+counts do not classify a wedge or drift.
+
 **Current owner state (2026-10-08): the owner resumed `research` as the only active managed repository stream; every other stream, `new-qual-site` and `math-notes-ipad` included, is paused, and the `orchestrator` stewards research alone.** research works from its `HANDOFF.md` first (issue 401: the research-side primitives `sage-indefinite-port` needs, then wrong placements, then duplication), then its `TODO.md` DAG. `sage-indefinite-port` stays stopped (owner, 2026-10-07). `new-qual-site` (cold-resume: TODO.md §7 Author solutions) and `math-notes-ipad` (cold-resume: remaining web-host features on `ipad-port`) are paused. `/home/dzack/gitclones/sage-categories` remains paused with `core-functor-cell-calculus` as its cold-resume frontier. `/home/dzack/gitclones/lean-categories` remains paused in State-2 / Sweep-III realization. Do not resume any of them without a later explicit owner instruction. A repository-local removal of a pause does not resume a stream; only a later explicit owner instruction does.
 
 **Research resumed — current M1 source convergence.** The repository owner explicitly resumed `/home/dzack/research` after the 2026-09-15 pause. Its live `TODO.md` governs selection and currently starts with `placement-audit`; the former steward-level pause is superseded. Do not reapply it unless the owner issues a new stop instruction. One stream remains the fleet rule.

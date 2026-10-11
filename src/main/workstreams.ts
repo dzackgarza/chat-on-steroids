@@ -21,7 +21,7 @@ export function provisionalRoute(conversationId: string): boolean {
  * The lock's lifetime: five minutes after the last tool call the app received under it. Only
  * an admitted tool call renews it. Page activity (thinking, prose, turn boundaries) never does,
  * because a model that thinks or talks without calling tools is the stall. A running tool call
- * holds the lock open; the separate five-minute action ceiling bounds it.
+ * holds the lock open; elapsed action time alone does not establish a stall.
  */
 export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
@@ -799,7 +799,7 @@ export const FRESH_CHAT_ORIENTATION =
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "Preserve other workers’ changes, finish the substantive work, and keep the workstream moving. Keep every command/tool action under five minutes. These managed workstreams are source/architecture/definition/card work, not release pipelines: do not push/publish, start watchers/servers, use foreground shell sleeps (the connector's own `sleep` tool is allowed when a refusal names it), declare persistent terminal sessions, or run broad/heavy test/build suites unless the CURRENT repository contract explicitly requires that exact action. Prefer focused owner-local checks. A command or test approaching five minutes is a major failure signal: stop it, re-read the explicit assigned task/DAG/phase boundary, check for drift or over-broad validation, and resume with a narrower action rather than waiting.";
+  "Preserve other workers’ changes and resolve the current repository task. Follow its phase and acceptance requirements. A required full Lean compilation may legitimately take a long time. Run it in the background and continue useful independent or adjacent work. If no such work is ready, give the orchestrator the process identity and log/result paths, then end the turn so it can pause the workstream and own the build wait. Worker turns are for substantive work, not waiting or repeated build polling. The orchestrator consumes the result and resumes the worker with concrete work. Do not kill or restart a build merely for elapsed time or launch duplicates. Keep clear which source revision a build checks. Judge progress from actual work and results, not elapsed time, tool-call counts, commits or checkboxes.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
@@ -810,8 +810,8 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
   const recoveryNotice =
     row.error?.startsWith("five_minute_")
       ? row.error.startsWith("five_minute_action_overrun:")
-        ? `\nRECOVERY NOTICE: Your previous action exceeded the hard five-minute action ceiling: ${row.error.slice("five_minute_action_overrun:".length)}. This is not normal waiting. In these repository workstreams, no single command, test, build, or tool action should take more than five minutes. Treat this as a major red flag for drift, an over-broad or unacceptably slow test/build, unnecessary heavyweight work, or work outside the assigned phase such as push/publication. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints before doing anything else. Verify that you are still on the repository-selected unit and are not attempting push/publication or broad validation unless explicitly required. Resume with a narrower source action or focused owner-local check; do not rerun the same long command.\n`
-        : "\nRECOVERY NOTICE: This workstream made no substantive movement for five minutes. There is no autonomous waiting/wake-up state after tool activity stops; five minutes without movement means the worker is stalled. Verify you are still on the selected unit, check for drift such as broad tests/builds or push/publication work, and resume immediately with a narrower substantive action.\n"
+        ? `\nACTIVITY CHECK: An earlier controller flagged a long action: ${row.error.slice("five_minute_action_overrun:".length)}. Duration alone does not establish failure. Inspect the actual process and output against the current task. A progressing build continues in the background while you do useful adjacent work, or the orchestrator pauses this workstream and owns the wait. If it has exited, consume its result; if it is genuinely stalled, diagnose the cause before restarting.\n`
+        : "\nACTIVITY CHECK: No recent activity was recorded. This does not establish whether the work is stalled. Inspect the current task, actual tool results and any background process. Continue a progressing required build without restarting it; consume a completed result; otherwise address the concrete obstruction or resume the unfinished task.\n"
       : "";
   const claim =
     row.phase === "opening"

@@ -52,7 +52,6 @@ import {
   pauseWorkstream,
   promoteWorkstreamConversation,
   recordWorkstreamCommand,
-  recoverWorkstreamNow,
   releaseFailedWorkstreamDelivery,
   noteWorkstreamRecoveryDelivered,
   releaseFailedWorkstreamReplacementBind,
@@ -5852,7 +5851,6 @@ export function queueWorkerRevival(
  * makes this usable for driving ordinary chats rather than workers.
  */
 let workstreamSweep: Promise<void> | null = null;
-const WORKSTREAM_ACTION_MAX_MS = 5 * 60_000;
 /**
  * ChatGPT's request-rate notice clears about 30 s after it is acknowledged (the extension now
  * acknowledges it on sight). Hold long enough to clear it, jittered per attempt so several
@@ -5922,50 +5920,6 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
   if (workstreamSweep) return workstreamSweep;
   workstreamSweep = (async () => {
     if (await browserDisconnected()) return;
-    // In managed repository work, a single action surviving five minutes is itself a failure
-    // signal. These are small, architecture-heavy workstreams; broad suites, builds, pushes,
-    // publication steps, or any other command that runs this long are not "waiting" states to
-    // preserve. Stop owned terminal work and recover the same chat with an explicit diagnostic
-    // that forces the worker to re-ground in its assigned DAG/unit before continuing.
-    for (const row of workstreamStatus()) {
-      if (
-        !row.autoAdvance ||
-        !row.conversationId ||
-        !["active", "advancing"].includes(row.phase)
-      )
-        continue;
-      const agedCall = inFlightCallsForWorkstream(row.id).find(
-        (call) => call.ageMs >= WORKSTREAM_ACTION_MAX_MS,
-      );
-      const agedProcesses = unifiedExecManager
-        .listProcesses()
-        .filter(
-          (process) =>
-            execOwner(process.processId)?.workstreamId === row.id &&
-            now - process.startedAt >= WORKSTREAM_ACTION_MAX_MS,
-        );
-      if (!agedCall && agedProcesses.length === 0) continue;
-      for (const process of agedProcesses)
-        await unifiedExecManager.terminateProcess(process.processId);
-      const detail = [
-        agedCall
-          ? `tool=${agedCall.tool}, age=${Math.round(agedCall.ageMs / 1000)}s`
-          : null,
-        agedProcesses.length > 0
-          ? `terminated_terminal_processes=${agedProcesses.length}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      await recoverWorkstreamNow(
-        row.id,
-        `five_minute_action_overrun:${detail || "owned action exceeded 300s"}`,
-        now,
-      );
-      logWarn(
-        `workstream ${row.id}: forced recovery after five-minute action ceiling (${detail || "overrun"})`,
-      );
-    }
     // A fresh replacement can attach before the browser ACK binds its concrete conversation.
     // During that narrow window continueWorkstream() deliberately leaves
     // active + commandId + actionId=null.  Do not let the generic superseded-action cleanup

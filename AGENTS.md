@@ -544,7 +544,7 @@ reservation, and then kernel dispatch. A stale connector schema must be refreshe
 
 `workstreams.ts` owns durable exclusive claims for every logical workstream. Two minutes
 without a tool call, message or worker-started turn permits immediate recovery/takeover; a
-running tool call holds the lease (the five-minute action ceiling bounds it) and thought-summary
+running tool call holds the lease without an elapsed-time action ceiling, and thought-summary
 rows never renew it. Recovery on a page that is still reporting presses Stop and continues in
 place; only a page that has stopped reporting is reloaded first. A new claim
 invalidates the old opaque token and cancels pending recovery; retained terminals owned by
@@ -3292,12 +3292,13 @@ The tick is a session-only cron job (`13,43 * * * *`) whose prompt is saved verb
 2026-09-26 ticks stopped twice unnoticed. After any continuation, check that the job exists
 and recreate it from that file.
 
-Every tick starts from `steward-dashboard/completion.md`: one completion measure per active stream,
-named with its durable source, and a row per tick with the value and its delta. A value that has
-not risen across two ticks is a drifting or blocked stream to change that tick. On 2026-10-10 the
-steward reported twelve hours of commits as progress while lean-cas-dsl held at 6 of 15 required
-assertions and research's step 2 had no denominator; a promise in chat to report differently does
-not survive the context window, the ledger does.
+Every tick reads `steward-dashboard/completion.md` for prior claims to verify, then examines each
+agent's actual activity against its current task: its reasoning and tool results, source changes,
+unresolved failures, and the dependency it is trying to resolve. Determine whether those actions
+address the problem in front of it, or repeat checks, explore adjacent work, or manufacture records
+without resolving that problem. Completion measures summarize established results; a flat or rising
+measure never classifies a stream or triggers an intervention. Intervene on a diagnosed wedge,
+blocker or drift, and verify that the intervention changes the relevant activity and outcome.
 
 Run these steps in order. Skipping the early ones and starting from chat liveness is the failure
 mode that produced most of the incidents in this section.
@@ -3363,21 +3364,23 @@ handled immediately rather than waiting for the next scheduled sample.
 
 **Working.** The current objective is still open; recent artifacts or a live relevant process are
 advancing its accepted unit; and a semantic sample has not contradicted the invariant. Leave it
-alone. For managed repository workstreams, no individual tool/command/test/build action is allowed
-to run for five minutes: that duration is itself a major failure signal, not a legitimate
-long-running gate. These repositories are source/architecture/definition/card work, not enterprise
-release pipelines. A command approaching five minutes requires stopping it and re-grounding in the
-explicit task/DAG/phase boundary: check for drift, a broad or pathologically slow test/build,
-unnecessary heavyweight validation, watcher/server work, or push/publication work that was never
-assigned. Resume with a narrower source action or focused owner-local check. A high commit rate is
-not enough.
+alone. A required full Lean compilation can legitimately take a long time. Run it in the
+background. The worker continues useful independent or adjacent work. If no such work is ready,
+the orchestrator temporarily pauses the workstream and owns the build through completion; the
+ChatGPT worker does not spend its turn waiting or repeatedly polling. The orchestrator retains the
+process identity, log and exit result, inspects actual compiler activity, and resumes the worker
+with concrete work as soon as the result is available. Do not kill or restart a build merely for
+elapsed time or launch duplicates. Keep clear which source revision the build checks. A stale
+"build running" claim is not permission to avoid work: establish whether the process exists and
+advances, diagnose an actual stall, and consume its result promptly.
 
 **Wedged.** The objective is valid and executable, substantive work remains, but either there is no
-live relevant action and no advancing tree/commit/transcript evidence, or one individual action has
-crossed the five-minute ceiling. There is no autonomous "waiting" state after tool activity stops:
-an agent with no active tool call will not wake itself later. Conversely, an active tool call does
-not excuse a five-minute stall; a test/command lasting that long is itself the thing to stop and
-diagnose. First inspect the dirty tree: if it holds coherent finished work, the first instruction
+live relevant action and no advancing tree/commit/transcript evidence, or its actual activity shows
+a repeated failure to advance the assigned work. Elapsed time alone does not establish a wedge.
+A live background build is relevant work owned by the orchestrator while the worker does other
+substantive work or is temporarily paused. Repeatedly polling a dead process, restarting the same build without resolving its
+failure, or exploring adjacent tasks to avoid that failure requires intervention at the cause.
+First inspect the dirty tree: if it holds coherent finished work, the first instruction
 is to bank it. Then recover the chat at the layer actually broken. Do not call a stream wedged
 merely because a metric has not moved while fresh bounded actions are still advancing the assigned
 unit.
@@ -3700,6 +3703,12 @@ are probes of the core, never products (sage `AGENTS.md`). research's top-priori
 **2026-10-01 18:41 UTC: the owner resumed `new-qual-site` and started `math-notes-ipad`; 2026-10-02 11:48 UTC: the owner started `sage-indefinite-port`** (`/home/dzack/gitclones/sage-indefinite-port`; its `TODO.md` is the DAG over the GitHub issue tree rooted at #4). These are the only active managed streams. new-qual-site's task is writing solutions (its TODO.md section 7, made current in 60456281f after a copy pass deleted 46 owner-written cards); no pass there may delete, merge or consolidate owner-written cards. The steward never pushes or publishes a managed repository; workers push their own branches. Auto-continuation (`autoContinue` in config.json) is on whenever streams are being stewarded: with it off, a stalled stream waits for the next steward tick (2026-10-02, owner). `math-notes-ipad` (`/home/dzack/gitclones/math-notes-app`, branch `ipad-port`) exists to build out the iPad app on that branch, ahead of that repository's v1-before-iPad sequencing, which still governs its `main`; it verifies Swift through `gh workflow run ios.yml --ref ipad-port` and never pushes `main`. The older `math-notes-app` and `math-notes-app-batch2` rows were bound to `/research` and stay as they are. Everything else stays under the pause below.
 
 **2026-10-09: the owner started `lean-cas-dsl`** (`/home/dzack/gitclones/lean-cas-dsl`, cloned from `dzackgarza/lean-cas-dsl`; its `AGENTS.md` "Current task: construct B0" governs). The active managed streams are `research` and `lean-cas-dsl` (or the temporary stream standing in for it under the serial rule below); every other row stays paused.
+
+**2026-10-11, owner: workers work; the orchestrator owns build waits.** Required Lean builds run in
+the background without an arbitrary duration cutoff. Workers continue useful adjacent work, or
+the orchestrator temporarily pauses their workstream, owns the build, and resumes them promptly
+with its result. This temporary build pause is not an owner stop requiring another permission to
+resume. Inspect actual activity to diagnose drift or wedges; proxy changes never trigger intervention.
 
 **2026-10-10, owner rule: blocking work is serial.** When an active stream is blocked on work in another repository, pause the blocked stream and run a temporary workstream in the blocking repository in its place, whatever that repository's standing status, until the blocking task is delivered; then close it and resume the blocked stream. The blocked worker never "commissions" the work, and the blocked stream and its blocker do not run side by side. Applied the same day to `lean-cas-dsl` (paused), in order: `lean-cas-dsl-leaves` decodes the released descriptor forms (products, coproduct); `lean-categories` registers the named output forms of `colim.bil_w_form.cokernel`; `lean-cas-dsl-leaves` computes the discriminant cokernel; then `lean-cas-dsl` resumes.
 
