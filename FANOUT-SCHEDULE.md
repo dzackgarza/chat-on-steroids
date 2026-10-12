@@ -22,7 +22,9 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
-**Current owner state (2026-10-09): the owner started `lean-cas-dsl` (`/home/dzack/gitclones/lean-cas-dsl`, task: construct B0 per its `AGENTS.md`) beside `research`. These two are the only active managed streams.** The 2026-10-08 entry below still governs everything else.
+**Current owner state (2026-10-12): the owner explicitly resumed `sage-indefinite-port` (`/home/dzack/gitclones/sage-indefinite-port`) and requested its completion under its existing repository DAG and acceptance rules.** The prior 2026-10-07 stop is superseded for this stream only. `research` and `lean-cas-dsl` remain active; every other paused stream remains paused. Use the existing sage-indefinite-port worker, not a competing repository worker.
+
+**2026-10-09: the owner started `lean-cas-dsl`** (`/home/dzack/gitclones/lean-cas-dsl`, task: construct B0 per its `AGENTS.md`) beside `research`. The 2026-10-08 entry below still governs other owner-paused streams absent a later explicit resume.
 
 **2026-10-11 build orchestration:** required Lean builds run in the background. Workers continue
 useful adjacent work or are temporarily paused while the orchestrator owns the build and consumes
