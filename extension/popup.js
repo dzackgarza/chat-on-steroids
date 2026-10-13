@@ -59,6 +59,16 @@ function stage(name, state, meta) {
 
 // -------------------------------------------------------------------- pipeline
 
+/** How the app describes what it placed a call on, in its own words. */
+const ATTRIBUTION = {
+  request_id: 'exact request id',
+  unattributed: 'request id not resolved',
+  agent: 'agent key',
+  turn: 'tool block on the page',
+  generation: 'the only chat generating',
+  inferred: 'not placed in a chat'
+};
+
 /**
  * The three stages, from evidence each layer produced independently.
  *
@@ -135,12 +145,57 @@ function pipeline(info, ready) {
     };
   }
 
+  const calls = Array.isArray(page.trace) ? page.trace : [];
+  const placed = calls.filter((call) => call.app === 'request_id').length;
+  const missed = calls.filter((call) => call.app && call.app !== 'request_id');
+  if (missed.length > 0) {
+    return {
+      read: readStage,
+      sent: sentStage,
+      proc: ['failed', `${placed}/${calls.length}`],
+      why: [
+        'bad',
+        `The app could not place ${missed.length === 1 ? 'a call' : `${missed.length} calls`} by request id — it fell back to ${ATTRIBUTION[missed[0].app] || missed[0].app}.`
+      ]
+    };
+  }
   return {
     read: readStage,
     sent: sentStage,
-    proc: ['done'],
-    why: ['', 'Recording into the app.']
+    proc: ['done', calls.length ? `${placed}/${calls.length}` : ''],
+    why: ['', calls.length ? 'Every tool call matched end to end.' : 'Recording into the app.']
   };
+}
+
+/** One row per request id: three dots, the tool, the id. Newest first. */
+function paintCalls(page) {
+  const box = $('calls');
+  box.textContent = '';
+  const rows = page && Array.isArray(page.trace) ? page.trace.slice(0, 5) : [];
+  for (const entry of rows) {
+    const line = document.createElement('div');
+    line.className = 'call';
+    const pips = document.createElement('span');
+    pips.className = 'pips';
+    for (const state of [
+      entry.read ? 'on' : '',
+      entry.sent ? 'on' : '',
+      entry.app ? (entry.app === 'request_id' ? 'on' : 'bad') : ''
+    ]) {
+      const pip = document.createElement('span');
+      pip.className = `pip ${state}`;
+      pips.append(pip);
+    }
+    const tool = document.createElement('span');
+    tool.className = 'tool';
+    tool.textContent = entry.tool || 'tool call';
+    const id = document.createElement('span');
+    id.className = 'id';
+    id.textContent = shorten(entry.requestId, 5);
+    line.title = `${entry.requestId} — picked up ${entry.read ? 'yes' : 'no'} · sent ${entry.sent ? 'yes' : 'no'} · app ${ATTRIBUTION[entry.app] || 'no record'}`;
+    line.append(pips, tool, id);
+    box.append(line);
+  }
 }
 
 // ------------------------------------------------------------------- rendering
@@ -265,8 +320,8 @@ async function refresh() {
   const chatId = info && info.conversationId;
   idRow('chat', !isChat ? 'off' : chatId ? 'ok' : 'wait', !isChat ? '' : chatId ? shorten(chatId, 8) : 'new chat', chatId);
 
-  const lock = page && page.workstream;
-  idRow('lock', !isChat ? 'off' : lock ? 'ok' : 'wait', !isChat ? '' : lock ? shorten(lock, 9) : 'none yet', lock);
+  const requestId = page && page.requestId;
+  idRow('req', !isChat ? 'off' : requestId ? 'ok' : 'wait', !isChat ? '' : requestId ? shorten(requestId, 9) : 'none yet', requestId);
 
   const state = pipeline(info, ready);
   stage('read', ...state.read);
@@ -274,6 +329,7 @@ async function refresh() {
   stage('proc', ...state.proc);
   $('why').textContent = state.why[1];
   $('why').className = `why ${state.why[0]}`;
+  paintCalls(page);
 
   const broken = state.why[0] === 'bad';
   const flowing = state.proc[0] === 'done';
@@ -322,7 +378,7 @@ async function copyInto(button, text) {
   }, 900);
 }
 
-for (const id of ['d-chat', 'd-lock']) {
+for (const id of ['d-chat', 'd-req']) {
   $(id).addEventListener('click', (event) => {
     event.preventDefault();
     void copyInto(event.currentTarget, event.currentTarget.title);

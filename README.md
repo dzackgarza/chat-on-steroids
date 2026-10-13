@@ -245,21 +245,16 @@ queued browser work is withdrawn and active workers are parked, but every prime-
 history stays durable across disabled app restarts and is available again after re-enable.
 
 Every ordinary Core/Desktop tool call requires an opaque `workstream_id`, obtained once from
-the `workstream` identity-registration tool. `workstream action=start
+the unscoped `workstream` identity-registration tool. `workstream action=start
 workstream="<name>"` registers and claims a new logical repository/task identity for this
 chat; `workstream action=continue workstream="<name>"` claims an already-registered one.
-One path has at most one workstream: `start` on a path already owned by a registered
-workstream is refused with `WORKSTREAM_PATH_TAKEN`, naming the holder to continue instead.
 Either returns the `workstream_id` to carry on every subsequent ordinary call.
 
 The workstream id routes recordings, workspaces, terminals and agent messages without
 request headers. It is a cooperative routing identifier, so a model must never copy another
 chat's id. A workstream id expires (is superseded) after five minutes without new tool or
 recorded chat activity; the next `workstream action=continue` issues a fresh id and fences
-the previous one. `continue` on a workstream whose holder's lease is still live is refused
-with `WORKSTREAM_HELD` and the time the lock frees; the refusal prescribes one bounded
-`sleep`-then-retry (at most two) and then ending the turn with a note — never
-loop-waiting. A superseded id cannot execute tools; already admitted calls must settle
+the previous one. A superseded id cannot execute tools; already admitted calls must settle
 and retained terminal processes are stopped before the successor executes.
 
 The logical workstream is the provenance thread. Ordinary tool calls, terminal sessions and

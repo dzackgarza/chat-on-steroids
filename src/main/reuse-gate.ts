@@ -136,28 +136,97 @@ const HOW =
   "Before minting anything, search for what the repository already owns: the concept, its mathematical or " +
   "domain name, likely owners and base classes, not the name you are about to invent.";
 
+/** Words that only shape a definition search (`def\s+foo`), never a concept searched for. */
+const DEFINITION_WORDS = new Set([
+  "def", "class", "function", "interface", "type", "enum", "theorem", "lemma", "structure", "inductive",
+  "instance", "abbrev", "fn", "struct", "trait", "export", "async", "pub", "private", "noncomputable",
+]);
+
+/**
+ * The words a search looks for. A quoted argument is the pattern; otherwise a command's first
+ * positional argument after the search tool is, and a `find` query is its own pattern. Regex
+ * escapes (`\s`, `\b`) and alternation are separators, so `'cokernel|elementary_divisors'`
+ * yields both words rather than one opaque string.
+ */
+function searchTerms(query: string): string[] {
+  const quoted = [...query.matchAll(/'([^']*)'|"([^"]*)"/g)].map((match) => match[1] ?? match[2] ?? "");
+  let patterns = quoted;
+  if (patterns.length === 0) {
+    const words = query.split(" ");
+    const tool = words.findIndex((word) => SEARCH_COMMAND.test(word));
+    patterns = tool < 0 ? [query] : words.slice(tool + 1).filter((word) => !word.startsWith("-")).slice(0, 1);
+  }
+  return patterns
+    .flatMap((pattern) => pattern.replace(/\\[A-Za-z]/g, " ").split(/[^A-Za-z0-9_]+/))
+    .filter((term) => term.length >= 2 && !DEFINITION_WORDS.has(term.toLowerCase()));
+}
+
+/**
+ * Why one quoted search does or does not count. A search for the invented identifier itself
+ * proves nothing, so a search counts only if it looks for at least one word that is not a new
+ * name. A broader search that merely includes a new name among other terms counts: a helper
+ * named `cokernel` does not make searching `cokernel|elementary_divisors` a search for itself.
+ */
+type SearchVerdict =
+  | { kind: "counted"; query: string }
+  | { kind: "not_run"; query: string }
+  | { kind: "only_new_names"; query: string; names: string[] };
+
+export function judgeSearch(query: string, ran: readonly string[], newNames: ReadonlySet<string>): SearchVerdict {
+  const wanted = normalise(query);
+  const terms = searchTerms(wanted);
+  const fresh = terms.filter((term) => !newNames.has(term.toLowerCase()));
+  if (terms.length > 0 && fresh.length === 0) return { kind: "only_new_names", query: wanted, names: [...new Set(terms)] };
+  if (!wanted || !ran.some((done) => done.includes(wanted))) return { kind: "not_run", query: wanted };
+  return { kind: "counted", query: wanted };
+}
+
+function newNameSet(minted: readonly string[]): Set<string> {
+  return new Set(minted.map((name) => name.split("/").pop()!.replace(/\.[a-z]+$/, "").toLowerCase()));
+}
+
+/** The most recent searches this chat ran that would count, quoted as recorded. */
+function countingSearches(key: string, minted: readonly string[]): string[] {
+  const ran = searches.get(key) ?? [];
+  const names = newNameSet(minted);
+  const counting = ran.filter((query) => judgeSearch(query, ran, names).kind === "counted");
+  return [...new Set(counting.reverse())].slice(0, 6);
+}
+
+/** What the chat can quote next, or the exact call that gives it something to quote. */
+function quotableSearches(key: string, minted: readonly string[]): string {
+  const counting = countingSearches(key, minted);
+  if (counting.length > 0)
+    return `Searches this chat has run that count (copy one exactly into searched): ${counting.map((q) => JSON.stringify(q)).join(", ")}.`;
+  return (
+    "This chat has run no search that counts yet. Call find with the concept's mathematical or domain name " +
+    "(a word that is not one of the new names), then put that exact query in searched."
+  );
+}
+
 function recordProblems(key: string, minted: readonly string[], record: readonly ReuseSearchEntry[]): string[] {
   const ran = searches.get(key) ?? [];
   const problems: string[] = [];
   const covered = new Set(record.flatMap((entry) => entry.names));
   const uncovered = minted.filter((name) => !covered.has(name));
   if (uncovered.length > 0) problems.push(`no reuse_search entry names ${uncovered.join(", ")}`);
-  const inventedNames = minted
-    .map((name) => name.split("/").pop()!.replace(/\.[a-z]+$/, ""))
-    .filter((name) => name.length >= 4);
+  const newNames = newNameSet(minted);
   for (const entry of record) {
     const label = entry.names.join(", ") || "(an entry with no names)";
     if (!entry.found.trim() || !entry.why_new.trim()) problems.push(`${label}: found and why_new must both be filled in`);
-    const counted = entry.searched.filter((query) => {
-      const wanted = normalise(query);
-      if (!wanted || inventedNames.some((name) => wanted.includes(name))) return false;
-      return ran.some((done) => done.includes(wanted));
+    const verdicts = entry.searched.map((query) => judgeSearch(query, ran, newNames));
+    if (verdicts.some((verdict) => verdict.kind === "counted")) continue;
+    const reasons = verdicts.map((verdict) => {
+      switch (verdict.kind) {
+        case "not_run":
+          return `${JSON.stringify(verdict.query)} was not run verbatim in this chat (as a find call or an rg/grep/fd/ast-grep/probe command)`;
+        case "only_new_names":
+          return `${JSON.stringify(verdict.query)} searches only for new names (${verdict.names.join(", ")}), which nothing can predate`;
+        case "counted":
+          return assert.fail("a counted search leaves no reason");
+      }
     });
-    if (counted.length === 0)
-      problems.push(
-        `${label}: none of its searched entries matches a search this chat ran (a find call or an rg/grep/fd/ast-grep/probe command), ` +
-          "excluding searches for the new name itself",
-      );
+    problems.push(`${label}: no searched entry counts: ${reasons.length > 0 ? reasons.join("; ") : "searched is empty"}`);
   }
   return problems;
 }
@@ -184,7 +253,7 @@ export async function reuseGateRefusal(
   if (problems.length > 0)
     return (
       `REUSE_SEARCH_REJECTED: this patch adds ${minted.join(", ")}, and its reuse_search record does not hold, so it was not applied: ` +
-      `${problems.join("; ")}. ${how} Quote each search exactly as you ran it.`
+      `${problems.join("; ")}. ${quotableSearches(key, minted)} Then send the same patch with the corrected reuse_search.`
     );
   for (const name of minted) setFor(accounted, key).add(name);
   return null;
@@ -322,12 +391,13 @@ export function reusePendingRefusal(tool: string, args: Record<string, unknown>)
   // The record for shell-made names travels on the next apply_patch.
   if (tool === "apply_patch" && Array.isArray(args["reuse_search"])) return null;
   const key = readerKey();
-  const waiting = key ? pending.get(key) : undefined;
+  if (!key) return null;
+  const waiting = pending.get(key);
   if (!waiting || waiting.size === 0) return null;
   return (
     `REUSE_SEARCH_PENDING: a command you ran added ${[...waiting].join(", ")} with no reuse record, so nothing was run. ` +
-    `${HOW} Then call apply_patch with a reuse_search whose entries cover those names (the patch may be the next edit you ` +
-    "were going to make, or a one-line comment change). If the addition was a mistake, " +
+    `${HOW} ${quotableSearches(key, [...waiting])} Then call apply_patch with a reuse_search whose entries cover those names ` +
+    "(the patch may be the next edit you were going to make, or a one-line comment change). If the addition was a mistake, " +
     "revert it and say so in why_new. read and find stay available meanwhile."
   );
 }
@@ -340,7 +410,12 @@ export function acceptReuseRecord(record: readonly ReuseSearchEntry[]): { ok: tr
   if (waiting.length === 0) return { ok: true, text: "Nothing is pending; no record was needed." };
   const problems = recordProblems(key, waiting, record);
   if (problems.length > 0)
-    return { ok: false, text: `REUSE_SEARCH_REJECTED: ${problems.join("; ")}. ${HOW} Quote each search exactly as you ran it.` };
+    return {
+      ok: false,
+      text:
+        `REUSE_SEARCH_REJECTED: ${problems.join("; ")}. ${quotableSearches(key, waiting)} ` +
+        "Then call apply_patch again with the corrected reuse_search.",
+    };
   for (const name of waiting) setFor(accounted, key).add(name);
   pending.delete(key);
   return { ok: true, text: `Recorded. ${waiting.join(", ")} are accounted for; continue.` };

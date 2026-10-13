@@ -6,11 +6,11 @@ import { z } from "zod";
 import { durableRoot, writeDurableNow } from "./durable.js";
 import { unifiedExecManager } from "./codex/manager.js";
 import { execOwner } from "./codex/ownership.js";
-import { runningToolCallsForWorkstream } from "./mcp/call-context.js";
+import { inFlightCallsForWorkstream, runningToolCallsForWorkstream } from "./mcp/call-context.js";
 import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
-import { workerOwnsWorkstream } from "./agents.js";
+import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream, workerWorkstreamsOf } from "./agents.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -19,25 +19,11 @@ export function provisionalRoute(conversationId: string): boolean {
 
 /**
  * The lock's lifetime: five minutes after the last tool call the app received under it. Only
- * an admitted tool call renews it. Page activity (thinking, prose, turn boundaries) never does,
- * because a model that thinks or talks without calling tools is the stall. A running tool call
- * holds the lock open; the separate five-minute action ceiling bounds it.
+ * an admitted tool call renews it. Page activity (thinking, prose, turn boundaries) never does.
+ * A running tool call holds the lock open. Lease expiry is not a diagnosis of stalled work
+ * and never initiates conversation recovery; the steward owns that decision.
  */
 export const WORKSTREAM_LEASE_MS = 5 * 60_000;
-/**
- * How long an `archiving` row may wait for the paired extension's archive ACK before the
- * controller finishes the archive itself (retiring the old frontend route unarchived) and
- * opens the replacement. Archiving is browser hygiene, not the fence; an extension that is
- * disconnected or has lost the tab must not be able to lock the logical workstream forever.
- */
-export const ARCHIVE_DEADLINE_MS = 10 * 60_000;
-/**
- * The policy ceiling any single holder-owned action may run for, mirrored from the bridge's
- * WORKSTREAM_ACTION_MAX_MS (bridge.ts owns the sweep that enforces it against live rows).
- * Used here to bound how long a retired claim's still-running terminal may hold off a
- * successor: past it the takeover kills the process rather than waiting longer.
- */
-const HOLDER_ACTION_CEILING_MS = 5 * 60_000;
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
 const REVIVE_RESPONSE_MS = 2 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
@@ -70,10 +56,20 @@ const rowSchema = z
     attempts: z.number().int().min(0).max(3),
     nextCheck: z.number(),
     commandId: z.string().nullable(),
+    /**
+     * The opening command whose delivery deadline passed with the row still unbound. ChatGPT
+     * can start that chat anyway; its page then reports this id with its observations, which
+     * is the same exact rendezvous the ACK would have been. Only the latest failed command is
+     * kept, and only an unbound row with no newer command pending accepts it.
+     */
+    lateCommandId: z.string().nullable().optional(),
     actionId: z.string().nullable(),
     error: z.string().nullable(),
     retiredKeys: z.array(z.string()),
     retiredConversations: z.array(z.string()),
+    /** Chats whose recorded claim line named this row, under its current lock or a retired
+     * one. Exact evidence of which workstream a chat holds, kept across reclaims. */
+    claimedBy: z.array(z.string()).default([]),
   })
   .strict();
 export type Workstream = z.infer<typeof rowSchema>;
@@ -103,7 +99,12 @@ function exclusive<T>(fn: () => Promise<T>): Promise<T> {
 }
 export async function restoreWorkstreams(): Promise<void> {
   return exclusive(async () => {
-    if (loadedRoot === durableRoot()) return;
+    // Headless starts MCP before restoring the broker, then starts the bridge. The second
+    // restore is when terminal worker ownership is finally known.
+    if (loadedRoot === durableRoot()) {
+      if (retireEndedWorkerRows()) await save();
+      return;
+    }
     const saved: unknown = durableRoot()
       ? await fs
           .readFile(path.join(durableRoot(), "workstreams.json"), "utf8")
@@ -150,6 +151,9 @@ export async function restoreWorkstreams(): Promise<void> {
       rows.set(row.id, row);
     }
     loadedRoot = durableRoot();
+    // Terminal agents retain their transcript in the swarm history, but their connector
+    // claims are dead. Do not restore those claims as resumable workstreams.
+    if (retireEndedWorkerRows()) await save();
   });
 }
 function ready() {
@@ -159,6 +163,17 @@ function ready() {
 export function workstreamStatus(): Workstream[] {
   ready();
   return [...rows.values()].map((row) => structuredClone(row));
+}
+
+function retireEndedWorkerRows(): boolean {
+  let changed = false;
+  for (const row of rows.values()) {
+    if (!workerEndedForWorkstream(row.id) || inFlightCallsForWorkstream(row.id).length > 0)
+      continue;
+    rows.delete(row.id);
+    changed = true;
+  }
+  return changed;
 }
 
 export function workstreamWorkspace(logicalWorkstream: string): string | null {
@@ -179,10 +194,8 @@ export function managedWorkstreamForConversation(
 }
 
 /** The line a claiming chat prints so the app can bind the row to that exact chat. */
-export const workstreamClaimLine = (lock: string): string =>
-  `Workstream claim: ${lock}`;
-export const WORKSTREAM_CLAIM_LINE =
-  /Workstream claim: (wl_[A-Za-z0-9_-]{43})/g;
+export const workstreamClaimLine = (lock: string): string => `Workstream claim: ${lock}`;
+export const WORKSTREAM_CLAIM_LINE = /Workstream claim: (wl_[A-Za-z0-9_-]{43})/g;
 
 /** Current browser route for one logical workstream, for observer/reinjection only. */
 export function workstreamForConversation(
@@ -255,7 +268,7 @@ export async function promoteWorkstreamConversation(
     const matches = [...rows.values()].filter(
       (row) =>
         row.conversationId === previousConversationId &&
-        !["paused", "blocked", "archiving"].includes(row.phase),
+        row.phase !== "archiving",
     );
     if (matches.length !== 1) return false;
     const row = matches[0]!;
@@ -263,8 +276,7 @@ export async function promoteWorkstreamConversation(
       [...rows.values()].some(
         (other) =>
           other.id !== row.id &&
-          other.conversationId === conversationId &&
-          !["paused", "blocked"].includes(other.phase),
+          other.conversationId === conversationId,
       )
     )
       return false;
@@ -306,8 +318,6 @@ export type WorkstreamSetupResult =
         | "WORKSTREAM_PAUSED";
       /** The workstream that already owns the requested path. */
       holder?: string;
-      /** Phase of the holder row, so the refusal can branch its advice. */
-      holderPhase?: string;
       /** WORKSTREAM_HELD: when the holder's lease runs out, or null while a call of its is running. */
       freesAt?: number | null;
     };
@@ -319,10 +329,7 @@ export type WorkstreamAdmitResult =
       workstreamId: string;
       sessionId: string | null;
     }
-  | {
-      ok: false;
-      code: "WORKSTREAM_ID_NOT_CURRENT" | "WORKSTREAM_BUSY";
-    };
+  | { ok: false; code: "WORKSTREAM_ID_NOT_CURRENT" | "WORKSTREAM_BUSY" };
 
 function freshWorkstreamId(): string {
   return `wl_${randomBytes(32).toString("base64url")}`;
@@ -343,16 +350,9 @@ export async function startWorkstream(
     workstreamIdSchema.parse(logicalWorkstream);
     if (rows.has(logicalWorkstream))
       return { ok: false, code: "WORKSTREAM_ALREADY_EXISTS" };
-    const holder = [...rows.values()].find(
-      (row) => row.workspace === workspace,
-    );
+    const holder = [...rows.values()].find((row) => row.workspace === workspace);
     if (holder)
-      return {
-        ok: false,
-        code: "WORKSTREAM_PATH_TAKEN",
-        holder: holder.id,
-        holderPhase: holder.phase,
-      };
+      return { ok: false, code: "WORKSTREAM_PATH_TAKEN", holder: holder.id };
     const workstreamId = freshWorkstreamId();
     rows.set(logicalWorkstream, {
       id: logicalWorkstream,
@@ -374,6 +374,7 @@ export async function startWorkstream(
       error: null,
       retiredKeys: [],
       retiredConversations: [],
+      claimedBy: [],
     });
     await save();
     return { ok: true, id: logicalWorkstream, workstreamId };
@@ -381,39 +382,10 @@ export async function startWorkstream(
 }
 
 /**
- * Whether the holder's own work is still running under the given lock, so its lease must not
- * free. Two kinds of holder-owned activity count:
- *
- * 1. An admitted tool call under that lock (the tool loop's own in-flight window).
- * 2. A live `exec_command` terminal session opened under that lock and still running. A chat
- *    that started a test in a retained session and is waiting on it is working, not stalled —
- *    its lease must not free and a second chat must not be able to claim the workstream out
- *    from under the running work (the zettlr-collaboration-fix incident).
- *
- * Either kind counts only within the action ceiling: a process that has outlived it is by
- * policy an overrun, protects nothing, and is killed by the next takeover's admit (or the
- * bridge's ceiling sweep), so no runaway holder process can fence a workstream forever.
- */
-function holderWorkRunning(
-  row: Workstream,
-  claimId: string,
-  now: number,
-): boolean {
-  if (runningToolCallsForWorkstream(row.id, claimId) > 0) return true;
-  for (const process of unifiedExecManager.listProcesses()) {
-    const owner = execOwner(process.processId);
-    if (owner?.workstreamId !== row.id || owner.claimId !== claimId) continue;
-    if (now - process.startedAt < HOLDER_ACTION_CEILING_MS) return true;
-  }
-  return false;
-}
-
-/**
  * Model-facing setup, `action=continue`: claim an existing logical workstream whose lock has
  * expired, and issue a FRESH opaque attachment id. The previously issued id becomes invalid
  * immediately — only the current `lock` admits a call. A lock renewed by a tool call within
- * WORKSTREAM_LEASE_MS, or held open by a running call or terminal process of its holder,
- * refuses the claim.
+ * WORKSTREAM_LEASE_MS, or held open by a running call, refuses the claim.
  *
  * The claim is itself a received tool call, so it starts the new holder's lease. The holder's
  * conversation is unknown until a generating page reports the new id from its own record
@@ -429,46 +401,24 @@ export async function continueWorkstream(
     const prior = rows.get(logicalWorkstream);
     if (!prior) return { ok: false, code: "WORKSTREAM_NOT_FOUND" };
     if (["active", "advancing"].includes(prior.phase)) {
-      if (holderWorkRunning(prior, prior.lock, now))
+      if (runningToolCallsForWorkstream(prior.id) > 0)
         return { ok: false, code: "WORKSTREAM_HELD", freesAt: null };
       if (now < prior.lastActivity + WORKSTREAM_LEASE_MS)
-        return {
-          ok: false,
-          code: "WORKSTREAM_HELD",
-          freesAt: prior.lastActivity + WORKSTREAM_LEASE_MS,
-        };
+        return { ok: false, code: "WORKSTREAM_HELD", freesAt: prior.lastActivity + WORKSTREAM_LEASE_MS };
     }
     // Setup has no browser-provenance dependency. A `blocked` row is a controller-side
     // delivery failure (e.g. the app-opened chat's conversation never bound); the model's own
-    // explicit `continue` is the attach that reclaims it. An in-flight replacement
-    // (`archiving`) genuinely refuses while the handoff is live — but only for the bounded
-    // archive window: an ACK that never arrives (disconnected or wedged extension) must not
-    // turn WORKSTREAM_UNAVAILABLE into a permanent lockout of the logical workstream.
-    if (prior.phase === "archiving") {
-      if (now < prior.lastActivity + ARCHIVE_DEADLINE_MS)
-        return {
-          ok: false,
-          code: "WORKSTREAM_UNAVAILABLE",
-          freesAt: prior.lastActivity + ARCHIVE_DEADLINE_MS,
-        };
-      // Past the archive deadline, no ACK is coming. Retire the stale frontend route and let
-      // this claim take the workstream — the same recovery finishWorkstreamArchive() performs
-      // when the browser reports the archive itself failed.
-      if (prior.conversationId) {
-        if (!prior.retiredConversations.includes(prior.conversationId))
-          prior.retiredConversations.push(prior.conversationId);
-        prior.conversationId = null;
-      }
-    }
+    // explicit `continue` is the attach that reclaims it. Only an in-flight replacement
+    // (`archiving`) genuinely refuses, because a distinct thread already owns the handoff.
+    if (prior.phase === "archiving")
+      return { ok: false, code: "WORKSTREAM_UNAVAILABLE" };
     // A pause is the owner's decision, and only resumeWorkstream() lifts it. The paused chat's
     // own calls are refused as not current, and its natural reaction is to re-attach; letting
     // that re-attach succeed undid the pause within seconds.
     if (prior.phase === "paused")
       return { ok: false, code: "WORKSTREAM_PAUSED" };
     const newLock = freshWorkstreamId();
-    const retiredKeys = [...new Set([...prior.retiredKeys, prior.lock])].slice(
-      -16,
-    );
+    const retiredKeys = [...new Set([...prior.retiredKeys, prior.lock])].slice(-16);
     rows.set(logicalWorkstream, {
       id: logicalWorkstream,
       context: prior.context,
@@ -491,6 +441,7 @@ export async function continueWorkstream(
       error: null,
       retiredKeys,
       retiredConversations: [...prior.retiredConversations],
+      claimedBy: [...prior.claimedBy],
     });
     await save();
     return {
@@ -539,6 +490,7 @@ export async function reserveWorkstream(
       error: null,
       retiredKeys: [...(prior?.retiredKeys ?? [])],
       retiredConversations: [...(prior?.retiredConversations ?? [])],
+      claimedBy: [...(prior?.claimedBy ?? [])],
     });
     await save();
     return { ok: true, id: logicalWorkstream, workstreamId: lock };
@@ -559,25 +511,6 @@ export async function setWorkstreamAutoAdvance(
   });
 }
 
-/**
- * Whether work admitted under a retired claim of this row is still settling, and therefore a
- * successor admit must wait (WORKSTREAM_BUSY). In-flight calls always count. A retained
- * terminal counts within the action ceiling; one that outlives it is an overrun by policy, so
- * it protects nothing and is killed here rather than fencing the successor forever.
- */
-function retiredWorkSettling(row: Workstream, now: number): boolean {
-  for (const claimId of row.retiredKeys) {
-    if (runningToolCallsForWorkstream(row.id, claimId) > 0) return true;
-    for (const process of unifiedExecManager.listProcesses()) {
-      const owner = execOwner(process.processId);
-      if (owner?.workstreamId !== row.id || owner.claimId !== claimId) continue;
-      if (now - process.startedAt < HOLDER_ACTION_CEILING_MS) return true;
-      void unifiedExecManager.terminateProcess(process.processId);
-    }
-  }
-  return false;
-}
-
 /** Possession of the currently issued attachment id is the ordinary-tool admission capability. */
 export async function admitWorkstreamCall(
   workstreamId: string,
@@ -591,13 +524,22 @@ export async function admitWorkstreamCall(
         ["active", "advancing", "recovering"].includes(candidate.phase),
     );
     if (!row) return { ok: false, code: "WORKSTREAM_ID_NOT_CURRENT" };
-    // Re-attachment fenced the former opaque claim. In-flight calls admitted under retired
-    // claim ids must settle first — the zettlr-collaboration-fix incident: a second chat
-    // claimed the workstream while the holder's test ran, and the old admit killed that test
-    // outright. Within the action ceiling the successor gets WORKSTREAM_BUSY (retry shortly);
-    // past the ceiling the overrun process is killed by retiredWorkSettling, so neither a
-    // running test nor an abandoned shell can fence the workstream forever.
-    if (retiredWorkSettling(row, now))
+    // Re-attachment fenced the former opaque claim. Execution waits for calls already
+    // admitted under retired claim ids to settle and kills their retained terminal processes.
+    for (const process of unifiedExecManager.listProcesses()) {
+      const owner = execOwner(process.processId);
+      if (
+        owner?.workstreamId === row.id &&
+        row.retiredKeys.includes(owner.claimId)
+      )
+        await unifiedExecManager.terminateProcess(process.processId);
+    }
+    if (
+      row.retiredKeys.some(
+        (claimId) =>
+          runningToolCallsForWorkstream(row.id, claimId) > 0,
+      )
+    )
       return { ok: false, code: "WORKSTREAM_BUSY" };
     row.retiredKeys = [];
     // A replacement chat can begin executing before the browser ACK that names the concrete
@@ -673,6 +615,20 @@ export async function bindWorkstreamConversation(
 ): Promise<string | null> {
   return exclusive(async () => {
     ready();
+    // A claim line names its row even after the lock rotated: every reclaim nulls the row's
+    // conversation, and a slept or `chat_error` page may never store the newer claim line.
+    const claimed = [...rows.values()].find(
+      (candidate) => candidate.lock === lock || candidate.retiredKeys.includes(lock),
+    );
+    if (claimed && !claimed.claimedBy.includes(conversationId)) {
+      const previous = claimed.claimedBy[claimed.claimedBy.length - 1] ?? null;
+      for (const other of rows.values())
+        other.claimedBy = other.claimedBy.filter((id) => id !== conversationId);
+      claimed.claimedBy = [...claimed.claimedBy, conversationId].slice(-8);
+      // A new chat claiming the workstream is a prime change whichever path opened it.
+      if (previous && !workerOwnsWorkstream(claimed.id)) retireReplacedPrimeRuns(claimed.id, previous);
+      await save();
+    }
     const row = [...rows.values()].find((candidate) => candidate.lock === lock);
     if (!row) return null;
     if (row.conversationId === conversationId) return row.id;
@@ -707,8 +663,14 @@ export async function scheduleWorkstreamAfterTurn(
     const row = [...rows.values()].find(
       (candidate) =>
         candidate.conversationId === conversationId &&
-        candidate.phase === "active" &&
-        candidate.autoAdvance,
+        candidate.autoAdvance &&
+        (candidate.phase === "active" ||
+          // The advance may have reached ChatGPT but its turn can end before
+          // the new worker makes a Core call.  Ignoring that terminal result
+          // strands the row in `advancing` with a committed command forever.
+          (candidate.phase === "advancing" &&
+            candidate.commandId !== null &&
+            time > candidate.lastAdvancedTurnTime)),
     );
     if (
       !row ||
@@ -717,11 +679,12 @@ export async function scheduleWorkstreamAfterTurn(
       return false;
     if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
 
+    const unclaimedAdvance = row.phase === "advancing";
     row.lastAdvancedTurnId = turnId;
     row.lastAdvancedTurnTime = time;
     row.commandId = null;
     row.error = null;
-    if (outcome === "completed") {
+    if (outcome === "completed" && !unclaimedAdvance) {
       row.phase = "advancing";
       row.attempts = 0;
       row.nextCheck = 0;
@@ -735,6 +698,8 @@ export async function scheduleWorkstreamAfterTurn(
       row.attempts = 0;
       row.nextCheck = now;
       row.actionId = null;
+      if (unclaimedAdvance)
+        row.error = `advance_turn_ended_without_claim:${outcome}`;
     }
     await save();
     return true;
@@ -758,9 +723,33 @@ export async function pauseWorkstream(id: string): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
     if (!row) return false;
-    row.phase = "paused";
-    row.commandId = null;
-    row.actionId = null;
+    // A paused stream's swarm workers stop with it. Pausing only the prime row left 23
+    // math-notes-ipad worker rows active for up to 86 hours after the owner paused that
+    // stream (found 2026-10-09).
+    for (const target of [row, ...workerWorkstreamsOf(id).flatMap((workerId) => rows.get(workerId) ?? [])]) {
+      target.phase = "paused";
+      target.commandId = null;
+      target.actionId = null;
+    }
+    await save();
+    return true;
+  });
+}
+
+/** Retire an abandoned logical workstream after its owner has stopped it. Recordings and
+ * broker history stay in their own stores; only this connector claim is removed. */
+export async function retireWorkstream(id: string): Promise<boolean> {
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (
+      !row ||
+      !["paused", "blocked"].includes(row.phase) ||
+      inFlightCallsForWorkstream(id).length > 0 ||
+      workerOwnsWorkstream(id) ||
+      workerWorkstreamsOf(id).length > 0
+    )
+      return false;
+    rows.delete(id);
     await save();
     return true;
   });
@@ -779,73 +768,14 @@ export async function resumeWorkstream(id: string): Promise<boolean> {
       )
     )
       return false;
-    // Resuming management is not repository/model progress. Preserve the prior activity
-    // timestamp so a chat that was already stale before the pause does not receive a fresh
-    // five-minute lease merely because someone re-enabled its controller.
-    row.phase = row.error?.startsWith("five_minute_") ? "recovering" : "active";
+    // Resume the existing holder without inventing activity or interpreting an intentional
+    // wait as a failed conversation. Older controllers persisted timer-only diagnoses.
+    row.phase = "active";
+    if (row.error?.startsWith("five_minute_")) row.error = null;
     row.attempts = 0;
-    if (row.phase === "recovering") row.nextCheck = Date.now();
     await save();
     return true;
   });
-}
-
-/**
- * Script-owned hard release: force one logical workstream out of whatever controller state
- * parked it (blocked, archiving wedged on an extension that will never ACK, recovering with
- * no route left to try) into the controller's own replacement path — the same `opening` +
- * replace action the bounded sweep arms produce, so the next sweep injects the replacement
- * bootstrap with the saved project context. This is the steward's manual form of the exits
- * `nextWorkstreamActions` performs automatically, for a row whose deadline has not expired
- * yet or whose owner decision "replace this one now" is already made.
- *
- * Skipped rows: `paused` (an owner decision only resumeWorkstream lifts), `opening` (already
- * in exactly this state), swarm workers (driven by agents.ts alone), and a holder whose own
- * work is still running under the current claim — releasing a live lease out from under
- * running work is the zettlr incident again.
- */
-export async function releaseWorkstream(
-  id: string,
-  now = Date.now(),
-): Promise<boolean> {
-  return exclusive(async () => {
-    ready();
-    const row = rows.get(id);
-    if (!row) return false;
-    if (row.phase === "paused" || row.phase === "opening") return false;
-    if (workerOwnsWorkstream(row.id)) return false;
-    if (holderWorkRunning(row, row.lock, now)) return false;
-    row.phase = "opening";
-    row.actionId = `replace-${row.lock}`;
-    row.commandId = null;
-    row.error = null;
-    row.attempts = 0;
-    row.nextCheck = now;
-    if (row.conversationId) {
-      // The current route is the frontend being replaced, not a delivered replacement.
-      if (!row.retiredConversations.includes(row.conversationId))
-        row.retiredConversations.push(row.conversationId);
-      row.conversationId = null;
-    }
-    await save();
-    return true;
-  });
-}
-
-/**
- * The steward's fleet-wide release: same exit as releaseWorkstream for every row that is
- * parked rather than working. Returns which logical workstreams were actually released, so a
- * caller can distinguish "nothing was stuck" from "the app is gone". Rows skipped for each of
- * the reasons above are silently left alone; the response names what moved.
- */
-export async function releaseAllWorkstreams(
-  now = Date.now(),
-): Promise<string[]> {
-  const released: string[] = [];
-  for (const row of workstreamStatus()) {
-    if ((await releaseWorkstream(row.id, now)) === true) released.push(row.id);
-  }
-  return released;
 }
 
 /** Script-owned hard recovery: fence the current owner and enter the same archive/replacement
@@ -854,12 +784,23 @@ export async function releaseAllWorkstreams(
 export async function replaceWorkstream(id: string): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
-    if (
-      !row ||
-      !["active", "recovering"].includes(row.phase) ||
-      !row.conversationId
-    )
-      return false;
+    if (!row) return false;
+    // A row whose chat never bound (opened by `just new`, so the app never saw it acknowledge)
+    // has no chat to archive and no holder recovery can find. An explicit replace is the
+    // steward's decision that no other chat holds it, so open a fresh one directly; automatic
+    // recovery still blocks instead (2026-10-09: lean-cas-dsl stuck conversation_unbound).
+    if (!row.conversationId && ["active", "recovering", "blocked"].includes(row.phase)) {
+      row.phase = "opening";
+      row.actionId = `replace-${row.lock}`;
+      row.commandId = null;
+      row.attempts = 0;
+      row.error = null;
+      await save();
+      return true;
+    }
+    // The steward may replace an unclaimed advance after verifying the old
+    // conversation has ended; the stranded command is not a surviving holder.
+    if (!["active", "advancing", "recovering", "blocked"].includes(row.phase) || !row.conversationId) return false;
     row.phase = "archiving";
     row.attempts = 3;
     row.nextCheck = 0;
@@ -895,8 +836,15 @@ export async function recoverWorkstreamNow(
   });
 }
 
+// A fresh chat has read nothing; a bound chat has the repository contract in its own context
+// already. Telling a bound chat to read AGENTS.md again made research reread a 3500-line file
+// on every restart (2026-10-10: 16 of 24 calls in 25 minutes were rereads).
+export const FRESH_CHAT_ORIENTATION =
+  "Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. ";
+export const BOUND_CHAT_ORIENTATION =
+  "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. Preserve other workers’ changes, finish the substantive work, and keep the workstream moving. Keep every command/tool action under five minutes. These managed workstreams are source/architecture/definition/card work, not release pipelines: do not push/publish, start watchers/servers, use foreground sleeps, declare persistent terminal sessions, or run broad/heavy test/build suites unless the CURRENT repository contract explicitly requires that exact action. Prefer focused owner-local checks. A command or test approaching five minutes is a major failure signal: stop it, re-read the explicit assigned task/DAG/phase boundary, check for drift or over-broad validation, and resume with a narrower action rather than waiting.";
+  "Preserve other workers’ changes and resolve the current repository task. Follow its phase and acceptance requirements. A required full Lean compilation may legitimately take a long time. Run it in the background and continue useful independent or adjacent work. If no such work is ready, give the orchestrator the process identity and log/result paths, then end the turn so it can pause the workstream and own the build wait. Worker turns are for substantive work, not waiting or repeated build polling. The orchestrator consumes the result and resumes the worker with concrete work. Do not kill or restart a build merely for elapsed time or launch duplicates. Keep clear which source revision a build checks. Judge progress from actual work and results, not elapsed time, tool-call counts, commits or checkboxes.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
@@ -904,47 +852,40 @@ export const STEWARD_CONTINUATION =
  * the workstream itself.
  */
 export function workstreamPrompt(row: Workstream, connector: string): string {
-  const recoveryNotice = row.error?.startsWith("five_minute_")
-    ? row.error.startsWith("five_minute_action_overrun:")
-      ? `\nRECOVERY NOTICE: Your previous action exceeded the hard five-minute action ceiling: ${row.error.slice("five_minute_action_overrun:".length)}. This is not normal waiting. In these repository workstreams, no single command, test, build, or tool action should take more than five minutes. Treat this as a major red flag for drift, an over-broad or unacceptably slow test/build, unnecessary heavyweight work, or work outside the assigned phase such as push/publication. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints before doing anything else. Verify that you are still on the repository-selected unit and are not attempting push/publication or broad validation unless explicitly required. Resume with a narrower source action or focused owner-local check; do not rerun the same long command.\n`
-      : "\nRECOVERY NOTICE: This workstream made no substantive movement for five minutes. There is no autonomous waiting/wake-up state after tool activity stops; five minutes without movement means the worker is stalled. Re-read the CURRENT explicit task, AGENTS.md, TODO/DAG/frontier, and phase constraints, verify you are still on the selected unit, check for drift such as broad tests/builds or push/publication work, and resume immediately with a narrower substantive action.\n"
-    : "";
+  const recoveryNotice =
+    row.error?.startsWith("five_minute_")
+      ? row.error.startsWith("five_minute_action_overrun:")
+        ? `\nACTIVITY CHECK: An earlier controller flagged a long action: ${row.error.slice("five_minute_action_overrun:".length)}. Duration alone does not establish failure. Inspect the actual process and output against the current task. A progressing build continues in the background while you do useful adjacent work, or the orchestrator pauses this workstream and owns the wait. If it has exited, consume its result; if it is genuinely stalled, diagnose the cause before restarting.\n`
+        : "\nACTIVITY CHECK: No recent activity was recorded. This does not establish whether the work is stalled. Inspect the current task, actual tool results and any background process. Continue a progressing required build without restarting it; consume a completed result; otherwise address the concrete obstruction or resume the unfinished task.\n"
+      : "";
   const claim =
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
-      : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call; do not call \`workstream\` again.`;
-  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${STEWARD_CONTINUATION}`;
+      : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call. Do not reclaim it routinely. If an ordinary call returns WORKSTREAM_SETUP_REQUIRED, follow that refusal: call \`workstream\` with action="continue" and workstream="${row.id}", then retry using its returned workstream_id. WORKSTREAM_BUSY instead requires retrying with the existing workstream_id, not reclaiming.`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
 }
 
-/**
- * Persistent action intent is written before delivery. The action id is its idempotency key.
- *
- * `injecting` is whether the controller may actually reach a conversation this sweep (the app's
- * `autoContinue`). Delivery is not the only thing that gate controls: the recovery ladder must
- * not advance when nothing can be sent. Arming a `revive` that is never delivered burns its
- * attempt, and the next sweep escalates the row to `archiving`, which refuses the model's own
- * `continue` (WORKSTREAM_UNAVAILABLE) and has no other exit until a delivered archive ACKs —
- * so with delivery off the ladder would deterministically fence every stalled workstream in
- * about a minute. Callers pass the same flag they use to gate injection; the default preserves
- * the historical always-on behavior for callers that do not.
- */
+/** Persistent action intent is written before delivery. The action id is its idempotency key. */
 export async function nextWorkstreamActions(
-  now = Date.now(),
-  injecting = true,
+  now: number,
+  injecting: boolean,
+  sendsHeld = false,
 ): Promise<Workstream[]> {
   return exclusive(async () => {
     ready();
+    retireEndedWorkerRows();
     for (const row of rows.values()) {
       // Swarm workers are driven by agents.ts alone (see workerOwnsWorkstream).
       if (workerOwnsWorkstream(row.id)) continue;
-      // A durable five-minute failure remains a failure until a real new model/tool action
-      // begins. Controller restart/resume must not convert it back into a fresh active lease.
-      if (row.phase === "active" && row.error?.startsWith("five_minute_")) {
+      // An archive is performed by the extension, which is offered none while auto-continuation
+      // is off (GET /workstreams/archive), so a row already parked there would never leave it.
+      // Return it to `recovering` with its attempts intact; switching the owner's flag back on
+      // re-enters the same archive on the next sweep.
+      if (!injecting && row.phase === "archiving") {
         row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.commandId = null;
         row.actionId = null;
+        row.commandId = null;
+        row.nextCheck = now;
       }
       // Older builds permanently blocked an auto-advancing replacement when the fresh-chat
       // send itself expired. `commandId` still being present distinguishes that case from an
@@ -973,7 +914,6 @@ export async function nextWorkstreamActions(
       // same fenced archive; finishWorkstreamArchive() now opens the replacement either way.
       if (
         row.phase === "blocked" &&
-        injecting &&
         row.attempts >= MAX_RECOVERY_ATTEMPTS &&
         row.conversationId &&
         row.commandId === null
@@ -982,97 +922,17 @@ export async function nextWorkstreamActions(
         row.actionId = `archive-${row.lock}`;
         row.error = null;
       }
-      // Any other `blocked` row has no scripted exit at all: rows blocked on the initial
-      // bootstrap (conversation never bound) match neither repair arm above, and neither does
-      // a `blocked` row whose conversation was retired. Parking those indefinitely locked
-      // real workstreams out of the connector for weeks (math-notes-app and friends, live
-      // 2026-10 state) while a fresh chat's `continue` was the only way in and even that was
-      // refused if the row lingered in `archiving`. A blocked row is a controller-side
-      // delivery failure, not a model fault: after the bounded window the controller reopens
-      // the replacement frontend itself, exactly as a failed archive does. This arm must run
-      // before the `archiving` deadline arm below so a re-armed archive gets its full window.
-      if (
-        row.phase === "blocked" &&
-        row.actionId === null &&
-        now >= row.lastActivity + ARCHIVE_DEADLINE_MS
-      ) {
-        row.phase = "opening";
-        row.actionId = `replace-${row.lock}`;
-        // A blocked row's command is by definition terminally failed; drop it so the opening
-        // replacement can issue its own fresh command.
-        row.commandId = null;
-        row.error = null;
-        row.nextCheck = now;
-        if (row.conversationId) {
-          // A bound conversation here is a frontend whose bootstrap never delivered; treat
-          // it as retired so the controller cannot revive the wrong chat later.
-          if (!row.retiredConversations.includes(row.conversationId))
-            row.retiredConversations.push(row.conversationId);
-          row.conversationId = null;
-        }
-      }
-      // An `archiving` row whose paired extension never ACKs (disconnected browser, lost tab)
-      // must not fence the logical workstream forever. The archive deadline bounds that wait;
-      // past it the controller finishes the archive itself — retiring the old frontend route
-      // unarchived — and opens the replacement, the same recovery a reported archive failure
-      // takes through finishWorkstreamArchive().
-      if (
-        row.phase === "archiving" &&
-        now >= row.lastActivity + ARCHIVE_DEADLINE_MS
-      ) {
-        row.phase = "opening";
-        row.error = null;
-        row.attempts = 0;
-        row.nextCheck = now;
-        if (row.conversationId) {
-          if (!row.retiredConversations.includes(row.conversationId))
-            row.retiredConversations.push(row.conversationId);
-          row.conversationId = null;
-        }
-        row.actionId = `replace-${row.lock}`;
-        row.commandId = null;
-      }
-      if (
-        row.phase === "advancing" &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
-        !holderWorkRunning(row, row.lock, now)
-      ) {
-        row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.commandId = null;
-        row.actionId = null;
-        row.error = "five_minute_no_movement";
-      }
-      if (
-        row.phase === "active" &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS &&
-        now >= row.nextCheck &&
-        !holderWorkRunning(row, row.lock, now)
-      ) {
-        row.phase = "recovering";
-        row.nextCheck = now;
-        row.error = "five_minute_no_movement";
-      }
-      // A bound replacement chat whose model never attached is a stalled frontend like any
-      // other: the bind started its lease, and expiry revives/replaces that exact chat.
-      if (
-        row.phase === "opening" &&
-        row.conversationId &&
-        row.commandId === null &&
-        now >= row.lastActivity + WORKSTREAM_LEASE_MS
-      ) {
-        row.phase = "recovering";
-        row.attempts = 0;
-        row.nextCheck = now;
-        row.actionId = null;
-        row.error = "five_minute_no_movement";
-      }
       // A revive in flight is judged by its own outcome, never by a timer racing its delivery:
       // the command's deadline bounds the wait, a failed or lost command releases the row
       // immediately, and a delivered one starts the response window below.
       if (row.phase === "recovering" && row.commandId !== null) continue;
       if (row.phase !== "recovering" || now < row.nextCheck) continue;
+      // Every reclaim clears the binding, and a slept or chat_error page rarely stores the new
+      // claim line, so an unbound row usually still has exact evidence of its holder: the last
+      // chat whose recorded claim line named it. Revive that chat rather than block (2026-10-02:
+      // new-qual-site and math-notes-ipad both blocked as unbound with their holders recorded).
+      if (!row.conversationId && row.claimedBy.length > 0)
+        row.conversationId = row.claimedBy[row.claimedBy.length - 1]!;
       if (!row.conversationId) {
         // The holder's chat was never found, so there is no chat to revive. A fresh chat would
         // be a second holder of work the first may still be doing: stop and say so.
@@ -1097,19 +957,22 @@ export async function nextWorkstreamActions(
         row.nextCheck = now;
         continue;
       }
+      // With auto-continuation off nothing delivers a revive or performs an archive, so
+      // escalating would spend the attempts on sends that are dropped and then park the row in
+      // an `archiving` no browser action will ever finish, where the chat's own `continue` is
+      // refused. The row stays `recovering`: the steward's signal, and still attachable.
+      if (!injecting) continue;
+      // Under a usage-limit hold the bridge delivers no revive (chatgpt-limits.ts), so an
+      // attempt spent now is a revive never sent. 2026-10-02 23:50: strike 2 held sends for 30
+      // minutes, and the throttled chats of all three streams ran out of attempts undelivered and
+      // were archived for fresh chats, which the same throttling then kept from opening. The row
+      // waits in `recovering` with its pending revive, which goes out when the hold lifts.
+      if (sendsHeld) continue;
       if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
-        // Escalating out of recovery is only meaningful when a replacement can actually be
-        // opened. With injection off, `archiving` would fence the row with no way back (see the
-        // function doc); hold in `recovering` instead so the model's own `continue` still heals it.
-        if (!injecting) continue;
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
         row.commandId = null;
       } else {
-        // Arming a revive consumes the attempt whether or not it is delivered, so only arm one
-        // when the controller can send it. Otherwise the sweep would burn the single attempt
-        // and escalate on the next tick without ever having tried.
-        if (!injecting) continue;
         row.attempts++;
         row.actionId = `revive-${row.lock}-${row.attempts}`;
         row.commandId = null;
@@ -1121,15 +984,20 @@ export async function nextWorkstreamActions(
       (row) =>
         row.actionId !== null &&
         !workerOwnsWorkstream(row.id) &&
-        ["advancing", "recovering", "archiving", "opening"].includes(
-          row.phase,
-        ) &&
+        ["advancing", "recovering", "archiving", "opening"].includes(row.phase) &&
         // An opening row whose replacement chat already bound has been delivered; it waits for
         // that chat's `continue` (or the lease above), never for another fresh chat.
         (row.phase !== "opening" ||
           (now >= row.nextCheck && row.conversationId === null)),
     );
   });
+}
+
+/** The workstream a chat last claimed by a recorded claim line, or null without that evidence. */
+export function claimedWorkstreamOf(conversationId: string): string | null {
+  return (
+    [...rows.values()].find((row) => row.claimedBy.includes(conversationId))?.id ?? null
+  );
 }
 
 export function currentWorkstreamAction(
@@ -1260,6 +1128,13 @@ export async function blockWorkstreamAction(
   });
 }
 
+/** Sleeps the worker runs of a workstream whose prime chat was just replaced, and says so. */
+function retireReplacedPrimeRuns(workstreamId: string, previousConversationId: string): void {
+  const slept = retirePrimeRuns(workstreamId, previousConversationId, `prime chat of workstream ${workstreamId} was replaced`);
+  if (slept > 0)
+    logWarn(`workstream ${workstreamId}: slept ${slept} worker(s) of the replaced prime ${previousConversationId}`);
+}
+
 export async function finishWorkstreamArchive(
   id: string,
   actionId: string,
@@ -1287,6 +1162,7 @@ export async function finishWorkstreamArchive(
       // frontend. The replacement ACK installs the next route in bindWorkstreamReplacement().
       if (!row.retiredConversations.includes(row.conversationId))
         row.retiredConversations.push(row.conversationId);
+      retireReplacedPrimeRuns(row.id, row.conversationId);
       row.conversationId = null;
     }
     row.actionId = `replace-${row.lock}`;
@@ -1316,12 +1192,20 @@ export async function bindWorkstreamReplacement(
   return exclusive(async () => {
     const row = [...rows.values()].find(
       (candidate) =>
-        candidate.commandId === commandId &&
-        (candidate.phase === "opening" ||
-          (candidate.phase === "active" && candidate.actionId === null)),
+        (candidate.commandId === commandId &&
+          (candidate.phase === "opening" ||
+            (candidate.phase === "active" && candidate.actionId === null))) ||
+        // A failed opening command whose chat ChatGPT started anyway (see `lateCommandId`).
+        (candidate.lateCommandId === commandId &&
+          candidate.phase === "active" &&
+          candidate.actionId === null &&
+          candidate.commandId === null &&
+          candidate.conversationId === null),
     );
     if (!row) return null;
     const previousConversationId = row.conversationId;
+    if (previousConversationId && previousConversationId !== conversationId)
+      retireReplacedPrimeRuns(row.id, previousConversationId);
     if (
       row.conversationId &&
       row.conversationId !== conversationId &&
@@ -1339,6 +1223,7 @@ export async function bindWorkstreamReplacement(
     // and this browser binding. Once the concrete conversation is known it has no remaining
     // controller meaning and must not survive as stale state on an active row.
     row.commandId = null;
+    row.lateCommandId = null;
     await save();
     return {
       id: row.id,
@@ -1372,6 +1257,7 @@ export async function releaseFailedWorkstreamReplacementBind(
     )
       return false;
     row.commandId = null;
+    if (row.conversationId === null) row.lateCommandId = commandId;
     await save();
     return true;
   });

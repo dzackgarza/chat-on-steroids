@@ -12,7 +12,7 @@
           <g id="i-tab"><rect x="2.5" y="3.5" width="15" height="11" rx="2" /><path d="M7 17.5h6" /></g>
           <g id="i-rec"><path d="M3 10h2M7 5.5v9M11 7.5v5M15 9v2M17.5 10H19" /></g>
           <g id="i-hash"><path d="M4 7.5h12M4 12.5h12M8.5 3.5 7 16.5M14 3.5l-1.5 13" /></g>
-          <g id="i-lock"><rect x="3.5" y="3" width="13" height="14" rx="2" /><path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4" /></g>
+          <g id="i-req"><rect x="3.5" y="3" width="13" height="14" rx="2" /><path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4" /></g>
           <g id="i-send"><path d="M17 3 9 11M17 3l-5.5 14.5L9 11 2.5 8.5 17 3Z" /></g>
           <g id="i-down"><path d="M10 3v9M6 8.5l4 4 4-4M3.5 16.5h13" /></g>
           <g id="i-check"><path d="M17 5.5 8.2 14.5 3.5 10" /></g>
@@ -49,10 +49,10 @@
         <button class="meta copy" id="d-chat" type="button"></button>
         <span class="badge"></span>
       </div>
-      <div class="row" id="r-lock">
-        <svg class="ico"><use href="#i-lock" /></svg>
-        <span class="name">Workstream</span>
-        <button class="meta copy" id="d-lock" type="button"></button>
+      <div class="row" id="r-req">
+        <svg class="ico"><use href="#i-req" /></svg>
+        <span class="name">Request ID</span>
+        <button class="meta copy" id="d-req" type="button"></button>
         <span class="badge"></span>
       </div>
       <details id="stream">
@@ -68,6 +68,7 @@
           <div class="stage" id="s-sent"><span class="tick"></span><span class="name">Sent to app</span><span class="meta" id="n-sent"></span></div>
           <div class="stage" id="s-proc"><span class="tick"></span><span class="name">App processed</span><span class="meta" id="n-proc"></span></div>
           <p class="why" id="why"></p>
+          <div class="calls" id="calls"></div>
         </div>
       </details>
     </section>

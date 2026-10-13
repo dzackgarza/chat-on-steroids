@@ -15,12 +15,13 @@ from pathlib import Path
 ROOT = Path("/home/dzack/gitclones/chat-on-steroids")
 REPOS = {
     "research": Path("/home/dzack/research"),
-    "lean-categories": Path("/home/dzack/gitclones/lean-categories"),
-    "new-qual-site": Path("/home/dzack/gitclones/new-qual-site"),
-    "sage-categories": Path("/home/dzack/gitclones/sage-categories"),
+    "lean-cas-dsl": Path("/home/dzack/gitclones/lean-cas-dsl"),
+    "sage-indefinite-port": Path("/home/dzack/gitclones/sage-indefinite-port"),
 }
 
 REPO_COPY = {
+    "lean-cas-dsl": {"objective": "Implement and validate B0 typed questions and computed outcomes.", "progress": "B0 construction"},
+    "sage-indefinite-port": {"objective": "Port the upstream indefinite-lattice algorithms and discharge their reference oracles.", "progress": "Source-backed port"},
     "research": {
         "objective": "Refactor the mathematical preamble so public operations live on the mathematical objects and categories that own them, then re-run the public Sage session against the repaired architecture.",
         "progress": "Architecture repair work",
@@ -534,14 +535,24 @@ def queue_history(repo: Path, limit: int = 240) -> list[dict[str, object]]:
 def repo_payload(name: str, repo: Path, classification: str) -> dict[str, object]:
     copy = REPO_COPY[name]
     fallback = copy["objective"]
-    if name == "new-qual-site":
+    todo_available = (repo / "TODO.md").is_file()
+    if not todo_available:
+        dag = []
+    elif name == "new-qual-site":
         dag = new_qual_dag(repo / "TODO.md", fallback)
     elif name == "research":
         dag = checkbox_dag(repo / "TODO.md", fallback, name)
     else:
         dag = table_dag(repo / "TODO.md", fallback, name)
-    summary = open_ready(dag)
-    if name == "lean-categories":
+    summary = open_ready(dag) if todo_available else {"open": None, "closed": None, "ready": None}
+    if not todo_available:
+        authority = ("specs/computational-core-plan.md" if name == "lean-cas-dsl" else "the repository's GitHub issue DAG")
+        progress = {
+            "headline": "Canonical dependency graph not rendered",
+            "detail": f"Execution plan: {authority}. Missing TODO.md does not establish completion; no open-task count is inferred.",
+            "remaining": None,
+        }
+    elif name == "lean-categories":
         progress = lean_progress(repo, dag)
     elif name == "new-qual-site":
         progress = nq_progress(repo)
@@ -561,6 +572,7 @@ def repo_payload(name: str, repo: Path, classification: str) -> dict[str, object
         "commits": commits(repo),
         "files": recent_files(repo),
         "dag": dag,
+        "dag_available": todo_available,
         "dag_summary": summary,
         "progress": progress,
         "remaining_history": queue_history(repo) if name == "new-qual-site" else [],
@@ -592,7 +604,7 @@ const tip=d3.select('#tip');function showTip(e,s){tip.html(s).style('opacity',1)
 function updateRepo(r){const host=document.querySelector(`#repo-${CSS.escape(r.name)}`);const cs=selected(r.commits),hours=spanHours(r.commits);const ins=cs.reduce((a,c)=>a+c.insertions,0),del=cs.reduce((a,c)=>a+c.deletions,0);host.querySelector('.commit-rate').textContent=(cs.length/hours).toFixed(cs.length/hours<10?1:0);host.querySelector('.insert-rate').textContent='+'+(ins/hours).toFixed(ins/hours<100?1:0);host.querySelector('.delete-rate').textContent='−'+(del/hours).toFixed(del/hours<100?1:0);host.querySelector('.window-total').textContent=`${cs.length.toLocaleString()} commits · ${ins.toLocaleString()} inserted · ${del.toLocaleString()} deleted in ${active}`;rateChart(host.querySelector('.activity-chart'),r.commits);remainingChart(host.querySelector('.remaining-chart'),r.remaining_history)}
 function updateAll(){document.querySelectorAll('.windows button').forEach(b=>b.classList.toggle('on',b.dataset.w===active));DATA.repos.forEach(updateRepo)}
 document.querySelectorAll('.windows button').forEach(b=>b.addEventListener('click',()=>{active=b.dataset.w;updateAll()}));
-for(const r of DATA.repos){const host=document.querySelector(`#repo-${CSS.escape(r.name)}`);graph(host.querySelector('.dagbox'),r.dag)}updateAll();
+for(const r of DATA.repos){const host=document.querySelector(`#repo-${CSS.escape(r.name)}`);const box=host.querySelector('.dagbox');if(r.dag_available===false){box.textContent='Dependency graph unavailable from this repository source; completion is unknown.'}else{graph(box,r.dag)}}updateAll();
 """
 
 

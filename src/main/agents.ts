@@ -20,7 +20,8 @@
  * Ownership lasts longer than execution. When a run's final slot-holder stops, that active
  * incarnation is parked immediately and its entire agent map becomes dormant history keyed by
  * the exact prime workstream. The prime still sees every worker it ever created and may later
- * wake the reusable ones in their exact old ChatGPT conversations.
+ * wake a recently sleeping worker in its exact old ChatGPT conversation. Older sleepers
+ * become terminal history so a days-old chat is never presented as work ready to resume.
  *
  * Internally each exported operation first finds the run it concerns — by the caller's
  * workstream, a conversation, or a browser command's run id — and runs inside that scope, so
@@ -65,7 +66,7 @@
  * worker claims that workstream and thereafter its workstream identity, not its browser
  * location, determines ownership.
  *
- * ## Workers sleep; they do not end
+ * ## Workers sleep briefly, then end
  *
  * A worker used to be one job in one throwaway chat. It reported, its slot became a
  * tombstone, and more work meant another `spawn` — another conversation, discarded again
@@ -108,6 +109,8 @@ export const PRIME_ID = 'prime';
  */
 const MAX_QUEUE = 200;
 export const MAX_MESSAGE_CHARS = 4000;
+/** Reuse is limited to the same working session; older chats require a fresh worker. */
+export const WORKER_SLEEP_RETENTION_MS = 60 * 60_000;
 /**
  * Maximum broker prose appended to one MCP result.
  *
@@ -1849,6 +1852,12 @@ function stageMessagesActive(
       );
     }
     if (to.info.state === 'sleeping') {
+      if (to.info.sleptAt !== null && Date.now() - to.info.sleptAt >= WORKER_SLEEP_RETENTION_MS) {
+        throw new AgentError(
+          `${toId} has been asleep for over an hour and cannot be resumed. Nothing was sent. ` +
+          'Spawn a fresh worker for any work still needed.'
+        );
+      }
       if (!to.info.conversationId) {
         throw new AgentError(
           `${toId} is asleep and cannot be woken${where}, so nothing was sent. Spawn a new worker with this work instead.`
@@ -2634,6 +2643,32 @@ export function sleepWorkerConversation(conversationId: string, reason: string):
     if (!agent || agent.info.role !== 'worker') return null;
     return sleepAgent(agent, reason);
   });
+}
+
+/**
+ * Ends the worker runs a retired prime chat owned.
+ *
+ * Replacing a prime leaves its run attached to a chat no one will ever read from again, while the
+ * replacement spawns a run of its own. On 2026-10-02 fifteen such workers (nine runs) sat idle for
+ * up to six hours, each kept tab-mounted, until the shared renderer starved every page and no new
+ * chat could open. Sleeping the workers and parking the run releases their tabs; their reports and
+ * bindings stay in dormant history as for any parked run. Returns the number of workers slept.
+ */
+export function retirePrimeRuns(workstreamId: string, conversationId: string | null, reason: string): number {
+  let slept = 0;
+  for (const owner of [...runs.values()]) {
+    // A run follows its workstream across prime replacements and keeps the prime chat it was
+    // started from, so the replaced chat's id alone rarely matches (2026-10-02: runs still named
+    // a never-promoted WEB: route and a chat replaced six hours earlier). Sleeping is reversible:
+    // the new prime can wake any worker it still needs by messaging it.
+    if (owner.primeWorkstreamId !== workstreamId && owner.primeConversationId !== conversationId) continue;
+    for (const agent of [...owner.agents.values()]) {
+      if (agent.info.role !== 'worker' || isOver(agent.info.state)) continue;
+      if (inRun(owner, () => sleepAgent(agent, reason))) slept += 1;
+    }
+    releaseQuiescentRun({ runId: owner.runId, reason });
+  }
+  return slept;
 }
 
 /**
@@ -3721,6 +3756,17 @@ export function dormantWorkerNotice(conversationId: string | null | undefined): 
  * "Continue workstream … RECOVERY NOTICE" prompt, every tool there was then refused with
  * WORKER_SLEEPING, and the fleet accumulated dozens of near-empty chats (2026-09-27).
  */
+/** The workstream rows of every worker in runs, live or dormant, primed by this workstream. */
+export function workerWorkstreamsOf(primeWorkstreamId: string): string[] {
+  const ids: string[] = [];
+  for (const owner of [...runs.values(), ...dormantRuns.values()]) {
+    if (owner.primeWorkstreamId !== primeWorkstreamId) continue;
+    for (const agent of owner.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId) ids.push(agent.info.workstreamId);
+  }
+  return ids;
+}
+
 export function workerOwnsWorkstream(workstreamId: string): boolean {
   for (const run of runs.values())
     for (const agent of run.agents.values())
@@ -3728,6 +3774,105 @@ export function workerOwnsWorkstream(workstreamId: string): boolean {
   for (const dormant of dormantRuns.values())
     for (const agent of dormant.agents.values())
       if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId) return true;
+  return false;
+}
+
+export function workerStateForWorkstream(workstreamId: string): AgentState | null {
+  for (const owner of [...runs.values(), ...dormantRuns.values()])
+    for (const agent of owner.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId)
+        return agent.info.state;
+  return null;
+}
+
+/** Replace a client-only worker route once the extension proves its server conversation id. */
+export function promoteWorkerConversation(from: string, to: string): boolean {
+  if (!/^(?:WEB|local-chatgpt):/i.test(from) || !to || from === to) return false;
+  const matches = [...runs.values(), ...dormantRuns.values()]
+    .flatMap((owner) => [...owner.agents.values()])
+    .filter((agent) => agent.info.role === 'worker' && agent.info.conversationId === from);
+  if (matches.length !== 1 || boundAgentAnywhere(to) || dormantAgentForConversation(to)) return false;
+  matches[0]!.info.conversationId = to;
+  changed();
+  return true;
+}
+
+/** A sleeping worker still on a client-only route has no chat the bridge can reopen. */
+export function failUnroutableSleepingWorkers(): number {
+  let failed = 0;
+  for (const owner of [...runs.values(), ...dormantRuns.values()]) {
+    const prime = owner.agents.get(PRIME_ID);
+    if (!prime) continue;
+    for (const agent of owner.agents.values()) {
+      if (
+        agent.info.role !== 'worker' ||
+        agent.info.state !== 'sleeping' ||
+        !/^(?:WEB|local-chatgpt):/i.test(agent.info.conversationId ?? '')
+      ) continue;
+      agent.info.state = 'failed';
+      agent.info.revivable = false;
+      agent.info.finishedAt = Date.now();
+      agent.info.result = 'The browser never reported a durable conversation for this worker.';
+      const pending = agent.queue.filter((message) => message.ackedAt === null).length;
+      recount(agent);
+      prime.queue.push(newMessage(
+        agent,
+        prime,
+        `[${agent.info.id} failed] Its chat never gained a durable conversation address, so it cannot be reopened. ` +
+          `${pending} undelivered message${pending === 1 ? '' : 's'} remain in its durable history. ` +
+          'Spawn a replacement for any unfinished work.',
+      ));
+      failed++;
+    }
+    recount(prime);
+  }
+  if (failed > 0) changed();
+  return failed;
+}
+
+/** Close stale sleepers without erasing their transcript, result, or undelivered inbox. */
+export function expireSleepingWorkers(
+  now = Date.now(),
+  hasInFlightCall: (workstreamId: string) => boolean = () => false,
+): number {
+  let expired = 0;
+  for (const owner of [...runs.values(), ...dormantRuns.values()]) {
+    const prime = owner.agents.get(PRIME_ID);
+    if (!prime) continue;
+    for (const agent of owner.agents.values()) {
+      if (agent.info.role !== 'worker' || agent.info.state !== 'sleeping') continue;
+      const sleptAt = agent.info.sleptAt;
+      if (sleptAt === null || now - sleptAt < WORKER_SLEEP_RETENTION_MS) continue;
+      if (hasInFlightCall(agent.info.workstreamId)) continue;
+      const pending = agent.queue.filter((message) => message.ackedAt === null).length;
+      agent.info.state = 'failed';
+      agent.info.revivable = false;
+      agent.info.finishedAt = now;
+      agent.info.result = 'This worker was retired after more than one hour asleep.';
+      recount(agent);
+      prime.queue.push(newMessage(
+        agent, prime,
+        `[${agent.info.id} retired] This chat has been asleep for over an hour and cannot be resumed. ` +
+          `${pending} undelivered message${pending === 1 ? '' : 's'} remain in its durable history. ` +
+          'Reassess the work against the current repository state and spawn a fresh worker if needed.',
+      ));
+      expired++;
+    }
+    recount(prime);
+  }
+  if (expired > 0) changed();
+  return expired;
+}
+
+/**
+ * Whether the worker behind this workstream row has ended for good: failed or finished, and not
+ * revivable. Its row then has nothing left to open or recover.
+ */
+export function workerEndedForWorkstream(workstreamId: string): boolean {
+  for (const owner of [...runs.values(), ...dormantRuns.values()])
+    for (const agent of owner.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId)
+        return isOver(agent.info.state) && agent.info.revivable !== true;
   return false;
 }
 

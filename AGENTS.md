@@ -368,8 +368,11 @@ registrar):
 - **Reuse gate** (`reuse-gate.ts`): a patch that adds a new code file or a definition name that
   no tracked file already defines must carry `reuse_search`. Per name, it gives the searches
   run, what they found, and why none is reused. Each search must match a `find` call or
-  rg/grep/fd/ast-grep/probe command this conversation actually ran, and a search for the
-  invented name does not count. Around every `exec_command`/`write_stdin` the workspace is
+  rg/grep/fd/ast-grep/probe command this conversation actually ran, and a search that looks
+  only for invented names does not count; one that includes a new name among other terms does
+  (2026-10-10: a helper named `cokernel` voided the real search `'cokernel|elementary_divisors'`
+  and the bare refusal locked lean-cas-dsl-leaves out for 80 minutes). A refusal says, per
+  quoted search, why it failed, and lists the chat's searches that would count. Around every `exec_command`/`write_stdin` the workspace is
   diffed against the pre-command HEAD, so shell-written definitions become pending, and every
   tool except reading ones is refused until an `apply_patch` carries a covering `reuse_search`.
   Names already defined elsewhere (Sage's `one()`, `zero()`, `_repr_`) are overrides, not
@@ -506,19 +509,9 @@ workstream name registers and claims that repository/task identity, while `actio
 with an already-registered name claims it. Either action issues the `workstream_id`; `kernel.ts` validates it against
 `workstreams.ts` before execution, and the model retains one id per attached workstream and
 supplies it on every ordinary call. Unknown or superseded ids refuse execution with
-`WORKSTREAM_SETUP_REQUIRED`. The setup tool needs no conversation key, browser identity or
-prior claim, and never returns `BROWSER_IDENTITY_REQUIRED`. It is not fully unscoped, and its
-two scoping rules are deliberate. First, the path is fixed for the life of a workstream and
-one path has at most one workstream: `start` on a path whose existing workstream is still
-registered is refused with `WORKSTREAM_PATH_TAKEN`, naming the holder and its phase — the
-refusal branches: claim a live holder with `action=continue` (expecting `WORKSTREAM_HELD`
-while its lease runs), but a parked holder is a note-to-owner, never a takeover for an
-unrelated task; either way a twice-refused caller retries its original call once before
-giving up, since registry state moves. Second, `continue` on a logical workstream an active holder's
-lease covers is refused with `WORKSTREAM_HELD` (holder's tool call or command running, or
-lease within `WORKSTREAM_LEASE_MS`) with the time it frees — the refusal prescribes one
-`sleep` then retry, at most two, and otherwise ending the turn with a one-line note. The
-opaque id is the only model-carried identity for
+`WORKSTREAM_SETUP_REQUIRED`. The setup tool itself is completely unscoped: it needs no
+conversation key, lock, browser identity or prior claim, and never returns
+`BROWSER_IDENTITY_REQUIRED`. The opaque id is the only model-carried identity for
 steady-state calls; it is stripped from recorded tool arguments.
 
 Setup has no browser-provenance dependency. `continue` rotates the opaque claim token for the
@@ -547,55 +540,36 @@ method `workstream` and persist the logical workstream id explicitly.
 For a current identity failure, inspect id issuance, durable restoration, browser-command
 reservation, and then kernel dispatch. A stale connector schema must be refreshed.
 
-### Workstream leases and automatic recovery
+### Workstream leases and recovery
 
-`workstreams.ts` owns durable exclusive claims for every logical workstream. The lease frees
-only when the holder's own work has ended: an admitted tool call under the current claim holds
-it open, and so does a live terminal session (`exec_command` background process) the holder
-opened — a chat waiting on its own test is working, not stalled, so another chat cannot claim
-the workstream out from under running work (the zettlr-collaboration-fix incident). Both count
-only within the five-minute action ceiling; a process that outlives it protects nothing and is
-killable by the next takeover admit. Thought-summary rows and the `sleep` tool never renew the
-lease. Recovery on a page that is still reporting presses Stop and continues in place; only a
-page that has stopped reporting is reloaded first. A new claim invalidates the old opaque
-token and cancels pending recovery; already-admitted old calls and still-running old-claim
-terminals must settle (the successor gets WORKSTREAM_BUSY) or be killed once they outlive the
-ceiling, before successor execution. Browser polls and replayed observations are not activity.
-The app's own continuation prompts cannot renew their own lease.
+`workstreams.ts` owns durable exclusive claims for every logical workstream. Admitted tool
+calls renew the five-minute lease; running calls hold it open. Lease expiry alone never
+starts revival or replacement. The steward diagnoses stalled work from the actual task,
+tool results and browser state. An intentional pause resumes the same holder without
+inventing activity or treating the wait as a failed conversation. A new claim
+invalidates the old opaque token and cancels pending recovery; retained terminals owned by
+the old claim are stopped and already-admitted old calls must settle before successor
+execution. Browser polls and replayed observations are not activity. The app's own
+continuation prompts cannot renew their own lease.
 
-A dispossessed holder must never be instructed to sleep silently waiting to reclaim its own
-workstream: refusals tell it to end its turn with a one-line note of where its work stands
-(uncommitted edits, running commands), and the controller re-drives or replaces the holder.
-That rule forbids unbounded loop-waiting, not the bounded wait a fresh claimant's
-`WORKSTREAM_HELD` refusal itself prescribes (one `sleep`, retry `continue`, at most two,
-then the same one-line note). The `archiving` window is bounded by ARCHIVE_DEADLINE_MS (10 minutes): an archive ACK that
-never arrives retires the old frontend route and lets the workstream be claimed again, so
-`WORKSTREAM_UNAVAILABLE` can never become a permanent lockout. Every `blocked` row has the
-same bounded exit — after the deadline the controller reopens the replacement frontend
-itself — so no controller-side delivery failure can park a workstream indefinitely (the
-math-notes-app rows sat blocked for a week under the pre-2026-10-06 build).
-
-The bridge maintenance sweep owns bounded recovery: one same-chat continuation push gets a
-30-second recovery window. Renewed activity ends the episode; otherwise the old lock is
+After an explicit recovery decision or a failed delivery, the bridge maintenance sweep owns
+bounded recovery. It tracks the same-chat command's delivery and response. Renewed activity
+ends the episode; when that recovery is exhausted, the old lock is
 fenced, the extension stops and archives the actual ChatGPT thread and verifies the stored
 successful archive mutation response, and the bridge opens a replacement frontend with the saved project
 context and generic steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
 
-Controller-started managed workstreams are also **turn-driven**, not only timeout-driven.
+Controller-started managed workstreams are **turn-driven**.
 Their fresh observed `turn_end(completed)` schedules the next workstream prompt immediately;
-fresh failed/stopped/interrupted endings enter bounded recovery immediately. The five-minute
-lease is therefore the silent/wedged fallback, not the normal mechanism for moving from one
-finished unit to the next. Model-created workstream identities are non-driving unless a local
+fresh failed/stopped/interrupted endings enter bounded recovery immediately.
+Model-created workstream identities are non-driving unless a local
 controller explicitly enables auto-advance. Auto-advancing managed conversations stay
 page-mounted instead of entering tabless sleep: the observed turn boundary is their scheduler
 signal, so hiding it behind quiescence/fallback wake would defeat immediate advancement.
 
 Local scripts use `/workstreams/start`, `/workstreams`, `/workstreams/pause`,
-`/workstreams/resume`, `/workstreams/release` and `/workstreams/replace` with the local sender credential. `just release <id>` and
-`just release-all` are the recipes for it: they force a parked workstream (blocked, wedged in archiving, or
-stuck in recovery) into the controller's replacement path — a fresh chat with the saved project context —
-skipping `paused` rows and holders whose own work is still running. The paired extension alone services
+`/workstreams/resume` and `/workstreams/replace` with the local sender credential. The paired extension alone services
 `/workstreams/archive`. Failed browser delivery or archival is visible as blocked work;
 do not claim a replacement was made from a queue receipt alone. See README for bodies.
 
@@ -684,11 +658,13 @@ correlation.ts        was requestId→conversationId stored, and restored after 
 recorder.ts            did the historical/page record use the available evidence honestly?
 ```
 
-ChatGPT's current view model (`entries[].turn.items`, read by `fiber.js`) exposes no
-`metadata.request_id`, so the `fiber.js` link of this chain now reports every call with
-`requestId: null`. A chat's link to its workstream comes from the `Workstream claim:` line
-instead: `fiber.js` reports the model's public commentary as assistant messages, and the
-bridge binds the workstream when that text reaches `/events`.
+ChatGPT can place `metadata.request_id` on the user-message branch that opened the active
+generation. That Fiber descriptor can have `conversationId: null`, even while the browser route
+has the concrete conversation id. Preserve the triggering user section when the local generation
+opens. Join its scan-qualified `data-clf-fiber-turn` stamp to the descriptor, then submit the exact
+request id through the app's correlation handshake. This path is page/recording evidence only.
+It does not grant workstream ownership, agent identity, workspace, terminal authority or a
+recorder thread.
 
 **Acceptance.** Correlation and browser identity are live-only claims. Use the installed extension,
 the real ChatGPT page and connector observations; never accept a synthetic Fiber/DOM transcript.
@@ -751,11 +727,7 @@ turn state, Fiber cache, rendered replacement state, pre-service-worker queue.
 props minus a denylist), never tool argument values, validates the exact CLF connector
 names, and fails closed on unfamiliar React shapes. Its `postMessage` output is
 page-controlled evidence useful for joining page to local truth — **never a credential**.
-Its protocol version and the content-side expectations move together. It reads ChatGPT's
-view model: each `div[data-turn-key]` exchange joins by `turnKey` to one `entries[]` item,
-whose `turn.items` hold the user message, reasoning groups (commentary, thought headlines,
-`mcp-tool-call`s) and the final `assistant-message`. Commentary and thoughts carry no id;
-`fiber.js` names each by the nearest preceding id-bearing item plus its ordinal.
+Its protocol version and the content-side expectations move together.
 
 **Must hold.** ChatGPT is an SPA: every async result proves it still belongs to its
 navigation epoch before mutating state. Turn boundaries must stay **event-driven**: Chrome's
@@ -986,10 +958,10 @@ worker's frontend, but it never authenticates the worker's tool calls.
 → acknowledged by the next authenticated tool call. Offering on a result is **not** proof
 the model received it. Never delete a message merely because it was offered.
 
-**Workers sleep; they do not end.** `finish` reports a result and puts that worker to
-*sleep*: it keeps its conversation, keeps its history, and stays revivable. Sleeping frees
+**Worker sleep is short-lived.** `finish` reports a result and puts that worker to
+*sleep* for at most one hour: it keeps its conversation, keeps its history, and stays revivable during that window. Sleeping frees
 its worker slot, so `maxWorkers` counts working workers only — a prime can create a new worker
-while an older one sleeps and still wake that older worker afterwards. The same sleep happens without the tool call, from
+while an older one sleeps and still wake that older worker during that hour. Afterward the broker makes the worker terminal, preserves its undelivered inbox in durable history, and tells the prime to reassess and spawn fresh work. The same sleep happens without the tool call, from
 durable evidence that the worker stopped: a settled final assistant turn, or quiescence
 proven by `activeTurnId`/live-generating state rather than by a page heartbeat.
 
@@ -1009,7 +981,7 @@ run in top-level fields, is migrated on restore and rewritten as version 7. Expl
 swarm clear is different from parking: it retires the worker conversation fences and discards the
 retained histories. Turning Multi-agent **off is not Clear**: it stops/withdraws live execution,
 parks the owner history, and keeps that history durable through disabled app restarts so re-enable
-can still show and revive the exact old worker conversations.
+can still show the exact old worker conversations; workers past the one-hour sleep window cannot be revived.
 
 **Waking is messaging.** `agents action=message` to a sleeping worker reserves a free slot
 inside the same durable barrier that queues the message, and only after that commit does the
@@ -1188,6 +1160,8 @@ git status --short
 git diff -- <files you plan to touch>
 ```
 
+This repository is an approved sandbox root, which is not an invitation to work other projects inside it: clone another repository to `~/gitclones/<name>` and work there. On 2026-10-09 a full `zettlr-pandoc` clone (1.6 GB, 24 commits never pushed anywhere else), three upstream source copies and a stray `sage-mypy-plugin` patch were found here and moved out.
+
 Assume unrelated changes belong to someone else. **Never** `reset`, `checkout`, `clean`,
 broad-format, or overwrite unrelated work to simplify your patch. If the exact lines you
 planned to edit changed underneath you, reread and integrate — do not replay an old patch.
@@ -1330,6 +1304,11 @@ prints, in full.
 **When a chat's context fills, hand off.** Read its transcript and open a new chat with a very
 simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
 progress. Nothing more.
+A brief that states what is already done is acceptance evidence the new chat will act on, so
+take it from the repository's record (commits by path, the node's own ledger), never from the
+old chat's prose: on 2026-10-02 a brief saying a copy pass "has read algebra, analysis,
+topology" meant wiki pages, and the replacement closed the node with 1,600 corpus cards unread.
+Name the ongoing task, never "the next" unit, or the chat stops after one.
 
 ### The steward's job
 
@@ -1726,6 +1705,14 @@ repository, never something said in chat.
   *Remedy:* preserve the prior contract, classify the authored material as material needing later
   audit, and restore the phase boundary. A policy edit may correct a false rule; it may not launder
   work into the phase merely because reverting or auditing it is inconvenient.
+- **A mathematical repository is measured against its consumer.** A worker or steward
+  calls its checks "integration", ties a node's acceptance to how a port or migration
+  calls it, and then reports the library as blocked on that consumer. On 2026-10-09
+  research's issue-401 node waited on the stopped `sage-indefinite-port`, and the steward
+  relayed that to the owner as a decision. The owner's ruling: research is general mathematics,
+  accepted by true assertions at each operation's owner, and no consumer gates it.
+  *Remedy:* rewrite any such acceptance as mathematical assertions at the owner; a
+  consumer's needs may order the work, never accept it.
 - **The steward rewards honest reporting of a stall instead of resolving the stall.** A worker
   can accurately say a process died, a gate is red, or nothing has landed and still leave the
   repository stopped for another tick.
@@ -3273,7 +3260,7 @@ fleet has to be recorded in these files for the others to see.
 
 | Surface | What it holds | Authority |
 | --- | --- | --- |
-| `GET /workstreams` (bridge, port 8765) | every workstream row: `phase` (including `paused`), conversation, retired chats; `connectorSchema` | live truth for what is running |
+| `GET /workstreams` (bridge, port 8765) | logical workstreams in `workstreams`, broker worker claims in `workers` with `agentState`, and `connectorSchema` | live truth for what is running; sleeping workers are history, not fleet width |
 | "Owner decisions" under "The managed workstreams" below, and `FANOUT-SCHEDULE.md` | which streams the owner has running or paused, and each stream's current frontier | the owner's standing instructions |
 | `steward-dashboard/journal.md` (local, gitignored, never committed) | dated entries: each action taken on the fleet, each owner instruction received, and what the next tick must verify | the running log; read its last entries before acting |
 | `steward-dashboard/tick-prompt.md` | the steward's tick prompt, verbatim | recreate the tick cron from it |
@@ -3293,13 +3280,7 @@ Verbs, authenticated with `Authorization: Bearer $(cat ~/.config/chat-on-steroid
 (never print the token):
 
 - pause or resume: `POST /workstreams/pause` or `/workstreams/resume` with `{"id": "<workstream>"}`;
-- release one or all: `POST /workstreams/release` with `{"id": "<workstream>"}` or `{"all": true}` —
-  force parked workstreams into the controller's replacement path (`just release <id>` / `just release-all`);
-- retire/unbind/rename: no verb exists — `release` and `/workstreams/replace` both preserve the
-  row's name and workspace, and `WORKSTREAM_PATH_TAKEN` matches rows in any phase, so a dead
-  row still owns its path. Unbinding needs daemon-stop surgery: stop the app at `pendingTools`
-  zero, back up `~/.config/chat-on-steroids/state/workstreams.json`, edit, restart (the
-  restore path re-reads the file); sessions stay on disk under `sessions/` regardless;
+- replace a blocked chat for an owned logical workstream: `POST /workstreams/replace`; retire an abandoned, paused or blocked logical workstream with no worker history: `POST /workstreams/retire` (both take the same `id` body);
 - send a chat a pointer: `just say <conversation-id> "<text>"`;
 - refresh ChatGPT's copy of the Core tool schema when `connectorSchema` is not `current`:
   `node steward-dashboard/tools/refresh-core-app.mjs <screenshot.png>` (the plugin page, then "…",
@@ -3311,6 +3292,14 @@ The tick is a session-only cron job (`13,43 * * * *`) whose prompt is saved verb
 `steward-dashboard/tick-prompt.md`. A session continuation silently drops it, and on
 2026-09-26 ticks stopped twice unnoticed. After any continuation, check that the job exists
 and recreate it from that file.
+
+Every tick reads `steward-dashboard/completion.md` for prior claims to verify, then examines each
+agent's actual activity against its current task: its reasoning and tool results, source changes,
+unresolved failures, and the dependency it is trying to resolve. Determine whether those actions
+address the problem in front of it, or repeat checks, explore adjacent work, or manufacture records
+without resolving that problem. Completion measures summarize established results; a flat or rising
+measure never classifies a stream or triggers an intervention. Intervene on a diagnosed wedge,
+blocker or drift, and verify that the intervention changes the relevant activity and outcome.
 
 Run these steps in order. Skipping the early ones and starting from chat liveness is the failure
 mode that produced most of the incidents in this section.
@@ -3332,6 +3321,11 @@ mode that produced most of the incidents in this section.
 2. **Observe direct state.** Read the worker's live state and recent transcript, the working tree,
    worker-authored commit history since the last tick, and any live process the worker claims to
    be waiting on. Use the repository's canonical queue/frontier instrument where one exists.
+   With `sleepWake.enabled`, a verified push discards the chat's tab while its turn keeps
+   running at OpenAI, so `just state` reads `generating:false`, a stale `lastPageToolAt` and a
+   transcript that stops at the push, for a chat that is working. Read `GET /sleep/status`,
+   the row's `lastActivity` and the `workstreamId` of in-flight calls before calling it stopped
+   (2026-10-01: three sends went to a slept new-qual-site while it committed every minute).
 3. **Check semantic alignment before throughput.** Inspect what the newest substantive work
    actually does. Does it satisfy the current node? Does it preserve the invariant? Is it crossing
    a phase boundary, reimplementing a dependency, or turning an audit into authoring? If the
@@ -3371,21 +3365,23 @@ handled immediately rather than waiting for the next scheduled sample.
 
 **Working.** The current objective is still open; recent artifacts or a live relevant process are
 advancing its accepted unit; and a semantic sample has not contradicted the invariant. Leave it
-alone. For managed repository workstreams, no individual tool/command/test/build action is allowed
-to run for five minutes: that duration is itself a major failure signal, not a legitimate
-long-running gate. These repositories are source/architecture/definition/card work, not enterprise
-release pipelines. A command approaching five minutes requires stopping it and re-grounding in the
-explicit task/DAG/phase boundary: check for drift, a broad or pathologically slow test/build,
-unnecessary heavyweight validation, watcher/server work, or push/publication work that was never
-assigned. Resume with a narrower source action or focused owner-local check. A high commit rate is
-not enough.
+alone. A required full Lean compilation can legitimately take a long time. Run it in the
+background. The worker continues useful independent or adjacent work. If no such work is ready,
+the orchestrator temporarily pauses the workstream and owns the build through completion; the
+ChatGPT worker does not spend its turn waiting or repeatedly polling. The orchestrator retains the
+process identity, log and exit result, inspects actual compiler activity, and resumes the worker
+with concrete work as soon as the result is available. Do not kill or restart a build merely for
+elapsed time or launch duplicates. Keep clear which source revision the build checks. A stale
+"build running" claim is not permission to avoid work: establish whether the process exists and
+advances, diagnose an actual stall, and consume its result promptly.
 
 **Wedged.** The objective is valid and executable, substantive work remains, but either there is no
-live relevant action and no advancing tree/commit/transcript evidence, or one individual action has
-crossed the five-minute ceiling. There is no autonomous "waiting" state after tool activity stops:
-an agent with no active tool call will not wake itself later. Conversely, an active tool call does
-not excuse a five-minute stall; a test/command lasting that long is itself the thing to stop and
-diagnose. First inspect the dirty tree: if it holds coherent finished work, the first instruction
+live relevant action and no advancing tree/commit/transcript evidence, or its actual activity shows
+a repeated failure to advance the assigned work. Elapsed time alone does not establish a wedge.
+A live background build is relevant work owned by the orchestrator while the worker does other
+substantive work or is temporarily paused. Repeatedly polling a dead process, restarting the same build without resolving its
+failure, or exploring adjacent tasks to avoid that failure requires intervention at the cause.
+First inspect the dirty tree: if it holds coherent finished work, the first instruction
 is to bank it. Then recover the chat at the layer actually broken. Do not call a stream wedged
 merely because a metric has not moved while fresh bounded actions are still advancing the assigned
 unit.
@@ -3636,6 +3632,26 @@ Consult when an instrument is about to change what you do. None of it is the job
 - Never scan a recording with `jq`; an invalid surrogate escape aborts it mid-file and a
   healthy chat looks frozen for hours. Use `grep` and `sed`.
 - Give `just say` the full conversation id. A prefix opens a new chat and types into that.
+- A `say` that `expired` ("no page redeemed") while `just state` reads `generating:false` is
+  usually a page still showing a dead turn's Stop button: the recorder lost that turn when the
+  tab slept, the page will not type over it, and a retry expires the same way. Use `just
+  interrupt`, which presses Stop first (2026-10-02: math-notes-ipad, three expiries, then one
+  interrupt delivered).
+- When every send `expires` across different chats and verbs while the pages themselves load
+  and show a ready composer, the extension has stopped redeeming commands. Reload it:
+  `node steward-dashboard/tools/reload-extension.mjs` (`chrome.runtime.reload()` in its service
+  worker). 2026-10-02 07:00: four expiries on two chats, then both delivered on the first try
+  after the reload. Do not replace chats for this; nothing is wrong with them.
+  If sends still expire after the reload, including `just new`, read the Chrome processes: a
+  renderer at gigabytes of RSS with the host load climbing starves every page. Restart
+  `chat-on-steroids-browser.service`; the chats keep running server-side. 2026-10-02 11:01: a
+  1.8 GB renderer at 61% CPU; after the restart the next say delivered to the same chat.
+- `native-insert-no-text` repeating on one chat (`execCommand('insertText')` false with the
+  composer focused, selection inside it, no Stop button, document focused) is that
+  conversation's page, not the browser: other chats type fine meanwhile. It has hit only long
+  conversations (new-qual-site at 2400+ nodes, math-notes-ipad after nine hours). After the
+  second occurrence, hand off to a fresh chat (`just new` with the workstream brief); retries
+  and interrupts waste the window, and an interrupt that fails here also stops the turn.
 - ChatGPT enforces subscription usage limits with a fixed reset time. When sends stop working
   (the page says "Our systems have detected unusual activity coming from your system", "You've
   hit your rate limit", or fresh chats will not open), read the state from a chatgpt.com page:
@@ -3676,6 +3692,12 @@ Consult when an instrument is about to change what you do. None of it is the job
   Exact-current-head behavioral acceptance is the current completion frontier, followed by
   final framework delivery. Publication remains independent of these completion nodes.
 
+**2026-10-13 09:43 UTC: the owner paused all managed workstreams, including the orchestrator.**
+The controller reported 207 retained rows at the time, including worker history; this was not
+207 active streams. Do not resume, replace,
+dispatch to, or auto-advance any workstream until a later explicit owner instruction. This
+supersedes the active allocations below; keep their task frontiers as cold-resume context.
+
 Owner decisions as of 2026-09-27: `lean-categories` and `new-qual-site` are **paused** to give
 their capacity to sage and research. new-qual's `audited-deployment` checkpoint is deployed
 (087e3b595) and its audit rounds resume from it. sage's live `TODO.md` has reopened current-head
@@ -3684,6 +3706,37 @@ selects `core-functor-cell-calculus` before the downstream A/B and `framework-co
 nodes. Publication remains downstream of those substantive acceptance obligations. Leaves in sage
 are probes of the core, never products (sage `AGENTS.md`). research's top-priority node is
 `placement-audit`.
+
+**2026-10-01 18:41 UTC: the owner resumed `new-qual-site` and started `math-notes-ipad`; 2026-10-02 11:48 UTC: the owner started `sage-indefinite-port`** (`/home/dzack/gitclones/sage-indefinite-port`; its `TODO.md` is the DAG over the GitHub issue tree rooted at #4). These are the only active managed streams. new-qual-site's task is writing solutions (its TODO.md section 7, made current in 60456281f after a copy pass deleted 46 owner-written cards); no pass there may delete, merge or consolidate owner-written cards. The steward never pushes or publishes a managed repository; workers push their own branches. Auto-continuation (`autoContinue` in config.json) is on whenever streams are being stewarded: with it off, a stalled stream waits for the next steward tick (2026-10-02, owner). `math-notes-ipad` (`/home/dzack/gitclones/math-notes-app`, branch `ipad-port`) exists to build out the iPad app on that branch, ahead of that repository's v1-before-iPad sequencing, which still governs its `main`; it verifies Swift through `gh workflow run ios.yml --ref ipad-port` and never pushes `main`. The older `math-notes-app` and `math-notes-app-batch2` rows were bound to `/research` and stay as they are. Everything else stays under the pause below.
+
+**2026-10-12: the owner explicitly resumed `sage-indefinite-port` and requested completion.** This supersedes the 2026-10-07 stop for this stream only. Its repository `AGENTS.md` and `TODO.md`/issue DAG govern completion and acceptance; continue the existing repository worker rather than opening competing work on the same tree. `research` and `lean-cas-dsl` remain active under their existing instructions; other owner-paused streams remain paused.
+
+**2026-10-09: the owner started `lean-cas-dsl`** (`/home/dzack/gitclones/lean-cas-dsl`, cloned from `dzackgarza/lean-cas-dsl`; its `AGENTS.md` "Current task: construct B0" governs). The active managed streams are `research` and `lean-cas-dsl` (or the temporary stream standing in for it under the serial rule below); every other row stays paused unless a later owner instruction explicitly resumes it.
+
+**2026-10-11, owner: workers work; the orchestrator owns build waits.** Required Lean builds run in
+the background without an arbitrary duration cutoff. Workers continue useful adjacent work, or
+the orchestrator temporarily pauses their workstream, owns the build, and resumes them promptly
+with its result. This temporary build pause is not an owner stop requiring another permission to
+resume. Inspect actual activity to diagnose drift or wedges; proxy changes never trigger intervention.
+
+### Managed lean-cas-dsl validation runs
+
+Required Lean compilations and long-running acceptance-harness executions run
+once in the background with a durable output log, source revision and identifiable
+process. They are not worker-turn polling jobs:
+while one runs, continue independent B0 construction and source-level repairs.
+If no such work remains, give the live process and log to the fleet steward,
+which owns the wait and may temporarily pause this stream until it can return
+the actual compiler or harness result. Do not relaunch a live run or kill it for
+elapsed time alone. A vanished compiler, harness, or terminal session is diagnosed from its
+actual process and output before choosing the next action; repeated empty
+`write_stdin` calls do not establish progress or acceptance.
+
+**2026-10-10, owner rule: blocking work is serial.** When an active stream is blocked on work in another repository, pause the blocked stream and run a temporary workstream in the blocking repository in its place, whatever that repository's standing status, until the blocking task is delivered; then close it and resume the blocked stream. The blocked worker never "commissions" the work, and the blocked stream and its blocker do not run side by side. Applied the same day to `lean-cas-dsl` (paused), in order: `lean-cas-dsl-leaves` decodes the released descriptor forms (products, coproduct); `lean-categories` registers the named output forms of `colim.bil_w_form.cokernel`; `lean-cas-dsl-leaves` computes the discriminant cokernel; then `lean-cas-dsl` resumes.
+
+**2026-10-08: the owner resumed `research` as the only active managed stream.** It works from its `HANDOFF.md` first, then its `TODO.md` DAG. `new-qual-site`, `math-notes-ipad` and every other row are paused, and `sage-indefinite-port` stays stopped (2026-10-07). This supersedes the 2026-10-04 allocation below; resume nothing else until a later explicit owner instruction.
+
+**2026-10-04: the owner explicitly resumed the fleet under the three-stream allocation above.** `new-qual-site`, `math-notes-ipad`, and `sage-indefinite-port` are the active managed repository streams, and the `orchestrator` is active to steward them. This supersedes the 2026-09-28 blanket pause only for those rows; every other managed repository remains paused until a later explicit owner instruction.
 
 **2026-09-28 08:2x UTC: the owner paused the whole fleet** (research, the orchestrator and every other
 workstream). Nothing runs. Resume nothing until a later explicit owner instruction.
