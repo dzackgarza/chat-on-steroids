@@ -552,6 +552,11 @@ the old claim are stopped and already-admitted old calls must settle before succ
 execution. Browser polls and replayed observations are not activity. The app's own
 continuation prompts cannot renew their own lease.
 
+For the scheduled `orchestrator`, a fresh observed terminal turn releases its claim
+immediately so the next tick can attach. A running tool call still holds the claim;
+observer loss and uncertain turn outcomes do not release it. The ordinary five-minute
+lease remains the fallback when no terminal turn was observed.
+
 After an explicit recovery decision or a failed delivery, the bridge maintenance sweep owns
 bounded recovery. It tracks the same-chat command's delivery and response. Renewed activity
 ends the episode; when that recovery is exhausted, the old lock is

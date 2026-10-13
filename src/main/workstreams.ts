@@ -42,6 +42,8 @@ const rowSchema = z
     sessionId: z.string().nullable().default(null),
     lock: z.string(),
     lastActivity: z.number(),
+    /** A recorded terminal orchestrator turn fences its claim before the idle lease ends. */
+    claimReleased: z.boolean().default(false),
     phase: z.enum([
       "active",
       "advancing",
@@ -364,6 +366,7 @@ export async function startWorkstream(
       sessionId: null,
       lock: workstreamId,
       lastActivity: now,
+      claimReleased: false,
       phase: "active",
       autoAdvance: false,
       lastAdvancedTurnId: null,
@@ -404,7 +407,7 @@ export async function continueWorkstream(
     if (["active", "advancing"].includes(prior.phase)) {
       if (runningToolCallsForWorkstream(prior.id) > 0)
         return { ok: false, code: "WORKSTREAM_HELD", freesAt: null };
-      if (now < prior.lastActivity + WORKSTREAM_LEASE_MS)
+      if (!prior.claimReleased && now < prior.lastActivity + WORKSTREAM_LEASE_MS)
         return { ok: false, code: "WORKSTREAM_HELD", freesAt: prior.lastActivity + WORKSTREAM_LEASE_MS };
     }
     // Setup has no browser-provenance dependency. A `blocked` row is a controller-side
@@ -429,6 +432,7 @@ export async function continueWorkstream(
       sessionId: prior.sessionId,
       lock: newLock,
       lastActivity: now,
+      claimReleased: false,
       phase: "active",
       autoAdvance: prior.autoAdvance,
       lastAdvancedTurnId: prior.lastAdvancedTurnId,
@@ -480,6 +484,7 @@ export async function reserveWorkstream(
       sessionId: prior?.sessionId ?? null,
       lock,
       lastActivity: now,
+      claimReleased: false,
       phase: "opening",
       autoAdvance,
       lastAdvancedTurnId: prior?.lastAdvancedTurnId ?? null,
@@ -522,6 +527,7 @@ export async function admitWorkstreamCall(
     const row = [...rows.values()].find(
       (candidate) =>
         candidate.lock === workstreamId &&
+        !candidate.claimReleased &&
         ["active", "advancing", "recovering"].includes(candidate.phase),
     );
     if (!row) return { ok: false, code: "WORKSTREAM_ID_NOT_CURRENT" };
@@ -664,7 +670,7 @@ export async function scheduleWorkstreamAfterTurn(
     const row = [...rows.values()].find(
       (candidate) =>
         candidate.conversationId === conversationId &&
-        candidate.autoAdvance &&
+        (candidate.autoAdvance || candidate.id === ORCHESTRATOR_WORKSTREAM_ID) &&
         (candidate.phase === "active" ||
           // The advance may have reached ChatGPT but its turn can end before
           // the new worker makes a Core call.  Ignoring that terminal result
@@ -679,6 +685,17 @@ export async function scheduleWorkstreamAfterTurn(
     )
       return false;
     if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
+
+    if (row.id === ORCHESTRATOR_WORKSTREAM_ID) {
+      // A real terminal turn frees the next scheduled tick. A call still executing
+      // retains its claim until it settles (and the ordinary idle lease then applies).
+      if (runningToolCallsForWorkstream(row.id) > 0) return false;
+      row.lastAdvancedTurnId = turnId;
+      row.lastAdvancedTurnTime = time;
+      row.claimReleased = true;
+      await save();
+      return true;
+    }
 
     const unclaimedAdvance = row.phase === "advancing";
     row.lastAdvancedTurnId = turnId;

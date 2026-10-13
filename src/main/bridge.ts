@@ -1528,7 +1528,7 @@ async function handle(
       const current = workstreamStatus().map(
         ({ ownerKey, lock, retiredKeys, ...row }) => ({
           ...row,
-          expiresAt: row.lastActivity + WORKSTREAM_LEASE_MS,
+          expiresAt: row.claimReleased ? null : row.lastActivity + WORKSTREAM_LEASE_MS,
         }),
       );
       return json(
