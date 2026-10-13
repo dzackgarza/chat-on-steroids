@@ -56,6 +56,7 @@ import {
   noteWorkstreamRecoveryDelivered,
   releaseFailedWorkstreamReplacementBind,
   replaceWorkstream,
+  retireWorkstream,
   reserveWorkstream,
   restoreWorkstreams,
   retryFailedWorkstreamReplacementDelivery,
@@ -161,6 +162,7 @@ import {
   workerRevivalDeliveredSince,
   liveAgentConversations,
   workerOwnsWorkstream,
+  workerStateForWorkstream,
   type WorkerRevival,
 } from "./agents.js";
 import {
@@ -1511,6 +1513,7 @@ async function handle(
     route === "/workstreams/start" ||
     route === "/workstreams/auto-advance" ||
     route === "/workstreams/pause" ||
+    route === "/workstreams/retire" ||
     route === "/workstreams/resume" ||
     route === "/workstreams/replace" ||
     route === "/workstreams/context"
@@ -1518,16 +1521,21 @@ async function handle(
     if (!(await localSenderAuthorised(req)))
       return json(res, 401, { error: "unauthorised" }, origin);
     if (route === "/workstreams" && req.method === "GET") {
+      const current = workstreamStatus().map(
+        ({ ownerKey, lock, retiredKeys, ...row }) => ({
+          ...row,
+          expiresAt: row.lastActivity + WORKSTREAM_LEASE_MS,
+        }),
+      );
       return json(
         res,
         200,
         {
-          workstreams: workstreamStatus().map(
-            ({ ownerKey, lock, retiredKeys, ...row }) => ({
-              ...row,
-              expiresAt: row.lastActivity + WORKSTREAM_LEASE_MS,
-            }),
-          ),
+          workstreams: current.filter((row) => workerStateForWorkstream(row.id) === null),
+          workers: current.flatMap((row) => {
+            const agentState = workerStateForWorkstream(row.id);
+            return agentState === null ? [] : [{ ...row, agentState }];
+          }),
           connectorSchema: schemaState(),
         },
         origin,
@@ -1547,6 +1555,10 @@ async function handle(
       const paused = await pauseWorkstream(id.data);
       await sweepWorkstreams();
       return json(res, paused ? 200 : 404, { paused }, origin);
+    }
+    if (route === "/workstreams/retire") {
+      const retired = await retireWorkstream(id.data);
+      return json(res, retired ? 200 : 409, { retired }, origin);
     }
     // The context is the brief every auto-continuation re-sends. A stale one re-steers a worker
     // on each advance: on 2026-10-02 new-qual-site's original brief overrode the owner's later

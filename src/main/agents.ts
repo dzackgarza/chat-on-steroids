@@ -3768,6 +3768,14 @@ export function workerOwnsWorkstream(workstreamId: string): boolean {
   return false;
 }
 
+export function workerStateForWorkstream(workstreamId: string): AgentState | null {
+  for (const owner of [...runs.values(), ...dormantRuns.values()])
+    for (const agent of owner.agents.values())
+      if (agent.info.role === 'worker' && agent.info.workstreamId === workstreamId)
+        return agent.info.state;
+  return null;
+}
+
 /**
  * Whether the worker behind this workstream row has ended for good: failed or finished, and not
  * revivable. Its row then has nothing left to open or recover.

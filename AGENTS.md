@@ -3260,7 +3260,7 @@ fleet has to be recorded in these files for the others to see.
 
 | Surface | What it holds | Authority |
 | --- | --- | --- |
-| `GET /workstreams` (bridge, port 8765) | every workstream row: `phase` (including `paused`), conversation, retired chats; `connectorSchema` | live truth for what is running |
+| `GET /workstreams` (bridge, port 8765) | logical workstreams in `workstreams`, broker worker claims in `workers` with `agentState`, and `connectorSchema` | live truth for what is running; sleeping workers are history, not fleet width |
 | "Owner decisions" under "The managed workstreams" below, and `FANOUT-SCHEDULE.md` | which streams the owner has running or paused, and each stream's current frontier | the owner's standing instructions |
 | `steward-dashboard/journal.md` (local, gitignored, never committed) | dated entries: each action taken on the fleet, each owner instruction received, and what the next tick must verify | the running log; read its last entries before acting |
 | `steward-dashboard/tick-prompt.md` | the steward's tick prompt, verbatim | recreate the tick cron from it |
@@ -3280,6 +3280,7 @@ Verbs, authenticated with `Authorization: Bearer $(cat ~/.config/chat-on-steroid
 (never print the token):
 
 - pause or resume: `POST /workstreams/pause` or `/workstreams/resume` with `{"id": "<workstream>"}`;
+- replace a blocked chat for an owned logical workstream: `POST /workstreams/replace`; retire an abandoned, paused or blocked logical workstream with no worker history: `POST /workstreams/retire` (both take the same `id` body);
 - send a chat a pointer: `just say <conversation-id> "<text>"`;
 - refresh ChatGPT's copy of the Core tool schema when `connectorSchema` is not `current`:
   `node steward-dashboard/tools/refresh-core-app.mjs <screenshot.png>` (the plugin page, then "…",
@@ -3692,7 +3693,8 @@ Consult when an instrument is about to change what you do. None of it is the job
   final framework delivery. Publication remains independent of these completion nodes.
 
 **2026-10-13 09:43 UTC: the owner paused all managed workstreams, including the orchestrator.**
-The controller reported all 207 rows paused after the instruction. Do not resume, replace,
+The controller reported 207 retained rows at the time, including worker history; this was not
+207 active streams. Do not resume, replace,
 dispatch to, or auto-advance any workstream until a later explicit owner instruction. This
 supersedes the active allocations below; keep their task frontiers as cold-resume context.
 

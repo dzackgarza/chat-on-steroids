@@ -22,7 +22,7 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
-**Current owner state (2026-10-13 09:43 UTC): all managed workstreams are owner-paused, including the orchestrator.** The controller reported all 207 rows paused. Target active width is zero. Do not resume, replace, dispatch to, or auto-advance any row until a later explicit owner instruction. Earlier allocations below are cold-resume context only.
+**Current owner state (2026-10-13 09:43 UTC): all managed workstreams are owner-paused, including the orchestrator.** Four logical workstreams were active immediately before the pause; the controller's 207 retained rows also included worker history and old failures. Target active width is zero. Do not resume, replace, dispatch to, or auto-advance any row until a later explicit owner instruction. Earlier allocations below are cold-resume context only.
 
 **2026-10-12: the owner explicitly resumed `sage-indefinite-port` (`/home/dzack/gitclones/sage-indefinite-port`) and requested its completion under its existing repository DAG and acceptance rules.** The prior 2026-10-07 stop was superseded for this stream only. `research` and `lean-cas-dsl` were active; every other paused stream remained paused. Use the existing sage-indefinite-port worker, not a competing repository worker.
 
