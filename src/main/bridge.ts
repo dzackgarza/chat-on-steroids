@@ -165,6 +165,7 @@ import {
   workerStateForWorkstream,
   promoteWorkerConversation,
   failUnroutableSleepingWorkers,
+  expireSleepingWorkers,
   type WorkerRevival,
 } from "./agents.js";
 import {
@@ -4351,6 +4352,11 @@ async function durableQuiescence(
  * This sweep exists for the abandoned-tail case where no such next call arrives.
  */
 export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
+  if (expireSleepingWorkers(now, (id) => inFlightCallsForWorkstream(id).length > 0) > 0) {
+    if (!(await persistCriticalSwarmNow()))
+      throw new Error('Could not persist the retirement of stale sleeping workers');
+    await restoreWorkstreams();
+  }
   // Any fleet-wide in-flight call used to abort the whole sweep, and with four busy
   // workstreams one almost always is, so dead workers were never reconsidered. Freeing one
   // worker's slot only needs that worker's own calls to be settled (checked per worker below);
@@ -4633,7 +4639,9 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
     promoteWorkerConversation(from, to);
     await promoteWorkstreamConversation(from, to);
   }
-  if (failUnroutableSleepingWorkers() > 0) {
+  const retiredUnroutable = failUnroutableSleepingWorkers();
+  const retiredStale = expireSleepingWorkers(Date.now(), (id) => inFlightCallsForWorkstream(id).length > 0);
+  if (retiredUnroutable + retiredStale > 0) {
     if (!(await persistCriticalSwarmNow()))
       throw new Error('Could not persist the retirement of workers without durable conversations');
     await restoreWorkstreams();

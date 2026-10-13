@@ -20,7 +20,8 @@
  * Ownership lasts longer than execution. When a run's final slot-holder stops, that active
  * incarnation is parked immediately and its entire agent map becomes dormant history keyed by
  * the exact prime workstream. The prime still sees every worker it ever created and may later
- * wake the reusable ones in their exact old ChatGPT conversations.
+ * wake a recently sleeping worker in its exact old ChatGPT conversation. Older sleepers
+ * become terminal history so a days-old chat is never presented as work ready to resume.
  *
  * Internally each exported operation first finds the run it concerns — by the caller's
  * workstream, a conversation, or a browser command's run id — and runs inside that scope, so
@@ -65,7 +66,7 @@
  * worker claims that workstream and thereafter its workstream identity, not its browser
  * location, determines ownership.
  *
- * ## Workers sleep; they do not end
+ * ## Workers sleep briefly, then end
  *
  * A worker used to be one job in one throwaway chat. It reported, its slot became a
  * tombstone, and more work meant another `spawn` — another conversation, discarded again
@@ -108,6 +109,8 @@ export const PRIME_ID = 'prime';
  */
 const MAX_QUEUE = 200;
 export const MAX_MESSAGE_CHARS = 4000;
+/** Reuse is limited to the same working session; older chats require a fresh worker. */
+export const WORKER_SLEEP_RETENTION_MS = 60 * 60_000;
 /**
  * Maximum broker prose appended to one MCP result.
  *
@@ -1849,6 +1852,12 @@ function stageMessagesActive(
       );
     }
     if (to.info.state === 'sleeping') {
+      if (to.info.sleptAt !== null && Date.now() - to.info.sleptAt >= WORKER_SLEEP_RETENTION_MS) {
+        throw new AgentError(
+          `${toId} has been asleep for over an hour and cannot be resumed. Nothing was sent. ` +
+          'Spawn a fresh worker for any work still needed.'
+        );
+      }
       if (!to.info.conversationId) {
         throw new AgentError(
           `${toId} is asleep and cannot be woken${where}, so nothing was sent. Spawn a new worker with this work instead.`
@@ -3804,12 +3813,14 @@ export function failUnroutableSleepingWorkers(): number {
       agent.info.revivable = false;
       agent.info.finishedAt = Date.now();
       agent.info.result = 'The browser never reported a durable conversation for this worker.';
-      agent.queue = [];
+      const pending = agent.queue.filter((message) => message.ackedAt === null).length;
       recount(agent);
       prime.queue.push(newMessage(
         agent,
         prime,
-        `[${agent.info.id} failed] Its chat never gained a durable conversation address, so it cannot be reopened. Spawn a replacement for any unfinished work.`,
+        `[${agent.info.id} failed] Its chat never gained a durable conversation address, so it cannot be reopened. ` +
+          `${pending} undelivered message${pending === 1 ? '' : 's'} remain in its durable history. ` +
+          'Spawn a replacement for any unfinished work.',
       ));
       failed++;
     }
@@ -3817,6 +3828,40 @@ export function failUnroutableSleepingWorkers(): number {
   }
   if (failed > 0) changed();
   return failed;
+}
+
+/** Close stale sleepers without erasing their transcript, result, or undelivered inbox. */
+export function expireSleepingWorkers(
+  now = Date.now(),
+  hasInFlightCall: (workstreamId: string) => boolean = () => false,
+): number {
+  let expired = 0;
+  for (const owner of [...runs.values(), ...dormantRuns.values()]) {
+    const prime = owner.agents.get(PRIME_ID);
+    if (!prime) continue;
+    for (const agent of owner.agents.values()) {
+      if (agent.info.role !== 'worker' || agent.info.state !== 'sleeping') continue;
+      const sleptAt = agent.info.sleptAt;
+      if (sleptAt === null || now - sleptAt < WORKER_SLEEP_RETENTION_MS) continue;
+      if (hasInFlightCall(agent.info.workstreamId)) continue;
+      const pending = agent.queue.filter((message) => message.ackedAt === null).length;
+      agent.info.state = 'failed';
+      agent.info.revivable = false;
+      agent.info.finishedAt = now;
+      agent.info.result = 'This worker was retired after more than one hour asleep.';
+      recount(agent);
+      prime.queue.push(newMessage(
+        agent, prime,
+        `[${agent.info.id} retired] This chat has been asleep for over an hour and cannot be resumed. ` +
+          `${pending} undelivered message${pending === 1 ? '' : 's'} remain in its durable history. ` +
+          'Reassess the work against the current repository state and spawn a fresh worker if needed.',
+      ));
+      expired++;
+    }
+    recount(prime);
+  }
+  if (expired > 0) changed();
+  return expired;
 }
 
 /**

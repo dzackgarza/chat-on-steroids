@@ -958,10 +958,10 @@ worker's frontend, but it never authenticates the worker's tool calls.
 → acknowledged by the next authenticated tool call. Offering on a result is **not** proof
 the model received it. Never delete a message merely because it was offered.
 
-**Workers sleep; they do not end.** `finish` reports a result and puts that worker to
-*sleep*: it keeps its conversation, keeps its history, and stays revivable. Sleeping frees
+**Worker sleep is short-lived.** `finish` reports a result and puts that worker to
+*sleep* for at most one hour: it keeps its conversation, keeps its history, and stays revivable during that window. Sleeping frees
 its worker slot, so `maxWorkers` counts working workers only — a prime can create a new worker
-while an older one sleeps and still wake that older worker afterwards. The same sleep happens without the tool call, from
+while an older one sleeps and still wake that older worker during that hour. Afterward the broker makes the worker terminal, preserves its undelivered inbox in durable history, and tells the prime to reassess and spawn fresh work. The same sleep happens without the tool call, from
 durable evidence that the worker stopped: a settled final assistant turn, or quiescence
 proven by `activeTurnId`/live-generating state rather than by a page heartbeat.
 
@@ -981,7 +981,7 @@ run in top-level fields, is migrated on restore and rewritten as version 7. Expl
 swarm clear is different from parking: it retires the worker conversation fences and discards the
 retained histories. Turning Multi-agent **off is not Clear**: it stops/withdraws live execution,
 parks the owner history, and keeps that history durable through disabled app restarts so re-enable
-can still show and revive the exact old worker conversations.
+can still show the exact old worker conversations; workers past the one-hour sleep window cannot be revived.
 
 **Waking is messaging.** `agents action=message` to a sleeping worker reserves a free slot
 inside the same durable barrier that queues the message, and only after that commit does the
