@@ -3691,6 +3691,11 @@ Consult when an instrument is about to change what you do. None of it is the job
   Exact-current-head behavioral acceptance is the current completion frontier, followed by
   final framework delivery. Publication remains independent of these completion nodes.
 
+**2026-10-13 09:43 UTC: the owner paused all managed workstreams, including the orchestrator.**
+The controller reported all 207 rows paused after the instruction. Do not resume, replace,
+dispatch to, or auto-advance any workstream until a later explicit owner instruction. This
+supersedes the active allocations below; keep their task frontiers as cold-resume context.
+
 Owner decisions as of 2026-09-27: `lean-categories` and `new-qual-site` are **paused** to give
 their capacity to sage and research. new-qual's `audited-deployment` checkpoint is deployed
 (087e3b595) and its audit rounds resume from it. sage's live `TODO.md` has reopened current-head

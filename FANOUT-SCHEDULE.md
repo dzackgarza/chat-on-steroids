@@ -22,7 +22,9 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
-**Current owner state (2026-10-12): the owner explicitly resumed `sage-indefinite-port` (`/home/dzack/gitclones/sage-indefinite-port`) and requested its completion under its existing repository DAG and acceptance rules.** The prior 2026-10-07 stop is superseded for this stream only. `research` and `lean-cas-dsl` remain active; every other paused stream remains paused. Use the existing sage-indefinite-port worker, not a competing repository worker.
+**Current owner state (2026-10-13 09:43 UTC): all managed workstreams are owner-paused, including the orchestrator.** The controller reported all 207 rows paused. Target active width is zero. Do not resume, replace, dispatch to, or auto-advance any row until a later explicit owner instruction. Earlier allocations below are cold-resume context only.
+
+**2026-10-12: the owner explicitly resumed `sage-indefinite-port` (`/home/dzack/gitclones/sage-indefinite-port`) and requested its completion under its existing repository DAG and acceptance rules.** The prior 2026-10-07 stop was superseded for this stream only. `research` and `lean-cas-dsl` were active; every other paused stream remained paused. Use the existing sage-indefinite-port worker, not a competing repository worker.
 
 **2026-10-09: the owner started `lean-cas-dsl`** (`/home/dzack/gitclones/lean-cas-dsl`, task: construct B0 per its `AGENTS.md`) beside `research`. The 2026-10-08 entry below still governs other owner-paused streams absent a later explicit resume.
 
