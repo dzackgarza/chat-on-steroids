@@ -15,7 +15,6 @@ from pathlib import Path
 ROOT = Path("/home/dzack/gitclones/chat-on-steroids")
 REPOS = {
     "research": Path("/home/dzack/research"),
-    "lean-cas-dsl": Path("/home/dzack/gitclones/lean-cas-dsl"),
     "sage-indefinite-port": Path("/home/dzack/gitclones/sage-indefinite-port"),
 }
 
@@ -216,7 +215,34 @@ def commits(repo: Path) -> list[dict[str, object]]:
     # Prefix each commit record separator so its following --numstat lines stay
     # in the same block.  A trailing separator splits metadata from its own diff.
     fmt = "%x1e%H%x1f%aI%x1f%an%x1f%ae%x1f%s"
-    raw = git(repo, "log", f"--format={fmt}", "--numstat")
+    # The dashboard already contains the full historical commit series. Rewalking
+    # all of it on every refresh makes `git log --numstat` block on thousands of
+    # historic tree reads (observed in D state under host I/O pressure). Reuse
+    # that series only when its recorded HEAD is an ancestor of the current HEAD;
+    # Git itself then supplies precisely the intervening commits. A rewritten
+    # history or a first run still obtains the full series from Git.
+    previous: list[dict[str, object]] = []
+    previous_head: str | None = None
+    dashboard = ROOT / "steward-dashboard/index.html"
+    try:
+        page = dashboard.read_text()
+        payload = page.split("window.__DATA__=", 1)[1].split(";window.__WINDOWS__=", 1)[0]
+        for entry in json.loads(payload)["repos"]:
+            if entry.get("path") != str(repo) or not isinstance(entry.get("commits"), list):
+                continue
+            candidate = entry.get("head")
+            if not isinstance(candidate, str) or not candidate:
+                break
+            if git(repo, "merge-base", candidate, "HEAD").strip() != git(repo, "rev-parse", candidate).strip():
+                break
+            previous_head = candidate
+            previous = entry["commits"]
+            break
+    except (OSError, KeyError, IndexError, ValueError, TypeError, RuntimeError):
+        # A missing/corrupt/rewritten old presentation is not Git authority.
+        previous_head = None
+        previous = []
+    raw = git(repo, "log", f"--format={fmt}", "--numstat", *([f"{previous_head}..HEAD"] if previous_head else []))
     out: list[dict[str, object]] = []
     for block in raw.split("\x1e"):
         block = block.strip("\n")
@@ -248,13 +274,25 @@ def commits(repo: Path) -> list[dict[str, object]]:
                 "deletions": deletions,
             }
         )
-    return out
+    return out + previous
 
 
 def recent_files(repo: Path, limit: int = 80) -> list[dict[str, object]]:
-    names = git(repo, "ls-files", "-co", "--exclude-standard").splitlines()
+    # Only source paths that can have changed substantively since recent history,
+    # plus current uncommitted work, belong in this activity panel. Iterating every
+    # tracked path and stat()ing it made one research dashboard refresh walk over
+    # 166,000 files during heavy swap/I/O pressure. Even an unchanged working tree
+    # then blocked the whole dashboard for minutes. File mtimes are telemetry, not
+    # acceptance evidence, and unrelated checkout/touch timestamps need not be
+    # presented as newly authored work.
+    names = set(git(repo, "log", "-n", "500", "--name-only", "--format=").splitlines())
+    names.update(git(repo, "diff", "--name-only").splitlines())
+    names.update(git(repo, "diff", "--cached", "--name-only").splitlines())
+    names.update(git(repo, "ls-files", "--others", "--exclude-standard").splitlines())
     rows: list[tuple[float, str]] = []
     for name in names:
+        if not name:
+            continue
         path = repo / name
         try:
             stamp = path.stat().st_mtime
@@ -659,7 +697,7 @@ def render(data: dict[str, object], out: Path) -> None:
   </div>
   <div class="tails">
     <div class="tail-panel"><div class="section-title">Most recent commits</div><div class="tail">{commits_html}</div></div>
-    <div class="tail-panel"><div class="section-title">Most recently written files</div><div class="tail">{files_html}</div></div>
+    <div class="tail-panel"><div class="section-title">Recent Git-touched source files</div><div class="tail">{files_html}</div></div>
   </div>
   <div class="progress">
     <div class="section-title">{html.escape(str(repo['progress_label']))}</div>
