@@ -683,6 +683,21 @@ state chat:
     echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
     exit 1
 
+# Read the controller's live workstream phases and schema gate before any managed dispatch.
+workstreams:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    token=$(cat "{{state_dir}}/local-token")
+    for port in 8765 8766 8767 8768 8769; do
+        if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
+            curl -fsS --connect-timeout 5 -m 45 "http://127.0.0.1:$port/workstreams" \
+                -H "authorization: Bearer $token" | jq '{connectorSchema, active: [.workstreams[] | select(.phase != "paused" and .phase != "blocked") | {id, phase, conversationId, lastActivity}], pausedCount: ([.workstreams[] | select(.phase == "paused")] | length)}'
+            exit 0
+        fi
+    done
+    echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
+    exit 1
+
 # POST one message to the running app's bridge. Empty chat means a fresh one.
 #
 # `mode` is what the send may do to a turn already running: `refuse` never interrupts one and
