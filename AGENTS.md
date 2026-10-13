@@ -506,9 +506,19 @@ workstream name registers and claims that repository/task identity, while `actio
 with an already-registered name claims it. Either action issues the `workstream_id`; `kernel.ts` validates it against
 `workstreams.ts` before execution, and the model retains one id per attached workstream and
 supplies it on every ordinary call. Unknown or superseded ids refuse execution with
-`WORKSTREAM_SETUP_REQUIRED`. The setup tool itself is completely unscoped: it needs no
-conversation key, lock, browser identity or prior claim, and never returns
-`BROWSER_IDENTITY_REQUIRED`. The opaque id is the only model-carried identity for
+`WORKSTREAM_SETUP_REQUIRED`. The setup tool needs no conversation key, browser identity or
+prior claim, and never returns `BROWSER_IDENTITY_REQUIRED`. It is not fully unscoped, and its
+two scoping rules are deliberate. First, the path is fixed for the life of a workstream and
+one path has at most one workstream: `start` on a path whose existing workstream is still
+registered is refused with `WORKSTREAM_PATH_TAKEN`, naming the holder and its phase — the
+refusal branches: claim a live holder with `action=continue` (expecting `WORKSTREAM_HELD`
+while its lease runs), but a parked holder is a note-to-owner, never a takeover for an
+unrelated task; either way a twice-refused caller retries its original call once before
+giving up, since registry state moves. Second, `continue` on a logical workstream an active holder's
+lease covers is refused with `WORKSTREAM_HELD` (holder's tool call or command running, or
+lease within `WORKSTREAM_LEASE_MS`) with the time it frees — the refusal prescribes one
+`sleep` then retry, at most two, and otherwise ending the turn with a one-line note. The
+opaque id is the only model-carried identity for
 steady-state calls; it is stripped from recorded tool arguments.
 
 Setup has no browser-provenance dependency. `continue` rotates the opaque claim token for the
@@ -539,15 +549,31 @@ reservation, and then kernel dispatch. A stale connector schema must be refreshe
 
 ### Workstream leases and automatic recovery
 
-`workstreams.ts` owns durable exclusive claims for every logical workstream. Two minutes
-without a tool call, message or worker-started turn permits immediate recovery/takeover; a
-running tool call holds the lease (the five-minute action ceiling bounds it) and thought-summary
-rows never renew it. Recovery on a page that is still reporting presses Stop and continues in
-place; only a page that has stopped reporting is reloaded first. A new claim
-invalidates the old opaque token and cancels pending recovery; retained terminals owned by
-the old claim are stopped and already-admitted old calls must settle before successor
-execution. Browser polls and replayed observations are not activity. The app's own
-continuation prompts cannot renew their own lease.
+`workstreams.ts` owns durable exclusive claims for every logical workstream. The lease frees
+only when the holder's own work has ended: an admitted tool call under the current claim holds
+it open, and so does a live terminal session (`exec_command` background process) the holder
+opened — a chat waiting on its own test is working, not stalled, so another chat cannot claim
+the workstream out from under running work (the zettlr-collaboration-fix incident). Both count
+only within the five-minute action ceiling; a process that outlives it protects nothing and is
+killable by the next takeover admit. Thought-summary rows and the `sleep` tool never renew the
+lease. Recovery on a page that is still reporting presses Stop and continues in place; only a
+page that has stopped reporting is reloaded first. A new claim invalidates the old opaque
+token and cancels pending recovery; already-admitted old calls and still-running old-claim
+terminals must settle (the successor gets WORKSTREAM_BUSY) or be killed once they outlive the
+ceiling, before successor execution. Browser polls and replayed observations are not activity.
+The app's own continuation prompts cannot renew their own lease.
+
+A dispossessed holder must never be instructed to sleep silently waiting to reclaim its own
+workstream: refusals tell it to end its turn with a one-line note of where its work stands
+(uncommitted edits, running commands), and the controller re-drives or replaces the holder.
+That rule forbids unbounded loop-waiting, not the bounded wait a fresh claimant's
+`WORKSTREAM_HELD` refusal itself prescribes (one `sleep`, retry `continue`, at most two,
+then the same one-line note). The `archiving` window is bounded by ARCHIVE_DEADLINE_MS (10 minutes): an archive ACK that
+never arrives retires the old frontend route and lets the workstream be claimed again, so
+`WORKSTREAM_UNAVAILABLE` can never become a permanent lockout. Every `blocked` row has the
+same bounded exit — after the deadline the controller reopens the replacement frontend
+itself — so no controller-side delivery failure can park a workstream indefinitely (the
+math-notes-app rows sat blocked for a week under the pre-2026-10-06 build).
 
 The bridge maintenance sweep owns bounded recovery: one same-chat continuation push gets a
 30-second recovery window. Renewed activity ends the episode; otherwise the old lock is
@@ -566,7 +592,10 @@ page-mounted instead of entering tabless sleep: the observed turn boundary is th
 signal, so hiding it behind quiescence/fallback wake would defeat immediate advancement.
 
 Local scripts use `/workstreams/start`, `/workstreams`, `/workstreams/pause`,
-`/workstreams/resume` and `/workstreams/replace` with the local sender credential. The paired extension alone services
+`/workstreams/resume`, `/workstreams/release` and `/workstreams/replace` with the local sender credential. `just release <id>` and
+`just release-all` are the recipes for it: they force a parked workstream (blocked, wedged in archiving, or
+stuck in recovery) into the controller's replacement path — a fresh chat with the saved project context —
+skipping `paused` rows and holders whose own work is still running. The paired extension alone services
 `/workstreams/archive`. Failed browser delivery or archival is visible as blocked work;
 do not claim a replacement was made from a queue receipt alone. See README for bodies.
 
@@ -3264,6 +3293,13 @@ Verbs, authenticated with `Authorization: Bearer $(cat ~/.config/chat-on-steroid
 (never print the token):
 
 - pause or resume: `POST /workstreams/pause` or `/workstreams/resume` with `{"id": "<workstream>"}`;
+- release one or all: `POST /workstreams/release` with `{"id": "<workstream>"}` or `{"all": true}` —
+  force parked workstreams into the controller's replacement path (`just release <id>` / `just release-all`);
+- retire/unbind/rename: no verb exists — `release` and `/workstreams/replace` both preserve the
+  row's name and workspace, and `WORKSTREAM_PATH_TAKEN` matches rows in any phase, so a dead
+  row still owns its path. Unbinding needs daemon-stop surgery: stop the app at `pendingTools`
+  zero, back up `~/.config/chat-on-steroids/state/workstreams.json`, edit, restart (the
+  restore path re-reads the file); sessions stay on disk under `sessions/` regardless;
 - send a chat a pointer: `just say <conversation-id> "<text>"`;
 - refresh ChatGPT's copy of the Core tool schema when `connectorSchema` is not `current`:
   `node steward-dashboard/tools/refresh-core-app.mjs <screenshot.png>` (the plugin page, then "…",

@@ -44,7 +44,7 @@
   // Bump whenever command-delivery / recorder behavior changes incompatibly with a live
   // already-injected content world. Extension reload does not necessarily destroy that world;
   // background recovery uses this number to decide whether reinjection must supersede it.
-  const RECORDER_VERSION = 15;
+  const RECORDER_VERSION = 16;
   const recorderHandle = {
     version: RECORDER_VERSION,
     healthy: () => false,
@@ -265,14 +265,15 @@
    *
    * Deliberately inert: every field is written after the fact by code that would behave
    * identically if this object did not exist. It is here so the popup can say "this chat
-   * is being observed, here is the last thing seen and the request id it carried" without
+   * is being observed, here is the last thing seen and the workstream its calls carried" without
    * anyone having to read the app's log to find out.
    */
   const observed = {
     events: 0,
     lastKind: null,
     lastAt: 0,
-    requestId: null,
+    /** The workstream lock the newest accepted page tool call carried. */
+    workstream: null,
     calls: 0,
     sends: 0,
     failures: 0,
@@ -289,39 +290,6 @@
      */
     blocked: null
   };
-
-  /**
-   * Where each ChatGPT request id got to, for the popup's pipeline view.
-   *
-   * A tool call has to survive four hand-offs before the app can label its row: this
-   * script has to read the request id off the page, the service worker has to accept and
-   * journal the observation carrying it, the app has to receive that observation, and the
-   * app has to resolve the id to this conversation. Until now a failure at any one of them
-   * looked identical from the browser — the row simply never got relabelled — so the only
-   * way to tell them apart was to read the app's log beside the browser's. Each stage
-   * stamps its own time here as it happens, which is enough to name the hand-off that did
-   * not complete.
-   *
-   * Inert by construction: ids and timestamps only, written after the fact by code that
-   * would behave identically if this map did not exist.
-   */
-  const TRACE_MAX = 12;
-  const trace = new Map();
-
-  function traceStage(requestId, stage, value) {
-    if (!requestId) return;
-    let row = trace.get(requestId);
-    if (!row) {
-      if (trace.size >= TRACE_MAX) trace.delete(trace.keys().next().value);
-      row = { requestId, tool: null, read: 0, sent: 0, app: null, appAt: 0 };
-      trace.set(requestId, row);
-    }
-    if (stage === 'tool') row.tool = value || row.tool;
-    else if (stage === 'app') {
-      row.app = typeof value === 'string' ? value : 'unattributed';
-      row.appAt = Date.now();
-    } else if (!row[stage]) row[stage] = Date.now();
-  }
 
   let conversationId = null;
   let agent = null;
@@ -440,8 +408,6 @@
   const pageToolsReported = new Map();
 
   let generating = false;
-  let pendingUserNode = null;
-  let generationUserNode = null;
   /**
    * When the stop button was first found missing while a turn was open. 0 while it is there.
    *
@@ -694,8 +660,6 @@
   let since = 0;
   let entries = [];
   let streamEntries = [];
-  /** Exact request id -> one durable local turn, null when the retained stream conflicts. */
-  const streamRequestTurnOwners = new Map();
   let pulling = false;
 
   /**
@@ -1061,10 +1025,6 @@
       observed.sends += 1;
       if (!reply || reply.ok !== true) observed.failures += 1;
       if (reply && reply.ok === true && (reply.durable === true || reply.pending === 0)) {
-        for (const entry of batch) {
-          if (entry?.event?.kind !== 'tool_evidence') continue;
-          for (const call of entry.event.calls || []) traceStage(call && call.requestId, 'sent');
-        }
         const sent = new Set(batch);
         for (let index = queue.length - 1; index >= 0; index--) {
           if (sent.has(queue[index])) removeQueueEntry(index);
@@ -1250,7 +1210,6 @@
     userAnchorByMessage.clear();
     entries = [];
     streamEntries = [];
-    streamRequestTurnOwners.clear();
     since = 0;
     job = null;
     pendingTools = 0;
@@ -1289,8 +1248,6 @@
     objectiveError = '';
     removeStagePanel();
     generating = false;
-    pendingUserNode = null;
-    generationUserNode = null;
     quietSince = 0;
     quietTurn = null;
     quietOutcome = null;
@@ -1308,21 +1265,12 @@
     stallReported = false;
     stallRestartAt = 0;
     fiberTerminalMessageId = null;
-    // The settle window names a turn in the conversation being left behind. Carrying it
-    // across would re-read chat B's tree and attribute what it finds to chat A's turn.
-    fiberSettleUntil = 0;
-    fiberSettled = null;
     pageToolsReported.clear();
     callsReported.clear();
-    requestOwnersConfirmed.clear();
-    requestOwnersPending.clear();
-    requestOwnerRetryAt.clear();
-    requestOwnerAttempts.clear();
     messagesReported.clear();
     userAuthoredTimesReported.clear();
-    // Fiber descriptors and per-call request evidence belong to the conversation whose
-    // React tree they were read from. Never carry that cache across an SPA navigation.
-    fiberRows = new Map();
+    // Fiber descriptors belong to the conversation whose React tree they were read from.
+    // Never carry that cache across an SPA navigation.
     fiberTurns = new Map();
     fiberScanToken = null;
     fiberPresent = false;
@@ -1506,7 +1454,7 @@
     // that immediately. The live 2026-08-25 failure proved that a visibly final response can
     // occasionally lose that bit while the page still mounts its completed-message action row.
     // Use that only as *corroboration*, never as a replacement for Fiber: exact turn ownership,
-    // public prose, no unanswered connector call, a fresh completed-message action, and the
+    // public prose, a fresh completed-message action, and the
     // existing Stop-gone settle window must all agree. This keeps the old multi-second tool-phase
     // Stop dropout open, including its transient data-interrupted marker.
     if (fiberPresent && answerText(turn).length > 0 && fiberQuietTerminal(turn)) {
@@ -1532,7 +1480,6 @@
     const ownedNode = genNode && nodes.includes(genNode) ? genNode : null;
     const fiber = ownedNode ? fiberTurnForNode(ownedNode) : fiberTurnFor(turn);
     if (!fiber) return null;
-    if ((fiber.calls || []).some((call) => !call || call.answered !== true)) return null;
 
     // A single ChatGPT response can grow across several sibling <section> elements. genNode is
     // intentionally pinned to the first section this local generation touched, and quietTurn is
@@ -1647,7 +1594,6 @@
         if (seenMessages.has(key)) continue;
         markSeen(key);
         newUserMessage = true;
-        pendingUserNode = message.node;
         emit({
           kind: 'user_message',
           text: message.text,
@@ -1702,23 +1648,6 @@
     // that snapshot as `final:true` made a reload recovery synthesize a *completed* turn when
     // the explicit interrupted end was lost. Their prose is already captured as progress;
     // only a completed generation publishes a final answer.
-    // Open the request-id settle window for every outcome, not only a completed one. The
-    // publish below is about prose and stays gated; ownership evidence is not prose, and an
-    // interrupted or failed turn is exactly the turn whose refused tool call most needs to be
-    // placed in the chat that made it.
-    if (endedTurnId) {
-      // `pageTurn` is the live DOM node set, not an id. ChatGPT's virtualized renderer can
-      // omit `data-turn-id` entirely, and the post-turn settle window still has to be able
-      // to find this generation's Fiber descriptor; the node carries fiber.js's own
-      // `data-clf-fiber-turn` stamp, which is present whether or not the page id is.
-      fiberSettled = {
-        pageTurnId: ended?.id || null,
-        localTurnId: endedTurnId,
-        pageTurn: ended || null,
-        terminalMessageId: corroboratedTerminalMessageId || null
-      };
-      fiberSettleUntil = Date.now() + FIBER_SETTLE_MS;
-    }
     if (endedTurnId && publishFinal && result.outcome === 'completed') {
       void refreshFiber({
         pageTurnId: ended?.id || null,
@@ -1894,8 +1823,6 @@
 
     if (nowGenerating && !generating && !fiberTerminalMessageId && !resumeIdentityPending) {
       generating = true;
-      generationUserNode = pendingUserNode;
-      pendingUserNode = null;
       quietSince = 0;
       quietTurn = null;
       quietOutcome = null;
@@ -1980,12 +1907,6 @@
     // order things happened in.
     if (turn) CLF_DOM.markProgress(turn);
 
-    // Request ownership is a page-model fact, not a rendered-row fact. React can leave the
-    // stop/generation state live while the assistant turn DOM is briefly absent or empty;
-    // that was enough in 1.7.9 to miss metadata.request_id and dump otherwise valid prime /
-    // worker calls into Unattributed. Scan whenever a generation is live. If ChatGPT's
-    // message model is not available yet the helper simply returns no evidence, and the next
-    // observation tries again while the exact MCP request waits in the recorder grace window.
     // A refused `bind` is not a decision, it is an outage — a sleeping worker, or a tab whose
     // ownership was wrongly retired. Keep asking until the worker agrees, throttled so a real
     // outage costs one message every few seconds rather than one per tick.
@@ -2001,20 +1922,6 @@
       void refreshFiber({
         pageTurnId: terminalTurn?.id || null,
         terminalProbe: fiberTerminalMessageId
-      });
-    } else if (fiberSettleUntil > Date.now()) {
-      // ChatGPT does not always have `metadata.request_id` on a connector request by the time
-      // the turn it belongs to ends — sometimes it appears seconds later, sometimes only when
-      // the conversation is next synced. Until 1.8.8 the only reader of that field ran while
-      // `generating` was true, so an id that landed a second after the stop button vanished
-      // was never read at all: the call stayed in Unattributed activity until the *next* turn
-      // started, or the user reloaded. Keep scanning after the turn, but only while a call is
-      // actually still missing its id, and never past the ceiling — see `fiberSettleUntil`.
-      // Flushed straight away rather than on the idle 10-second cadence: the app is usually
-      // already blocked waiting for exactly this id, and the wait is measured in seconds.
-      void refreshFiber(fiberSettled).then(() => {
-        if (!alive || !sameChat()) return;
-        void flush();
       });
     }
 
@@ -2534,20 +2441,15 @@
   // ----------------------------------------------------------- fiber evidence
 
   /**
-   * What ChatGPT's own client state says about the connector rows on this page.
+   * What ChatGPT's own view model says about the newest exchanges on this page.
    *
    * Supplied by extension/fiber.js, which is the only code we run in the page's own
-   * JavaScript context. Two things come from here that the DOM simply does not carry:
-   * the tool a collapsed row actually ran, and how many further calls that one row is
-   * standing in for.
+   * JavaScript context. It reports each exchange's messages, activity headlines and this
+   * app's connector calls, none of which the collapsed DOM carries.
    *
    * **This is untrusted input.** The page can post exactly these messages itself, so a
-   * descriptor is never proof that a call happened — it may only change how a row that is
-   * *already on the page* is labelled. It must never reach the app: nothing here writes a
-   * recorded event, decides an agent's identity, or counts as evidence that a tool call in
-   * the app belongs to this chat. `connectorRows()` remains the only thing that vouches
-   * for that, and it reads the DOM. Everything below therefore re-validates shape, type
-   * and length rather than trusting that our own helper is what replied.
+   * descriptor is never proof that a call happened. Everything below therefore re-validates
+   * shape, type and length rather than trusting that our own helper is what replied.
    */
   const FIBER_ASK = 'clf-fiber-ask';
   const FIBER_REPLY = 'clf-fiber-reply';
@@ -2558,9 +2460,11 @@
   // 6: adds request-id ownership evidence used by deterministic MCP attribution.
   // 7: keys streaming commentary and native activity by ChatGPT thought/message identity,
   //    so React row replacement, raw text UUID rotation and refresh cannot mint duplicates.
-  const FIBER_VERSION = 11;
+  // 11: reads ChatGPT's `entries[].turn.items` view model.
+  // 12: each call carries its workstream lock; prose carries its rendered HTML; request ids,
+  //     row descriptors and the per-call answered bit are gone.
+  const FIBER_VERSION = 12;
   const FIBER_TIMEOUT_MS = 1500;
-  const FIBER_MAX_ROWS = 400;
   /** Assistant turns whose per-call evidence is accepted from one scan. */
   const FIBER_MAX_TURNS = 6;
   /** Connector requests accepted for one turn. */
@@ -2568,14 +2472,14 @@
   const FIBER_MAX_MESSAGES = 200;
   const FIBER_MAX_ACTIVITIES = 200;
   const TOOL_NAME = /^[a-z0-9_.-]{1,64}$/i;
+  /** A workstream lock as the app issues it. */
+  const WORKSTREAM_LOCK = /^wl_[A-Za-z0-9_-]{43}$/;
   const FIBER_BUSY_CAPTIONS = new Set(['thinking', 'thinking about it', 'reasoning', 'working', 'loading', 'done', 'called tool']);
   const FIBER_TIMER_CAPTION = /^(?:worked|thought|reasoned|thinking)\s+for\s+[\d.,]+\s*(?:s|m|h|sec|secs|seconds?|min|mins|minutes?|hours?)\b/;
 
-  /** Descriptors from the last successful scan, keyed by the stamp on their row. */
-  let fiberRows = new Map();
   /** Per-turn descriptors from the last scan, keyed by the ephemeral stamp on its section. */
   let fiberTurns = new Map();
-  /** Exact scan frame those two descriptor maps came from. */
+  /** Exact scan frame that descriptor map came from. */
   let fiberScanToken = null;
   let fiberAsking = null;
   /** Off until the helper answers once, so a browser without it behaves exactly as before. */
@@ -2584,34 +2488,10 @@
   let fiberRepairAt = -Infinity;
   let fiberRepairing = null;
   /**
-   * How long a finished turn keeps being re-read for request ids that were not there yet.
-   *
-   * `metadata.request_id` is the only ownership evidence there is, and ChatGPT publishes it
-   * on its own schedule — usually while the turn runs, sometimes seconds after it ends. The
-   * window is a ceiling, not a schedule: scanning stops the moment every call on screen has
-   * an id, so a normal turn pays nothing for it. Ninety seconds is chosen against the live
-   * failures, where the id landed twenty seconds after the turn completed and, in one case,
-   * only when the page was reloaded two minutes later; anything unresolved by then is not
-   * coming without a reload, and the deterministic repair pass will place it if it ever does.
-   */
-  const FIBER_SETTLE_MS = 90_000;
-  let fiberSettleUntil = 0;
-  /** The turn identity to attribute a settled-window scan to, from finishGeneration. */
-  let fiberSettled = null;
-  /**
    * Message ids whose per-call evidence has already been reported. Every scan re-reads the
    * whole turn, so without this the same request would be re-sent on every poll.
    */
   const callsReported = new Map();
-  /** Exact request ids the app has ACKed as owned by a concrete conversation. */
-  const requestOwnersConfirmed = new Map();
-  /** One in-flight ownership handshake per conversation/request id. */
-  const requestOwnersPending = new Set();
-  /** Failed handshakes back off briefly instead of retrying on every Fiber mutation. */
-  const requestOwnerRetryAt = new Map();
-  /** Failed handshake attempts per owner/request pair, so a permanently unplaceable id
-   *  cannot turn refreshFiber() into a 2-second retry pump for the life of the tab. */
-  const requestOwnerAttempts = new Map();
   /** Last canonical browser snapshot sent for each ChatGPT assistant message id. */
   const messagesReported = new Map();
   /** ChatGPT-authored create_time already emitted for each stable user-message occurrence. */
@@ -2624,48 +2504,19 @@
     return FIBER_BUSY_CAPTIONS.has(plain) || FIBER_TIMER_CAPTION.test(plain);
   }
 
-  /** One descriptor, rebuilt field by field. Anything unexpected makes the row null. */
-  function readDescriptor(raw) {
-    if (!raw || typeof raw !== 'object' || raw.v !== FIBER_VERSION) return null;
-    const index = raw.index;
-    if (!Number.isInteger(index) || index < 0 || index >= FIBER_MAX_ROWS) return null;
-    // Checked, never capped. Everything else here is display text where a truncation is
-    // harmless, but the tool name is an identity: shortening an over-long one until it
-    // fits would turn a value that failed validation into one that passes it.
-    const tool = typeof raw.tool === 'string' && raw.tool.length > 0 ? raw.tool : null;
-    if (tool !== null && !TOOL_NAME.test(tool)) return null;
-    const hidden = Number.isInteger(raw.hidden) ? Math.max(0, Math.min(999, raw.hidden)) : 0;
-    const localCount = Number.isInteger(raw.localCount) ? Math.max(0, Math.min(999, raw.localCount)) : null;
-    return {
-      index,
-      tool,
-      path: cap(raw.path, 200),
-      app: cap(raw.app, 200),
-      resource: cap(raw.resource, 200),
-      messageId: cap(raw.messageId, 200),
-      turnId: cap(raw.turnId, 200),
-      conversationId: cap(raw.conversationId, 200),
-      createTime: typeof raw.createTime === 'number' && Number.isFinite(raw.createTime) ? raw.createTime : null,
-      hidden,
-      localCount,
-      answered: raw.answered === true
-    };
-  }
-
   /**
    * One turn's per-call evidence, rebuilt field by field.
    *
-   * Same trust posture as readDescriptor, and it matters more here: this evidence decides
-   * which *session* a recorded call is written into, so a page that could forge it could
+   * This evidence can bind a workstream to this chat, so a page that could forge it could
    * pull another chat's work into this one. Nothing is copied through — the tool name is
    * checked against its pattern and never trimmed to fit, every other field is rebuilt with
    * its own bound, and a message id reported twice is dropped rather than resolved, because
    * two calls sharing one identity is a contradiction and picking one would spend the same
    * evidence twice.
    *
-   * What this may do is still bounded on the far side: it can say which conversation a call
-   * this app already ran belongs to. It never writes an event, never names an agent, and
-   * carries no argument value.
+   * What this may do is still bounded on the far side: a lock binds only while it is the
+   * workstream's current lock, which this chat can know only because the app issued it here.
+   * It never writes an event and never names an agent.
    */
   function readTurnCalls(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -2690,37 +2541,11 @@
         messageId,
         tool,
         order: Number.isInteger(entry.order) ? Math.max(0, Math.min(FIBER_MAX_CALLS, entry.order)) : calls.length,
-        answered: entry.answered === true,
-        // ChatGPT's own id for the request, and its own creation time. The id is what lets
-        // the app place the call in the chat that issued it; this script's own stamp is a
-        // poll tick and cannot.
-        requestId: cap(entry.requestId, 100) || null,
-        createTime: typeof entry.createTime === 'number' && isFinite(entry.createTime) ? entry.createTime : null
+        workstream:
+          typeof entry.workstream === 'string' && WORKSTREAM_LOCK.test(entry.workstream) ? entry.workstream : null
       });
     }
     const kept = calls.filter((call) => !duplicated.has(call.messageId));
-
-    // Bare request ids: every `metadata.request_id` in the turn, with no tool name attached.
-    //
-    // `calls` above is the *renderable* view and needs a tool name to be one; this is the
-    // attribution view and needs nothing but the id. ChatGPT stamps the id on the plain
-    // assistant message as soon as a connector request is issued and only materializes the
-    // `api_tool` row once its safety check clears — up to a minute later, long past the app's
-    // fifteen second evidence window. Those ids are readable the entire time, and every one of
-    // them belongs to whatever conversation this document is pinned to.
-    const requests = [];
-    const requestSeen = new Set();
-    for (const entry of (Array.isArray(raw.requests) ? raw.requests : []).slice(0, FIBER_MAX_CALLS)) {
-      if (!entry || typeof entry !== 'object') continue;
-      const requestId = cap(entry.requestId, 100);
-      if (!requestId || requestSeen.has(requestId)) continue;
-      requestSeen.add(requestId);
-      requests.push({
-        requestId,
-        messageId: cap(entry.messageId, 200) || null,
-        createTime: typeof entry.createTime === 'number' && isFinite(entry.createTime) ? entry.createTime : null
-      });
-    }
 
     const messages = [];
     const messageIndex = new Map();
@@ -2795,7 +2620,7 @@
       if (activities[priorAt].label !== label) conflictingActivities.add(messageId);
     }
     const keptActivities = activities.filter((activity) => !conflictingActivities.has(activity.messageId));
-    if (kept.length === 0 && requests.length === 0 && keptMessages.length === 0 && keptActivities.length === 0) {
+    if (kept.length === 0 && keptMessages.length === 0 && keptActivities.length === 0) {
       return null;
     }
     return {
@@ -2805,7 +2630,6 @@
       conversationConflict: raw.conversationConflict === true,
       endMessageId: cap(raw.endMessageId, 200),
       calls: kept,
-      requests,
       messages: keptMessages,
       activities: keptActivities
     };
@@ -2823,12 +2647,12 @@
     const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     fiberAsking = new Promise((resolve) => {
       let done = false;
-      const finish = (rows) => {
+      const finish = (answer) => {
         if (done) return;
         done = true;
         window.removeEventListener('message', onMessage);
         fiberAsking = null;
-        resolve(rows);
+        resolve(answer);
       };
       const onMessage = (event) => {
         if (event.source !== window) return;
@@ -2847,17 +2671,7 @@
             if (turn) turns.push(turn);
           }
         }
-        if (!Array.isArray(data.rows)) return finish({ rows: new Map(), turns, scanToken: data.scanToken });
-        const rows = new Map();
-        for (const raw of data.rows.slice(0, FIBER_MAX_ROWS)) {
-          const row = readDescriptor(raw);
-          // A duplicated index is a contradiction; keep neither rather than pick one.
-          if (!row) continue;
-          if (rows.has(row.index)) rows.set(row.index, null);
-          else rows.set(row.index, row);
-        }
-        for (const [index, row] of rows) if (row === null) rows.delete(index);
-        finish({ rows, turns, scanToken: data.scanToken });
+        finish({ turns, scanToken: data.scanToken });
       };
       window.addEventListener('message', onMessage);
       setTimeout(() => finish(null), FIBER_TIMEOUT_MS);
@@ -2871,72 +2685,11 @@
   }
 
   /**
-   * Refreshes the cache. `null` means no answer — keep whatever was last known.
-   *
-   * The per-call evidence is reported onwards from here rather than being kept for the
-   * renderer's own use. It is the only thing that can tell the app a call it just ran
-   * belongs to this chat when ChatGPT drew no row for it, and reporting is cumulative and
-   * idempotent by message id, so repeating a turn's evidence on every scan costs nothing.
-   */
-  /**
-   * Which local generation a *settled* website turn belongs to, proved by its request id.
-   *
-   * Only the turn this document is currently generating gets its local id from the live
-   * lifecycle. Everything else used to be recorded with no turn at all, and that is a real
-   * gap rather than a tidy conservatism: ChatGPT does not always expose a turn's thinking
-   * headline in its message model while the turn is running, so the headline is first seen
-   * long afterwards — in session `2026-08-21-ce135bff`, three and a half minutes and one page
-   * load after the turn it describes. A row with no turn belongs to no group, and a group
-   * missing a row ChatGPT is visibly showing cannot be proven complete, so one late headline
-   * dropped that entire response back to ChatGPT's native rendering.
-   *
-   * The join is ChatGPT's own `metadata.request_id` on the turn's connector calls, matched
-   * against the calls the app has already recorded under a durable local turn. No time, DOM
-   * position or "nearest turn" guess takes part: the answer is a single turn id or nothing.
-   */
-  function settledTurnOwner(turn) {
-    const requests = new Set();
-    for (const call of (turn && turn.calls) || []) if (call && call.requestId) requests.add(call.requestId);
-    if (requests.size !== 1) return null;
-    const requestId = requests.values().next().value;
-    return streamRequestTurnOwners.get(requestId) || null;
-  }
-
-  /**
-   * Makes request ownership an explicit acknowledged operation for the current live turn.
-   *
-   * Fresh-chat ordering is the reason this exists. Live 2026-08-21, the real chat session
-   * `2026-08-21-e24b18f3` existed before the first call, while normalized request
-   * `77186fb4-bdda-4849-8cd7-879bb08a1617` still never reached the correlation registry and
-   * every call fell into `2026-08-21-9d5892a4` (Unattributed activity). ChatGPT can expose a
-   * connector request and its metadata.request_id while its internal clientThreadId still names the provisional
-   * thread, then assign the real /c/<conversation-id> a moment later. Transcript delivery can
-   * safely wait for that convergence; MCP attribution cannot, because the recorder has a finite
-   * evidence window. Once both facts are simultaneously true in this document — a concrete
-   * current route and the request id inside the assistant section this local generation owns —
-   * send the exact pair to the app and require a read-back ACK before considering it placed.
-   *
-   * This is intentionally live-turn-only. Historical/reloaded turns keep the stricter Fiber
-   * conversation cross-check, so a stale mounted object from chat A can never be promoted into
-   * chat B merely because B is the route currently open.
-   */
-  function backOffRequestOwner(key) {
-    const attempts = (requestOwnerAttempts.get(key) || 0) + 1;
-    requestOwnerAttempts.set(key, attempts);
-    requestOwnerRetryAt.set(key, Date.now() + Math.min(2000 * attempts, 60000));
-  }
-
-  /**
    * The Fiber turn descriptor for a rendered page turn, resolved through fiber.js's own
    * scan stamp rather than through ChatGPT's `data-turn-id`.
    *
-   * `data-turn-id` is presentation metadata and the current virtualized renderer omits it
-   * from perfectly readable assistant sections (see the note in fiber.js turnsOf). Every
-   * ownership decision keyed on it therefore evaluates, silently, to `no owned turn` —
-   * which is exactly how a whole chat's exact request ids landed in `Unattributed
-   * activity` while the popup showed them as read: with no owned turn there is no
-   * request-id -> conversation handshake, and the Fiber-conversation fallback is then
-   * stamped onto every call and rejected by the recorder as a disagreement.
+   * `data-turn-id` is presentation metadata that the current renderer does not publish, so
+   * an ownership decision keyed on it would always find no owned turn.
    *
    * fiber.js marks each section it scanned with `data-clf-fiber-turn` = `scanToken:index`,
    * so the stamp is an exact, non-positional DOM<->Fiber anchor tied to one descriptor frame
@@ -2974,51 +2727,13 @@
     return found;
   }
 
-  async function confirmLiveRequestOwners(calls, ownerConversation) {
-    if (!Array.isArray(calls) || calls.length === 0 || !ownerConversation) return;
-    const byRequest = new Map();
-    for (const call of calls) {
-      if (!call || !call.requestId || byRequest.has(call.requestId)) continue;
-      if (requestOwnersConfirmed.get(call.requestId) === ownerConversation) continue;
-      const key = `${ownerConversation}\u0000${call.requestId}`;
-      if (requestOwnersPending.has(key) || (requestOwnerRetryAt.get(key) || 0) > Date.now()) continue;
-      byRequest.set(call.requestId, call);
-      requestOwnersPending.add(key);
-    }
-    const batch = [...byRequest.values()];
-    if (batch.length === 0) return;
-    try {
-      const reply = await ask({
-        type: 'correlate',
-        conversationId: ownerConversation,
-        calls: batch
-      });
-      const data = reply && reply.ok === true && reply.data && typeof reply.data === 'object' ? reply.data : null;
-      const confirmed = new Set(data && Array.isArray(data.confirmed) ? data.confirmed : []);
-      for (const call of batch) {
-        const key = `${ownerConversation}\u0000${call.requestId}`;
-        // Judge each request id on its own read-back. This additionally required
-        // `data.complete === true`, which is a *batch* verdict: a single id the app could
-        // not place (a sticky conflict, or a call it has not ingested yet) threw away the
-        // confirmation of every other id in the same message and re-queued them all.
-        if (!data || data.conversationId !== ownerConversation || !confirmed.has(call.requestId)) {
-          backOffRequestOwner(key);
-          continue;
-        }
-        requestOwnerRetryAt.delete(key);
-        requestOwnerAttempts.delete(key);
-        requestOwnersConfirmed.set(call.requestId, ownerConversation);
-        // `app` becomes green only after the app has read the exact mapping back. This is a
-        // stronger diagnostic than the old "Fiber parser saw an id" indicator.
-        traceStage(call.requestId, 'sent');
-        traceStage(call.requestId, 'app', 'request_id');
-      }
-    } catch {
-      for (const call of batch) backOffRequestOwner(`${ownerConversation}\u0000${call.requestId}`);
-    } finally {
-      for (const call of batch) requestOwnersPending.delete(`${ownerConversation}\u0000${call.requestId}`);
-    }
-  }
+  /**
+   * Refreshes the cache. `null` means no answer — keep whatever was last known.
+   *
+   * The per-call evidence is reported onwards from here. Its workstream locks bind the
+   * workstreams this chat works on to this chat, and reporting is cumulative and idempotent
+   * by message id, so repeating a turn's evidence on every scan costs nothing.
+   */
   async function refreshFiber(settled = null) {
     // A bound chat can briefly lose its /c/<id> route during React/router churn, and a real
     // navigation to a fresh composer has the exact same pathname until ChatGPT assigns the
@@ -3055,7 +2770,6 @@
         // definitive success/failure for repair_fiber.
         if (repair && (repair.ok === true || repair.error !== 'unknown_message')) {
           fiberPresent = false;
-          fiberRows = new Map();
           fiberTurns = new Map();
           fiberScanToken = null;
         }
@@ -3091,49 +2805,14 @@
         }
       }
     }
-    // A connector request first appears on the user-message branch that opened the generation.
-    // ChatGPT can also mount the response section before it mounts the Stop control, which puts
-    // that section in the generation baseline. Both sections have exact scan stamps. Use their
-    // descriptors only for the app-confirmed request-id handshake; neither acquires recorder
-    // ownership through this path.
-    let requestOwnerTurn = ownedPageTurn;
-    if (!requestOwnerTurn && generationUserNode && (generating || settled)) {
-      const userTurn = turnForNode(generationUserNode);
-      const userDescriptor = stampedFiberTurn(userTurn, answer.turns, answer.scanToken);
-      const userConversation = userDescriptor
-        ? concreteConversation(userDescriptor.conversationId)
-        : null;
-      if (userDescriptor && !userConversation && userDescriptor.conversationConflict !== true) {
-        requestOwnerTurn = userDescriptor;
-      }
-    }
-    if (!requestOwnerTurn && generating) {
-      const visibleResponse = currentAssistantTurn();
-      const visibleDescriptor = stampedFiberTurn(visibleResponse, answer.turns, answer.scanToken);
-      const visibleConversation = visibleDescriptor
-        ? concreteConversation(visibleDescriptor.conversationId)
-        : null;
-      if (visibleDescriptor && !visibleConversation && visibleDescriptor.conversationConflict !== true) {
-        requestOwnerTurn = visibleDescriptor;
-      }
-    }
     if (askedConversation) {
-      // Validate ownership per Fiber object, not per scan.
-      //
-      // Live failure, 2026-08-21: the popup showed the exact request id for every call in this
-      // chat, yet all of those calls landed in `Unattributed activity`. readTurnCalls() had in
-      // fact read the ids correctly. The loss happened here: one stale React object left mounted
-      // from another conversation made this function reject the *entire* Fiber answer, including
-      // the current conversation's exact request messages. The recorder then waited its bounded
-      // request-id grace period for evidence we had deliberately thrown away and filed the call
-      // as unattributed. A reload/navigation artifact was therefore stronger than exact identity.
+      // Validate ownership per Fiber object, not per scan: one stale React object left mounted
+      // from another conversation must not cost the current conversation its evidence.
       //
       // The URL is already pinned across the async round-trip above. A descriptor carrying a
       // different concrete conversation id is individually stale and is discarded, with one
-      // narrow exception: the newest turn already bound to this document's live generation may
-      // still carry the fresh chat's provisional client thread. That turn is retained only so
-      // confirmLiveRequestOwners() can perform the explicit request-id -> real-route handshake;
-      // historical mismatches are still discarded. An absent/non-concrete id keeps the old
+      // narrow exception: the turn this document's own generation owns may still carry a
+      // fresh chat's provisional client thread. An absent/non-concrete id keeps the
       // conservative behaviour. No clock, active-tab or tool-name fallback enters the decision.
       answer = {
         scanToken: answer.scanToken,
@@ -3141,30 +2820,15 @@
           if (turn?.conversationConflict === true && turn !== ownedPageTurn) return false;
           const pageConversation = concreteConversation(turn.conversationId);
           return !pageConversation || pageConversation === askedConversation || turn === ownedPageTurn;
-        }),
-        rows: new Map(
-          [...answer.rows].filter(([, row]) => {
-            const pageConversation = concreteConversation(row.conversationId);
-            return !pageConversation || pageConversation === askedConversation;
-          })
-        )
+        })
       };
     }
     // Diagnostics begin only after the scan has passed route/epoch validation and stale
-    // cross-conversation objects have been removed. readTurnCalls() is a validator, not proof
-    // that an object belongs to this tab: marking `read` while parsing was the reason the popup
-    // could show a request id as picked up even though refreshFiber() then discarded it before
-    // the app ever saw it.
+    // cross-conversation objects have been removed.
     const acceptedCalls = answer.turns.flatMap((turn) => turn.calls || []);
     observed.calls = acceptedCalls.length;
-    for (const call of acceptedCalls) {
-      if (!call.requestId) continue;
-      observed.requestId = call.requestId;
-      traceStage(call.requestId, 'read');
-      traceStage(call.requestId, 'tool', call.tool);
-    }
+    for (const call of acceptedCalls) if (call.workstream) observed.workstream = call.workstream;
     fiberPresent = true;
-    fiberRows = answer.rows;
     fiberScanToken = answer.scanToken;
     fiberTurns = new Map();
     for (const turn of answer.turns) {
@@ -3181,57 +2845,6 @@
     const activeLocalTurnId = generating ? turnId : settled?.localTurnId || null;
     const activeTurnIndex =
       ownedPageTurn && activeLocalTurnId ? answer.turns.indexOf(ownedPageTurn) : -1;
-    if (askedConversation) {
-      // Ownership evidence is no longer gated on `activeTurnIndex`.
-      //
-      // Live failure, 2026-08-21: `activeTurnIndex` required a non-null page turn id, so on
-      // a virtualized render it stayed -1 for the whole conversation and this handshake —
-      // the only path that puts a request id into the app's durable correlation registry —
-      // simply never ran. Every call in the chat then fell to `Unattributed activity`.
-      //
-      // The handshake's own safety does not come from the local turn binding; it comes from
-      // `ownerConversation` being this document's pinned concrete route and from the app
-      // reading the exact pair back. So confirm every call whose Fiber descriptor names
-      // exactly this conversation, plus the one turn this document owns (which may still
-      // carry a fresh chat's provisional client thread). A descriptor naming a *different*
-      // concrete conversation is still never promoted. One batched message per scan.
-      //
-      // Both views of the turn feed it: the labelled connector rows, and the bare
-      // `metadata.request_id` sightings that have no row yet. The tool name is not part of
-      // the join — the app maps request id -> conversation and nothing else — so requiring
-      // one only delayed the mapping until ChatGPT's safety check released the `api_tool`
-      // message, which is precisely the window the app spends deciding the call is
-      // unattributed. Labelled rows go first so the id carries its tool when both exist.
-      const ownerCalls = [];
-      const ownerSeen = new Set();
-      for (const source of ['calls', 'requests']) {
-        for (const turn of answer.turns) {
-          const pageConversation = concreteConversation(turn.conversationId);
-          if (turn !== requestOwnerTurn && pageConversation !== askedConversation) continue;
-          for (const call of turn[source] || []) {
-            if (!call || !call.requestId || ownerSeen.has(call.requestId)) continue;
-            ownerSeen.add(call.requestId);
-            ownerCalls.push(call);
-          }
-        }
-      }
-      const ownerConfirmation = confirmLiveRequestOwners(ownerCalls, askedConversation);
-      // `ownedPageTurn` has one deliberately narrow exception to the ordinary conversation
-      // filter: on a fresh chat, the real /c/<id> can exist while that live turn's React branch
-      // still carries a provisional client thread id. The explicit /correlations handshake is
-      // what distinguishes that harmless race from a stale Fiber object belonging to another
-      // chat. Do not let the ordinary fire-and-forget tool_evidence path race ahead of that
-      // verdict: it would re-assert the URL conversation, bypass a rejected handshake and turn
-      // an already-proven request owner into a sticky conflict.
-      const ownedPageConversation = ownedPageTurn ? concreteConversation(ownedPageTurn.conversationId) : null;
-      if (ownedPageTurn && ownedPageConversation && ownedPageConversation !== askedConversation) {
-        await ownerConfirmation;
-        // The ownership read-back added a new async boundary to this scan. Re-prove the same
-        // document/route before any observation from the pre-await Fiber frame can be emitted.
-        if (epoch !== askedEpoch || conversationId !== askedConversation) return;
-        if (CLF_DOM.conversationId() !== askedConversation) return;
-      }
-    }
     // A terminal message can finish the local turn before ChatGPT removes a stale Stop
     // control. While that latch is active, observe() keeps Fiber probing the newest visible
     // page turn. If Retry/Regenerate produces a newer public website message, the descriptor's
@@ -3244,24 +2857,9 @@
     }
     for (let index = 0; index < answer.turns.length; index++) {
       const turn = answer.turns[index];
-      const pageConversation = concreteConversation(turn.conversationId);
-      const provisionalOwnedTurn = Boolean(
-        turn === ownedPageTurn &&
-        askedConversation &&
-        pageConversation &&
-        pageConversation !== askedConversation
-      );
       const fresh = turn.calls.filter((call) => {
-        // A mismatched owned turn is admissible only as a provisional-first-turn candidate.
-        // Its request id must have survived the app's explicit owner read-back before the
-        // transcript channel may repeat that evidence. A rejected/stale id is simply omitted;
-        // the already-proven owner remains authoritative and no sticky conflict is manufactured.
-        if (
-          provisionalOwnedTurn &&
-          (!call.requestId || requestOwnersConfirmed.get(call.requestId) !== askedConversation)
-        ) return false;
         const owner = index === activeTurnIndex ? activeLocalTurnId || '' : '';
-        const signature = `${call.tool}\u0000${call.requestId || ''}\u0000${call.answered ? '1' : '0'}\u0000${owner}`;
+        const signature = `${call.tool}\u0000${call.workstream || ''}\u0000${owner}`;
         if (callsReported.get(call.messageId) === signature) return false;
         callsReported.set(call.messageId, signature);
         return true;
@@ -3281,58 +2879,16 @@
         });
       }
     }
-    // What the settle window is waiting for, decided from the scan itself rather than from a
-    // timer: a connector request the page model has not yet stamped with its request id. When
-    // every visible call has one there is nothing left to re-read, so the window closes now
-    // and an ordinary turn costs no scans at all after it ends.
-    if (fiberSettleUntil > Date.now()) {
-      const awaitingRequestId = answer.turns.some((turn) =>
-        (turn.calls || []).some((call) => !call.requestId)
-      );
-      const awaitingOwner = answer.turns.some((turn) =>
-        (turn.calls || []).some((call) =>
-          call && call.requestId && (!askedConversation || requestOwnersConfirmed.get(call.requestId) !== askedConversation)
-        )
-      );
-      if (!awaitingRequestId && !awaitingOwner) fiberSettleUntil = 0;
-    }
     // Assistant prose and ChatGPT-native thinking/activity are one interleaved page-model
     // stream. Fiber validates them separately, but each item carries its original model
     // ordinal so we can restore the exact order before recording. Keeping two independent
     // loops here was the first-interim corruption: a scan that discovered a thinking headline
     // and the paragraph after it always journalled the paragraph first.
-    // Resolve settled-turn ownership across the whole scan before using any of it.
-    //
-    // `settledTurnOwner` claims a page turn for the local turn that recorded its request
-    // id, which is exact only while an id names one request. ChatGPT reuses a single
-    // `request_id` across the retries within a turn — live 2026-08-21, session
-    // `2026-08-21-204027d1` had one id on three calls and a second on two — so after a
-    // Retry several distinct page turns resolve to the same local turn, every one of them
-    // emits its prose under that id, and the app paints one answer twice.
-    //
-    // A local turn can own exactly one page turn. When more than one claims it, none of
-    // them is proven, so all of them drop to unowned — the same fail-closed answer
-    // `settledTurnOwner` already gives for an ambiguous id. The live generation's own
-    // binding is authoritative and is seeded first, so a settled turn can never take a
-    // turn id out from under the turn currently being written.
-    const settledOwners = new Map();
-    const ownerClaims = new Map();
-    if (activeTurnIndex >= 0 && activeLocalTurnId) ownerClaims.set(activeLocalTurnId, 1);
-    for (let index = 0; index < answer.turns.length; index++) {
-      if (index === activeTurnIndex) continue;
-      const owner = settledTurnOwner(answer.turns[index]);
-      if (!owner) continue;
-      settledOwners.set(answer.turns[index], owner);
-      ownerClaims.set(owner, (ownerClaims.get(owner) || 0) + 1);
-    }
-    for (const [turn, owner] of settledOwners) {
-      if ((ownerClaims.get(owner) || 0) > 1) settledOwners.delete(turn);
-    }
     for (let index = 0; index < answer.turns.length; index++) {
       const turn = answer.turns[index];
-      // The live generation owns the turn it is writing; a settled one is claimed only by
-      // ChatGPT's own request id. See settledTurnOwner().
-      const localOwner = index === activeTurnIndex ? activeLocalTurnId : settledOwners.get(turn) || null;
+      // The live generation owns the turn it is writing. No page evidence names the local
+      // turn of a settled one, so a settled turn has no local owner.
+      const localOwner = index === activeTurnIndex ? activeLocalTurnId : null;
       const items = [];
       let serial = 0;
       for (const message of turn.messages || []) {
@@ -3469,14 +3025,6 @@
     if (userAuthoredTimesReported.size > 4000) userAuthoredTimesReported.clear();
   }
 
-  /** What the page says about this block, or null. */
-  function fiberFor(block) {
-    if (!fiberPresent) return null;
-    const ref = CLF_DOM.fiberRef(block);
-    if (!ref || ref.scanToken !== fiberScanToken) return null;
-    return fiberRows.get(ref.index) || null;
-  }
-
   /**
    * The Fiber turn descriptor attached to this rendered assistant turn, or null.
    *
@@ -3513,111 +3061,22 @@
   /**
    * Decides which recorded call belongs to which block. Pure, so it can be tested.
    *
-   * `blocks` is one `{ callId, original, hidden }` per rendered tool block, in DOM order;
-   * `calls` is the app's recorded calls for the same turn, in the order they ran.
-   * Returns `[blockIndex, call, hiddenCalls]` triples to apply.
-   *
-   * **A row is a group, not a call.** ChatGPT folds a run of calls into one row — observed
-   * live as `4 earlier tool calls hidden` over a `collapsedSameToolCallCount: 4`, so five
-   * calls behind one row. `hidden` is that count, from the page's own client state (see
-   * fiberFor). It defaults to 0, which is the ordinary row and the behaviour everything had
-   * before. The prop is named for a run of calls to the *same* tool and that name is not
-   * reliable: the live page folded a `list_resources` call under an `agents` row. So
-   * it is a count of what the row stands for and never evidence of which tools those were.
-   *
-   * That the row *represents* the last call of its group, not the first, is what the
-   * "earlier … hidden" wording means, and it decides which call's label goes on the row.
+   * `blocks` is one `{ callId, original }` per rendered tool block, in DOM order; `calls`
+   * is the app's recorded calls for the same turn, in the order they ran. Returns
+   * `[blockIndex, call]` pairs to apply.
    *
    * The rules, in the order they are tried:
    *
-   *  · A block already bound to a call keeps that call, along with the `hidden` calls
-   *    immediately before it — groups are contiguous in run order by construction, since
-   *    ChatGPT only folds *consecutive* calls to the same tool. Labels must not move
-   *    around between repaints, and a block whose call has scrolled out of the feed keeps
-   *    what it has rather than being handed somebody else's.
-   *  · If the unbound blocks and the unmatched calls come out even — counting each block
-   *    as the `1 + hidden` calls it stands for — they pair up in order. This is the strong
-   *    signal and it is what the old code required, except that the old code counted every
-   *    block as one call and so fired on mismatched sets whenever anything was collapsed.
-   *    That produced confidently wrong labels, which is worse than the wall of "Called
-   *    tool" it replaced.
-   *  · Otherwise only the blocks ChatGPT renders *identically* are matched, in order,
-   *    as far as they go, and the run stops at the first folded row. That is the "wall of
-   *    Called tool" case, where the page is saying nothing that could be overwritten, and
-   *    where nothing has reconciled — so a fold count cannot be spent as if the calls it
-   *    counts were the ones waiting in front of it. Blocks ChatGPT has named itself are
-   *    left alone — and, crucially, no longer stop the rest of the turn being matched.
+   *  · A block already bound to a call keeps that call. Labels must not move around
+   *    between repaints, and a block whose call has scrolled out of the feed keeps what it
+   *    has rather than being handed somebody else's.
+   *  · If the unbound blocks and the unmatched calls come out even, they pair up in order.
+   *  · Otherwise only the blocks ChatGPT renders *identically* are matched, in order, as
+   *    far as they go. That is the "wall of Called tool" case, where the page is saying
+   *    nothing that could be overwritten. Blocks ChatGPT has named itself are left alone.
    *    A tie between two equally large groups is genuinely ambiguous, so nothing moves.
-   *
-   * Over all three, one veto: **a row never takes a call the page says it did not make.**
-   * `block.tool` is the tool named by that row's own Fiber descriptor, and it is evidence
-   * about that row and no other — it needs no counting, no ordering and no reconciliation
-   * to be true. Every rule here is ultimately an argument from position, and position is
-   * exactly what goes wrong when the recorder's view of a turn and the page's view of it
-   * are not the same set of calls. Observed live on two separate chats: a row whose
-   * descriptor said `screenshot` wearing a recorded `list_windows`, and a row whose
-   * descriptor said `run_powershell` wearing a recorded `computer`, each one the single
-   * bound row on its page and each one arrived at by a rule that "fit". A blank row is a
-   * missing label; a wrong row is a lie about what this machine did.
    */
-  /**
-   * The app's recorded calls for one visible assistant turn.
-   *
-   * `data-turn-id` belongs to one page load and to nothing beyond it: a turn streams as
-   * `g-1s6atlm1inbjf2-0-1` and the very same turn comes back as
-   * `request-WEB:<load-uuid>-<n>` once the tab is refreshed. So after a reload the recorded
-   * turn ids matched no visible turn, every block fell through to applyPageLabel, and a
-   * chat that had been fully relabelled a second earlier came back wearing nothing but
-   * ChatGPT's own quiet names. Nothing was switched off; the join had simply expired.
-   *
-   * ChatGPT's connector request id is the durable half of that join, and both sides already
-   * hold it: the app records it from the `x-request-id` on the MCP request, and the page
-   * carries the same value on the tool message's own metadata (see readTurnCalls). It is
-   * ChatGPT's identifier for the request, not an observation of ours, so it means the same
-   * thing before and after a refresh.
-   *
-   * Two conditions, both the ones anchoredRenderForTurn already relies on. The turn must
-   * name exactly one request — several is a turn this cannot order — and the request must
-   * not already have been claimed by an earlier turn in this pass, since one response's
-   * calls cannot belong to two visible turns. Where either fails the turn keeps ChatGPT's
-   * own labels, which is the same outcome it had before this fallback existed.
-   */
-  function recordedCallsFor(turn, byTurn, byRequest, spent) {
-    const own = (turn.id && byTurn.get(turn.id)) || [];
-    if (own.length > 0) return own;
-    const descriptor = fiberTurnFor(turn);
-    if (!descriptor) return [];
-    const requestIds = new Set();
-    for (const call of descriptor.calls || []) if (call && call.requestId) requestIds.add(call.requestId);
-    if (requestIds.size !== 1) return [];
-    const requestId = requestIds.values().next().value;
-    if (spent.has(requestId)) return [];
-    const recorded = byRequest.get(requestId) || [];
-    if (recorded.length === 0) return [];
-    spent.add(requestId);
-    // Run order, which is the order planLabels pairs against. `seq` is the app's own
-    // append-only sequence, so it says which call ran first without consulting the page.
-    return [...recorded].sort((a, b) => a.seq - b.seq);
-  }
-
   function planLabels(blocks, calls) {
-    /** How many calls this row folded away behind the one it shows. */
-    const hiddenOf = (block) => {
-      const raw = block && block.hidden;
-      return Number.isInteger(raw) && raw > 0 ? Math.min(raw, 999) : 0;
-    };
-    /** `[representative, hidden]` for a run of calls, which the row shows last-first. */
-    const group = (run) => [run[run.length - 1], run.slice(0, -1)];
-    /**
-     * Whether the page's own name for this row rules this call out.
-     *
-     * Only when both are known and they differ. An absent descriptor — no helper, an
-     * unreadable row, a truncated payload with no result yet — says nothing either way,
-     * and must leave every rule exactly as it behaved before the helper existed.
-     */
-    const contradicts = (block, call) =>
-      Boolean(block && block.tool && call && call.tool && block.tool !== call.tool);
-
     const order = new Map();
     calls.forEach((call, at) => order.set(call.callId, at));
 
@@ -3633,40 +3092,15 @@
       // Its call has scrolled out of the feed. Leave the block alone and, since the call
       // is not in `calls` either, let the rest of the turn match around it.
       if (at === undefined) return;
-      if (contradicts(block, calls[at])) {
-        // This row is already wearing a call the page says it did not make — matched in an
-        // earlier paint, before the descriptor for it had arrived. "Never move a label"
-        // exists so labels do not shuffle between repaints, not so a wrong one can outlive
-        // the evidence against it. A null call is the plan's instruction to take it back
-        // off; the call itself stays unconsumed, so it is free to land where it belongs.
-        plan.push([index, null, []]);
-        free.push(index);
-        return;
-      }
-      const from = Math.max(0, at - hiddenOf(block));
-      for (let position = from; position <= at; position++) consumed.add(position);
-      plan.push([index, calls[at], calls.slice(from, at)]);
+      consumed.add(at);
+      plan.push([index, calls[at]]);
     });
 
     const pending = calls.filter((_call, at) => !consumed.has(at));
     if (pending.length === 0 || free.length === 0) return plan;
-
-    const spans = free.map((index) => 1 + hiddenOf(blocks[index]));
-    if (spans.reduce((total, span) => total + span, 0) === pending.length) {
-      let at = 0;
-      const runs = free.map((_index, which) => {
-        const run = pending.slice(at, at + spans[which]);
-        at += spans[which];
-        return run;
-      });
-      // The counts coming out even is the strong signal, but it is still only arithmetic,
-      // and one row whose descriptor names a different tool than the call this pairing
-      // would hand it is proof that the two sequences are not the same sequence. The rest
-      // of the pairing rests on the same assumption, so none of it is applied.
-      if (!free.some((index, which) => contradicts(blocks[index], group(runs[which])[0]))) {
-        free.forEach((index, which) => plan.push([index, ...group(runs[which])]));
-        return plan;
-      }
+    if (free.length === pending.length) {
+      free.forEach((index, which) => plan.push([index, pending[which]]));
+      return plan;
     }
 
     const groups = new Map();
@@ -3677,24 +3111,9 @@
     const sorted = [...groups.values()].sort((a, b) => b.length - a.length);
     const generic = sorted[0];
     if (!generic || (sorted.length > 1 && sorted[1].length === generic.length)) return plan;
-    let at = 0;
-    for (const index of generic) {
-      // Reaching this branch means the two sets did not reconcile, and a folded row is
-      // exactly where that stops being survivable: `hidden` says how many calls the page
-      // shows this row in place of, and nothing here proves those calls are the entries
-      // sitting in front of it in `pending` — the recorder may never have seen them at
-      // all. Consuming them on that assumption shifts this row's label and every later
-      // one. So stop at the first folded row instead. It does not go generic: it keeps
-      // the name the page's own descriptor gave it, which is evidence about that row
-      // alone and needs no reconciliation to be true.
-      if (hiddenOf(blocks[index]) > 0) break;
+    for (const [at, index] of generic.entries()) {
       if (at >= pending.length) break;
-      // Same reasoning one row at a time: this is the weakest rule in the file, so the
-      // page naming a different tool ends the run rather than skipping an entry — every
-      // row after this one would be walking at an offset nothing here can measure.
-      if (contradicts(blocks[index], pending[at])) break;
-      plan.push([index, pending[at], []]);
-      at += 1;
+      plan.push([index, pending[at]]);
     }
     return plan;
   }
@@ -3711,24 +3130,20 @@
    * icon + strong title + secondary input/detail + result metric. The app remains the
    * source of truth for the words; this page code only lays out the summary it receives.
    */
-  function applyLabel(block, entry, hidden) {
+  function applyLabel(block, entry) {
     const label = CLF_DOM.toolLabel(block);
     if (!label) return;
-    const folded = Array.isArray(hidden) ? hidden : [];
     const metric = block.querySelector('.clf-metric');
     const detail = block.querySelector('.clf-tool-detail');
     const icon = block.querySelector('.clf-tool-icon');
-    const more = block.querySelector('.clf-folded');
     const when = block.querySelector('.clf-when');
     const who = block.querySelector('.clf-agent');
     const wantedDetail = entry.summary.detail || '';
-    const wantedMore = folded.length > 0 ? `+${folded.length}` : '';
     const wantedWhen = SHOW_TIMES ? clockText(entry.time) : '';
     const wantedWho = agentText(entry);
     const wantedMetric = displayMetric(entry.summary);
     const metricOk = Boolean(wantedMetric) === Boolean(metric) && (!wantedMetric || metric.textContent === wantedMetric);
     const detailOk = Boolean(wantedDetail) === Boolean(detail) && (!wantedDetail || detail.textContent === wantedDetail);
-    const moreOk = Boolean(wantedMore) === Boolean(more) && (!wantedMore || more.textContent === wantedMore);
     const whenOk = Boolean(wantedWhen) === Boolean(when) && (!wantedWhen || when.textContent === wantedWhen);
     const whoOk = Boolean(wantedWho) === Boolean(who) && (!wantedWho || who.textContent === wantedWho);
     const iconOk = icon && icon.dataset.clfIcon === toolIconKey(entry.summary.kind);
@@ -3737,7 +3152,6 @@
       label.textContent === entry.summary.title &&
       metricOk &&
       detailOk &&
-      moreOk &&
       whenOk &&
       whoOk &&
       iconOk
@@ -3820,10 +3234,6 @@
       whenNode = null;
     }
 
-    // ChatGPT draws one row for a run of calls to the same tool, so this row is the last
-    // of several. The other four are not a footnote about this row, they are calls that
-    // happened, so the chip opens them underneath it.
-    setFolded(block, whenNode || metricNode || detailNode || label, folded, wantedMore);
   }
 
   /**
@@ -3849,151 +3259,10 @@
   }
 
   /**
-   * Puts the calls a row folded away underneath that row, opened in place.
-   *
-   * This is what is left of the appended "Local timeline". That block sat at the bottom of
-   * the turn restating rows which were already on the page a few pixels above it, so it was
-   * a second and worse transcript rather than more of the first one — and ChatGPT's own
-   * progress captions, which made up its other half, are read straight out of the reasoning
-   * box the page is already showing. Copying either back onto the page was duplication.
-   *
-   * The calls that genuinely had nowhere to appear are these ones: the calls ChatGPT
-   * collapsed into a neighbour, which exist in the app's record and in no visible row. They
-   * belong inside the row that swallowed them, so that is where they go.
-   */
-  function setFolded(block, anchor, folded, text) {
-    const chip = block.querySelector('.clf-folded');
-    const list = block.querySelector('.clf-fold-list');
-    if (folded.length === 0) {
-      if (chip) chip.remove();
-      if (list) list.remove();
-      return;
-    }
-
-    const open = chip ? chip.getAttribute('aria-expanded') === 'true' : false;
-    const node = chip || document.createElement('span');
-    node.className = 'clf-folded';
-    node.textContent = text;
-    node.setAttribute(
-      'data-clf-tip',
-      `${folded.length} earlier call${folded.length === 1 ? '' : 's'} folded into this row by ChatGPT. Show them.`
-    );
-    if (!chip) {
-      // The chip sits inside ChatGPT's own header button, so its click would also open the
-      // row's card. Ours is a separate control with a separate meaning, so it takes the
-      // event: the alternative is a chip that cannot be clicked without doing something else.
-      node.setAttribute('role', 'button');
-      node.setAttribute('tabindex', '0');
-      node.setAttribute('aria-expanded', 'false');
-      const toggle = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const showing = node.getAttribute('aria-expanded') === 'true';
-        node.setAttribute('aria-expanded', showing ? 'false' : 'true');
-        const body = block.querySelector('.clf-fold-list');
-        if (body) body.hidden = showing;
-      };
-      node.addEventListener('click', toggle);
-      node.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') toggle(event);
-      });
-      anchor.insertAdjacentElement('afterend', node);
-    }
-
-    const body = list || document.createElement('div');
-    body.className = 'clf-fold-list';
-    body.hidden = !open;
-    body.replaceChildren(...folded.map((call) => foldedRow(call)));
-    if (!list) {
-      // Outside the header button, so the list is not inside a control that toggles the
-      // row's own card, and a click on a line of it does nothing at all.
-      const header = block.querySelector('button');
-      if (header && header.parentElement) header.insertAdjacentElement('afterend', body);
-      else block.append(body);
-    }
-  }
-
-  /** One folded call, in the same shape as the row it is folded into. */
-  function foldedRow(call) {
-    const line = document.createElement('div');
-    line.className = `clf-row clf-${call.summary.tone}`;
-    const icon = document.createElement('span');
-    icon.className = 'clf-row-icon';
-    icon.setAttribute('aria-hidden', 'true');
-    setToolIcon(icon, call.summary.kind);
-    const label = document.createElement('span');
-    label.className = 'clf-label';
-    label.textContent = labelText(call);
-    if (SHOW_TIMES) {
-      const time = document.createElement('span');
-      time.className = 'clf-time';
-      time.textContent = clockText(call.time);
-      line.append(time);
-    }
-    line.append(icon);
-    // A folded run is where agents get mixed up most easily: ChatGPT collapses by tool
-    // name, which says nothing about who called it, so one row can hide two agents' work.
-    const who = agentText(call);
-    if (who) {
-      const tag = document.createElement('span');
-      tag.className = 'clf-agent';
-      tag.textContent = who;
-      line.append(tag);
-    }
-    line.append(label);
-    const wantedMetric = displayMetric(call.summary);
-    if (wantedMetric) {
-      const metric = document.createElement('span');
-      metric.className = 'clf-metric';
-      metric.textContent = wantedMetric;
-      line.append(metric);
-    }
-    return line;
-  }
-
-  /**
-   * Names a row from ChatGPT's own record of the chat, when the app has nothing to say.
-   *
-   * This is the case that made relabelling look broken in every chat but one: the local
-   * recorder only ever holds the slice of a conversation it observed live, so a chat that
-   * has been going for days shows connector rows for calls that were never recorded here.
-   * No matching rule can fix that — there is nothing to match against.
-   *
-   * What it deliberately does *not* do is dress the result up as the app's own. There is
-   * no result, no duration, no outcome and no summary, because the app did not run this
-   * call; it gets the tool's name, a quieter treatment than a matched row, and a tooltip
-   * that says where the name came from. If a recorded call turns up for this block later,
-   * applyLabel replaces all of this — the recorder is authoritative wherever it has an
-   * entry, and this block stays unbound precisely so that can happen.
-   */
-  function applyPageLabel(block, seen) {
-    if (!seen || !seen.tool) return;
-    const label = CLF_DOM.toolLabel(block);
-    if (!label) return;
-    if (block.dataset.clfPage === seen.tool) return;
-    if (!block.dataset.clfOriginal) block.dataset.clfOriginal = label.textContent || '';
-    block.dataset.clfPage = seen.tool;
-    label.textContent = seen.tool;
-    label.classList.add('clf-tool-title');
-    label.title =
-      `${seen.path || seen.tool}${seen.app ? ` — ${seen.app}` : ''}\n` +
-      'Named from this chat’s own record. This app did not run the call, so it has no ' +
-      'result or duration here.\n' +
-      `Originally: ${block.dataset.clfOriginal}`;
-    block.classList.add('clf-tool', 'clf-page');
-  }
-
-  /**
    * Takes a recorded call's label back off a row, leaving what ChatGPT drew.
    *
-   * The one caller is a row whose own descriptor names a different tool than the call it
-   * is wearing, so the label is known to be wrong rather than merely unproven. Leaving it
-   * would be the single outcome worse than "Called tool": another call's name, in this
-   * app's own styling, with a duration and an outcome, over work it did not describe.
-   *
-   * `clfOriginal` is deliberately kept. It is what ChatGPT said before anything here
-   * touched the row, applyPageLabel wants it for the tooltip, and re-reading it from a
-   * label this code has already overwritten would preserve the wrong name forever.
+   * `clfOriginal` is kept: it is what ChatGPT said before anything here touched the row,
+   * and re-reading it from a label this code has already overwritten would lose it.
    */
   function releaseLabel(block) {
     const label = CLF_DOM.toolLabel(block);
@@ -4007,21 +3276,16 @@
       '.clf-agent',
       '.clf-tool-detail',
       '.clf-metric',
-      '.clf-when',
-      '.clf-folded',
-      '.clf-fold-list'
+      '.clf-when'
     ]) {
       const node = block.querySelector(selector);
       if (node) node.remove();
     }
-    block.classList.remove('clf-tool', 'clf-page', 'clf-good', 'clf-bad', 'clf-warn', 'clf-neutral');
+    block.classList.remove('clf-tool', 'clf-good', 'clf-bad', 'clf-warn', 'clf-neutral');
     delete block.dataset.clfCall;
     delete block.dataset.clfKind;
     delete block.dataset.clfOutcome;
     delete block.dataset.clfAgent;
-    // Cleared too, so applyPageLabel treats this as a row it has never named and puts the
-    // page's own tool name on it in this same pass.
-    delete block.dataset.clfPage;
   }
 
   /**
@@ -4035,7 +3299,7 @@
     for (const turn of CLF_DOM.turns()) {
       if (turn.role !== 'assistant') continue;
       for (const block of CLF_DOM.toolBlocks(turn)) {
-        if (!block.dataset.clfCall && !block.dataset.clfPage) continue;
+        if (!block.dataset.clfCall) continue;
         releaseLabel(block);
       }
     }
@@ -4043,8 +3307,8 @@
   }
 
   function paint() {
-    // Presentation, all of it. applyLabel and applyPageLabel overwrite ChatGPT's own tool
-    // name, add this app's classes, title and block styling — so they belong behind the
+    // Presentation, all of it. applyLabel overwrites ChatGPT's own tool
+    // name, adds this app's classes, title and block styling — so it belongs behind the
     // same user-controlled switch as the stream renderer, not merely alongside it. A
     // relabelled row is a visible claim about that record, so Overwrite OFF must release it
     // too. Capture is untouched: the identity stamps reportPageTools writes are
@@ -4053,19 +3317,10 @@
       if (painted) unpaint();
       return;
     }
-    // With no recorded calls and no page evidence there is nothing any of this could say.
-    if (entries.length === 0 && !fiberPresent) return;
+    // With no recorded calls there is nothing any of this could say.
+    if (entries.length === 0) return;
     const byTurn = new Map();
-    const byRequest = new Map();
     for (const entry of entries) {
-      // ChatGPT's own request id, which unlike a turn id outlives the page load that saw
-      // the call run. Indexed for every entry that has one, including the calls whose
-      // local turn id was lost — those are exactly the ones a reload leaves stranded.
-      if (entry.requestId) {
-        const sharing = byRequest.get(entry.requestId) || [];
-        sharing.push(entry);
-        byRequest.set(entry.requestId, sharing);
-      }
       // A call the app could not tie to a turn it can see. Attribution 'inferred' never
       // carries a turn id, so this one test covers both.
       if (!entry.turnId) continue;
@@ -4073,46 +3328,19 @@
       list.push(entry);
       byTurn.set(entry.turnId, list);
     }
-    /** Requests already handed to a turn in this pass. One request, one turn. */
-    const spentRequests = new Set();
     for (const turn of CLF_DOM.turns()) {
       if (turn.role !== 'assistant' || !turn.id) continue;
-      const calls = recordedCallsFor(turn, byTurn, byRequest, spentRequests);
+      const calls = byTurn.get(turn.id) || [];
       const blocks = CLF_DOM.toolBlocks(turn);
-      const named = new Set();
-      if (blocks.length > 0 && calls.length > 0) {
-        const shapes = blocks.map((block) => {
-          const seen = fiberFor(block);
-          return {
-            callId: block.dataset.clfCall || null,
-            original: originalLabel(block),
-            // How many calls this row folded away. Only the page's own client state knows,
-            // and only when the MAIN-world helper is there; 0 is the honest default and
-            // is exactly the behaviour this had before that helper existed.
-            hidden: seen ? seen.hidden : 0,
-            // The tool this row's own descriptor names, which lets a match be refused on
-            // evidence about the row rather than on where it sits. null whenever the page
-            // did not say, which is the same as not asking.
-            tool: seen ? seen.tool : null
-          };
-        });
-        for (const [index, call, folded] of planLabels(shapes, calls)) {
-          if (call === null) {
-            releaseLabel(blocks[index]);
-            continue;
-          }
-          applyLabel(blocks[index], call, folded);
-          named.add(index);
-          painted = true;
-        }
+      if (blocks.length === 0 || calls.length === 0) continue;
+      const shapes = blocks.map((block) => ({
+        callId: block.dataset.clfCall || null,
+        original: originalLabel(block)
+      }));
+      for (const [index, call] of planLabels(shapes, calls)) {
+        applyLabel(blocks[index], call);
+        painted = true;
       }
-      // Rows the app cannot account for. In a chat older than this app's record of it —
-      // which is most of a long-running chat — that is nearly all of them.
-      blocks.forEach((block, index) => {
-        if (named.has(index) || block.dataset.clfCall) return;
-        applyPageLabel(block, fiberFor(block));
-        if (block.dataset.clfPage) painted = true;
-      });
     }
   }
 
@@ -4219,18 +3447,6 @@
       for (const entry of bySequence.slice(0, bySequence.length - 4000)) streamBySeq.delete(entry.seq);
     }
     streamEntries = chronological(bySequence.slice(-4000));
-    // Fiber refresh runs every second while generating. Its settled-turn join used to scan
-    // all 4,000 retained stream rows once per visible Fiber turn just to answer one request-id
-    // ownership lookup. Build that exact fail-closed relation once when the stream changes.
-    streamRequestTurnOwners.clear();
-    for (const entry of streamEntries) {
-      if (!entry || entry.kind !== 'tool_call' || !entry.requestId || !entry.turnId) continue;
-      if (!streamRequestTurnOwners.has(entry.requestId)) {
-        streamRequestTurnOwners.set(entry.requestId, entry.turnId);
-      } else if (streamRequestTurnOwners.get(entry.requestId) !== entry.turnId) {
-        streamRequestTurnOwners.set(entry.requestId, null);
-      }
-    }
   }
 
   /**
@@ -4355,13 +3571,10 @@
    * stable user-message id is the durable boundary the recorder already captured before any
    * of those local starts.
    *
-   * One group between this user anchor and the next is unambiguous. With several groups we
-   * additionally require the visible Fiber turn's single response request id, then union only
-   * groups in this exact user interval that contain that request id. This handles the live
-   * 2026-08-19 failure (one request split by reload/lifecycle churn) without merging a genuine
-   * regenerate/retry, which gets a different response request while sharing the same user.
+   * One group between this user anchor and the next is unambiguous. Several groups have no
+   * page evidence that says which of them the visible response is, so the answer is null.
    */
-  function anchoredRenderForTurn(turn, sourceTurns, groups, requiredGroup = null, requireRequest = false) {
+  function anchoredRenderForTurn(turn, sourceTurns, groups, requiredGroup = null) {
     const anchor = userAnchorForTurn(turn, sourceTurns);
     if (!anchor || !Number.isFinite(Number(anchor.seq))) return null;
     const anchorSeq = Number(anchor.seq);
@@ -4377,28 +3590,14 @@
       // A generation that produced nothing is not a candidate reconstruction of a visible
       // response. ChatGPT re-mounting its stop control for a couple of seconds — which a page
       // load can do on its own — opens and closes a local generation with no message, no
-      // activity and no call in it. Counting that as a second candidate forces the request-id
-      // tie-break below, and a plain answer that called no tools has no request id to offer,
-      // so a phantom two-second turn could veto the reconstruction of the real one.
+      // activity and no call in it. Counting that as a second candidate would make a phantom
+      // two-second turn veto the reconstruction of the real one.
       return (group.entries || []).some(
         (entry) => entry.kind !== 'turn_start' && entry.kind !== 'turn_end'
       );
     });
-    if (candidates.length === 0) return null;
-
-    let selected = candidates;
-    if (candidates.length > 1 || requireRequest) {
-      const descriptor = fiberTurnFor(turn);
-      if (!descriptor) return null;
-      const requestIds = new Set();
-      for (const call of descriptor.calls || []) if (call && call.requestId) requestIds.add(call.requestId);
-      if (requestIds.size !== 1) return null;
-      const requestId = requestIds.values().next().value;
-      selected = candidates.filter((group) =>
-        (group.entries || []).some((entry) => entry.kind === 'tool_call' && entry.requestId === requestId)
-      );
-      if (selected.length === 0) return null;
-    }
+    if (candidates.length !== 1) return null;
+    const selected = candidates;
     // During a live turn, do not let an activity pull that has only part of the response hide
     // the section currently being written. Wait until the app feed includes the exact local
     // generation this document owns, then reconstruction can safely take over wholesale.
@@ -4433,7 +3632,7 @@
     const value = key.slice(split + 1);
     if (kind === 'message') return entry.kind === 'assistant_message' && entry.messageId === value;
     if (kind === 'activity') return entry.kind === 'page_tool' && entry.messageId === value;
-    return kind === 'request' && entry.kind === 'tool_call' && entry.requestId === value;
+    return false;
   }
 
   /** Stable turn-local website objects represented by one app-owned stream. */
@@ -4496,10 +3695,8 @@
       const out = [];
       const message = websiteKey('message', entry && entry.kind === 'assistant_message' ? entry.messageId : null);
       const activity = websiteKey('activity', entry && entry.kind === 'page_tool' ? entry.messageId : null);
-      const request = websiteKey('request', entry && entry.kind === 'tool_call' ? entry.requestId : null);
       if (message) out.push(message);
       if (activity) out.push(activity);
-      if (request) out.push(request);
       return out;
     };
     for (const entry of entries) {

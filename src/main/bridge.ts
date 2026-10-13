@@ -28,7 +28,10 @@
  */
 
 import { noteUsageLimitSignal, sendBlockedUntil } from "./chatgpt-limits.js";
-import { schemaState, workstreamSendsHeldBySchema } from "./connector-schema.js";
+import {
+  schemaState,
+  workstreamSendsHeldBySchema,
+} from "./connector-schema.js";
 import { provisionalRoute } from "./workstreams.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
@@ -53,6 +56,8 @@ import {
   recordWorkstreamCommand,
   recoverWorkstreamNow,
   releaseFailedWorkstreamDelivery,
+  releaseAllWorkstreams,
+  releaseWorkstream,
   noteWorkstreamRecoveryDelivered,
   releaseFailedWorkstreamReplacementBind,
   replaceWorkstream,
@@ -261,7 +266,9 @@ interface ToolClock {
 async function newestFinishedCall(
   sessionId: string,
 ): Promise<ToolClock["lastCall"]> {
-  const [event] = await readRecentEvents(sessionId, 1, { kinds: ["tool_call"] });
+  const [event] = await readRecentEvents(sessionId, 1, {
+    kinds: ["tool_call"],
+  });
   if (event?.kind !== "tool_call") return null;
   return { tool: event.call.tool, endedAt: event.time + event.call.durationMs };
 }
@@ -281,15 +288,21 @@ async function toolClockFor(
     ),
   ];
   const finished = await Promise.all(
-    [...new Set([sessionId, row?.sessionId ?? sessionId])].map(newestFinishedCall),
+    [...new Set([sessionId, row?.sessionId ?? sessionId])].map(
+      newestFinishedCall,
+    ),
   );
   const lastCall = finished.reduce<ToolClock["lastCall"]>(
-    (newest, call) => (call && (!newest || call.endedAt > newest.endedAt) ? call : newest),
+    (newest, call) =>
+      call && (!newest || call.endedAt > newest.endedAt) ? call : newest,
     null,
   );
   return {
     workstream: row ? { id: row.id, phase: row.phase } : null,
-    running: calls.map((call) => ({ tool: call.tool, startedAt: now - call.ageMs })),
+    running: calls.map((call) => ({
+      tool: call.tool,
+      startedAt: now - call.ageMs,
+    })),
     lastCall,
   };
 }
@@ -304,7 +317,10 @@ async function bindWorkstreamFrontend(
   commandId: string,
   conversationId: string,
 ): Promise<void> {
-  await bindWorkstreamReplacement(commandId, currentBrowserRoute(conversationId));
+  await bindWorkstreamReplacement(
+    commandId,
+    currentBrowserRoute(conversationId),
+  );
 }
 
 /**
@@ -1266,7 +1282,9 @@ async function workerFinalAcrossBatches(
 function conversationId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   // Current ChatGPT routes are legacy UUID-shaped ids, WEB:<uuid> or local-chatgpt:<uuid>.
-  return /^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(value) ? value : null;
+  return /^(?:WEB:|local-chatgpt:)?[0-9a-f-]{8,64}$/i.test(value)
+    ? value
+    : null;
 }
 
 /**
@@ -1473,6 +1491,7 @@ async function handle(
     route === "/workstreams/auto-advance" ||
     route === "/workstreams/pause" ||
     route === "/workstreams/resume" ||
+    route === "/workstreams/release" ||
     route === "/workstreams/replace"
   ) {
     if (!(await localSenderAuthorised(req)))
@@ -1503,6 +1522,34 @@ async function handle(
       const resumed = await resumeWorkstream(id.data);
       return json(res, resumed ? 200 : 409, { resumed }, origin);
     }
+    if (route === "/workstreams/release") {
+      // A release is the steward's manual form of the bounded exits the sweep performs
+      // automatically: force a parked workstream into the controller's replacement path.
+      // `all` releases every eligible row at once — `paused` rows and holders with work
+      // still running are skipped by the function itself and named in the response.
+      if (body["all"] === true) {
+        const released = await releaseAllWorkstreams();
+        await sweepWorkstreams();
+        return json(res, 200, { released, count: released.length }, origin);
+      }
+      const released = await releaseWorkstream(id.data);
+      await sweepWorkstreams();
+      if (released) return json(res, 200, { released: [id.data] }, origin);
+      // 409 with the reason the row could not move: paused, already opening, worker-owned,
+      // or a live holder lease. The response lets a steward tell "nothing was stuck" from
+      // "this one is genuinely held by running work".
+      const row = workstreamStatus().find(
+        (candidate) => candidate.id === id.data,
+      );
+      const reason = !row
+        ? "unknown_workstream"
+        : row.phase === "paused"
+          ? "paused"
+          : row.phase === "opening"
+            ? "already_opening"
+            : "holder_work_running";
+      return json(res, 409, { released: [], reason }, origin);
+    }
     if (route === "/workstreams/pause") {
       const paused = await pauseWorkstream(id.data);
       await sweepWorkstreams();
@@ -1516,9 +1563,14 @@ async function handle(
     if (route === "/workstreams/auto-advance") {
       if (typeof body["enabled"] !== "boolean")
         return json(res, 400, { error: "enabled_boolean_required" }, origin);
-      const configured = await setWorkstreamAutoAdvance(id.data, body["enabled"]);
+      const configured = await setWorkstreamAutoAdvance(
+        id.data,
+        body["enabled"],
+      );
       if (configured && body["enabled"] === true) {
-        const row = workstreamStatus().find((candidate) => candidate.id === id.data);
+        const row = workstreamStatus().find(
+          (candidate) => candidate.id === id.data,
+        );
         if (row?.conversationId && row.phase !== "opening") {
           await keepConversationAwake(
             row.conversationId,
@@ -2032,16 +2084,13 @@ async function handle(
     const currentRoutes = rows
       .filter(
         (row) =>
-          row.conversationId &&
-          !["archiving", "opening"].includes(row.phase),
+          row.conversationId && !["archiving", "opening"].includes(row.phase),
       )
       .map((row) => ({
         id: row.id,
         conversationId: row.conversationId!,
       }));
-    const currentIds = new Set(
-      currentRoutes.map((row) => row.conversationId),
-    );
+    const currentIds = new Set(currentRoutes.map((row) => row.conversationId));
     const retired = [
       ...new Set(
         rows.flatMap((row) =>
@@ -2069,17 +2118,15 @@ async function handle(
     const promotionRaw = Array.isArray(body["promotions"])
       ? body["promotions"]
       : [];
-    const promotions = promotionRaw
-      .slice(0, 64)
-      .flatMap((entry) => {
-        if (!entry || typeof entry !== "object") return [];
-        const raw = entry as Record<string, unknown>;
-        const from =
-          typeof raw["from"] === "string" ? conversationId(raw["from"]) : null;
-        const to =
-          typeof raw["to"] === "string" ? conversationId(raw["to"]) : null;
-        return from && to && from !== to ? [{ from, to }] : [];
-      });
+    const promotions = promotionRaw.slice(0, 64).flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const raw = entry as Record<string, unknown>;
+      const from =
+        typeof raw["from"] === "string" ? conversationId(raw["from"]) : null;
+      const to =
+        typeof raw["to"] === "string" ? conversationId(raw["to"]) : null;
+      return from && to && from !== to ? [{ from, to }] : [];
+    });
     const raw = Array.isArray(body["invalid"]) ? body["invalid"] : [body];
     const invalid = raw
       .slice(0, 64)
@@ -2104,10 +2151,7 @@ async function handle(
     let invalidated = 0;
     for (const entry of invalid) {
       if (
-        await invalidateWorkstreamConversation(
-          entry.id,
-          entry.conversationId,
-        )
+        await invalidateWorkstreamConversation(entry.id, entry.conversationId)
       )
         invalidated++;
     }
@@ -3406,7 +3450,11 @@ async function handle(
       200,
       {
         ids: commands
-          .filter((command) => !held || (command.spec.type !== "send" && command.spec.type !== "revive"))
+          .filter(
+            (command) =>
+              !held ||
+              (command.spec.type !== "send" && command.spec.type !== "revive"),
+          )
           .map((command) => command.id),
       },
       origin,
@@ -3446,8 +3494,16 @@ async function handle(
     // Every typed message passes through here. While a usage-limit hold stands nothing is
     // typed; the command stays queued and is redeemed after the hold (chatgpt-limits.ts).
     const heldUntil = sendBlockedUntil();
-    if (heldUntil && (command.spec.type === "send" || command.spec.type === "revive")) {
-      return json(res, 503, { error: "usage_limit_hold", retryAt: heldUntil }, origin);
+    if (
+      heldUntil &&
+      (command.spec.type === "send" || command.spec.type === "revive")
+    ) {
+      return json(
+        res,
+        503,
+        { error: "usage_limit_hold", retryAt: heldUntil },
+        origin,
+      );
     }
     if (!workstreamCommandCurrent(command)) {
       drop(command, "workstream action superseded");
@@ -3809,7 +3865,11 @@ async function handle(
           !autoAdvancingWorkstreamForCommand(id) &&
           !managedWorkstreamForConversation(conversation)
         ) {
-          notePushTyped(conversation, receipt.completedAt, sendVerifyHorizon(id));
+          notePushTyped(
+            conversation,
+            receipt.completedAt,
+            sendVerifyHorizon(id),
+          );
         }
       } else if (command.spec.type === "resume") {
         // Narrowed above.
@@ -4104,7 +4164,10 @@ async function handle(
     if (receipt.conversationId)
       receipt.conversationId = currentBrowserRoute(receipt.conversationId);
     if (receipt.committed && receipt.conversationId) {
-      if (command.spec.type === "send" && command.spec.conversationId === null) {
+      if (
+        command.spec.type === "send" &&
+        command.spec.conversationId === null
+      ) {
         freshChatBackoff.strikes = 0;
         freshChatBackoff.until = 0;
       }
@@ -4234,7 +4297,11 @@ async function durableQuiescence(
   if (summary.activeTurnId && now - lastDurableWrite < ABANDONED_TURN_MS)
     return { quiescent: false, ended: summary.endedAt !== null, lastOutcome };
   if (summary.activeTurnId)
-    return { quiescent: true, ended: summary.endedAt !== null, lastOutcome: "abandoned" };
+    return {
+      quiescent: true,
+      ended: summary.endedAt !== null,
+      lastOutcome: "abandoned",
+    };
   // Pre-1.8.8 metadata has no durable open-turn projection. Bound that one migration path
   // to the newest tail instead of reparsing the full lifetime on every 30-second sweep.
   if (summary.activeTurnId === undefined) {
@@ -4271,7 +4338,8 @@ export async function sweepStaleSwarm(now = Date.now()): Promise<boolean> {
   // workstreams one almost always is, so dead workers were never reconsidered. Freeing one
   // worker's slot only needs that worker's own calls to be settled (checked per worker below);
   // releasing a whole run still waits for global quiet further down.
-  if (activeRunIds().length === 0 || observationWritesInFlight > 0) return false;
+  if (activeRunIds().length === 0 || observationWritesInFlight > 0)
+    return false;
 
   // A detached worker has no browser page left to publish a turn boundary. Its dedicated
   // silence clock is therefore the only path that can eventually release the slot when the
@@ -4333,7 +4401,8 @@ async function sweepStaleRun(
     // The broker's own last sight of the worker is the fallback-free fact that still exists:
     // no running call, no generating page, and silent for ABANDONED_TURN_MS is abandoned.
     const generatingNow = liveConversations().some(
-      (entry) => entry.conversationId === worker.conversationId && entry.generating,
+      (entry) =>
+        entry.conversationId === worker.conversationId && entry.generating,
     );
     if (
       !generatingNow &&
@@ -4711,7 +4780,12 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
             return [];
           const state = conversationTurnState(row.conversationId);
           return state.activeTurnId
-            ? [{ conversationId: row.conversationId, turnId: state.activeTurnId }]
+            ? [
+                {
+                  conversationId: row.conversationId,
+                  turnId: state.activeTurnId,
+                },
+              ]
             : [];
         });
         void closeStaleObserverTurns(observerSweepAt)
@@ -5813,14 +5887,18 @@ function freshChatThrottled(error: string | null | undefined): boolean {
     // Once ChatGPT has throttled, a fresh chat that accepts the text but never becomes a
     // conversation is the same backpressure. Without this it retried every two minutes with
     // no strike (2026-09-26 23:55-00:24, strikes stuck at 5 between).
-    (text.includes(SENT_WAITING_FOR_CONVERSATION) && freshChatBackoff.strikes > 0)
+    (text.includes(SENT_WAITING_FOR_CONVERSATION) &&
+      freshChatBackoff.strikes > 0)
   );
 }
 
 /** A fresh chat refused because the composer already held text the app cannot prove it typed. */
 function foreignComposerDraft(error: string | null | undefined): boolean {
   const text = error ?? "";
-  return text.includes("initial-host-not-empty") || text.includes("something the user was writing");
+  return (
+    text.includes("initial-host-not-empty") ||
+    text.includes("something the user was writing")
+  );
 }
 
 function strikeFreshChatBackoff(now: number): number {
@@ -5904,18 +5982,17 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
     // release the stale marker so normal lease recovery can resume.  A committed receipt can
     // be replayed here to finish the bind after a crash between receipt persistence and row save.
     for (const row of workstreamStatus()) {
-      if (
-        row.phase !== "active" ||
-        row.actionId !== null ||
-        !row.commandId
-      )
+      if (row.phase !== "active" || row.actionId !== null || !row.commandId)
         continue;
       const commandId = row.commandId;
       const receipt = receiptFor(commandId);
       const liveCommand = commands.some((command) => command.id === commandId);
       if (receipt?.committed && receipt.conversationId) {
         await bindWorkstreamFrontend(commandId, receipt.conversationId);
-      } else if ((receipt && !receipt.committed) || (!liveCommand && !receipt)) {
+      } else if (
+        (receipt && !receipt.committed) ||
+        (!liveCommand && !receipt)
+      ) {
         await releaseFailedWorkstreamReplacementBind(row.id, commandId);
       }
     }
@@ -5935,8 +6012,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           receipt.error ?? "initial_delivery_failed",
         );
     }
-    const actions = await nextWorkstreamActions(now);
     const injecting = getConfig().autoContinue;
+    const actions = await nextWorkstreamActions(now, injecting);
     for (const command of [...commands]) {
       if (
         command.spec.type === "send" &&
@@ -6095,7 +6172,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         (command) =>
           command.spec.type === "send" && command.spec.nonce === actionId,
       );
-      if (!existing && row.phase === "opening" && now < freshChatBackoff.until) continue;
+      if (!existing && row.phase === "opening" && now < freshChatBackoff.until)
+        continue;
       // A published usage-limit deadline holds every send, recovery included (chatgpt-limits.ts).
       if (!existing && now < sendBlockedUntil(now)) continue;
       // A chat started on an old tool schema cannot do what the gates ask (connector-schema.ts).
@@ -6123,7 +6201,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           // take the message without a reload; on 2026-09-25 stop-only pushes to such pages all
           // expired and fell through to replacement.
           reloadFirst:
-            row.phase === "recovering" && !pageReporting(row.conversationId!, now),
+            row.phase === "recovering" &&
+            !pageReporting(row.conversationId!, now),
         });
       await persistConversationKeys();
       await writeDurableNow(COMMANDS_STATE, commandSnapshot());
@@ -6328,7 +6407,8 @@ async function deliverOne(): Promise<void> {
   );
   try {
     const target = await openInBrowser(url);
-    if (typeof target === "string" && target) commandTabTargets.set(command.id, target);
+    if (typeof target === "string" && target)
+      commandTabTargets.set(command.id, target);
   } catch (err) {
     // One command is one browser-open attempt. A rejected opener can never produce an ACK,
     // so leaving the row unleased merely blocks everything behind it until some unrelated
@@ -6478,12 +6558,18 @@ function expire(command: Command): void {
   ) {
     void bindSentFreshCommand(command)
       .catch((err: Error) => {
-        logWarn(`bridge: could not inspect the tab of ${specKey(spec)} — ${err.message}`);
+        logWarn(
+          `bridge: could not inspect the tab of ${specKey(spec)} — ${err.message}`,
+        );
         return false;
       })
       .then((bound) => {
         if (bound || !commands.includes(command)) return;
-        drop(command, command.lastError ?? "the chat this app opened did not report back in time");
+        drop(
+          command,
+          command.lastError ??
+            "the chat this app opened did not report back in time",
+        );
         deliver();
       });
     return;
@@ -6529,7 +6615,11 @@ async function bindSentFreshCommand(command: Command): Promise<boolean> {
   };
   await bindCommandConversationKey(command.id, conversation);
   await bindWorkstreamFrontend(command.id, conversation);
-  noteAppOriginatedSend(conversation, receipt.completedAt, sendVerifyHorizon(command.id));
+  noteAppOriginatedSend(
+    conversation,
+    receipt.completedAt,
+    sendVerifyHorizon(command.id),
+  );
   if (!(await finalizeCommand(command, receipt))) {
     armDeadline(command, 5_000);
     return true;
@@ -6570,20 +6660,28 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
   // CDP reports no URL for a page that is loading or whose renderer is stuck. Such a tab is
   // undetermined: it may be a managed chat mid-reload, so it neither counts as missing nor as a
   // leak until it has stayed blank past TAB_BLANK_DEAD_MS, when it is dead either way.
-  const blanks = pages.filter((tab) => tab.url === "" || tab.url === "about:blank");
+  const blanks = pages.filter(
+    (tab) => tab.url === "" || tab.url === "about:blank",
+  );
   for (const id of [...tabFirstSeen.keys()])
     if (!pages.some((tab) => tab.id === id)) tabFirstSeen.delete(id);
   for (const id of [...tabBlankSince.keys()])
     if (!blanks.some((tab) => tab.id === id)) tabBlankSince.delete(id);
-  for (const tab of tabs) if (!tabFirstSeen.has(tab.id)) tabFirstSeen.set(tab.id, now);
-  for (const tab of blanks) if (!tabBlankSince.has(tab.id)) tabBlankSince.set(tab.id, now);
+  for (const tab of tabs)
+    if (!tabFirstSeen.has(tab.id)) tabFirstSeen.set(tab.id, now);
+  for (const tab of blanks)
+    if (!tabBlankSince.has(tab.id)) tabBlankSince.set(tab.id, now);
 
-  const managed = new Set<string>(liveAgentConversations().map(currentBrowserRoute));
+  const managed = new Set<string>(
+    liveAgentConversations().map(currentBrowserRoute),
+  );
   for (const row of workstreamStatus())
     if (row.conversationId && !["paused", "blocked"].includes(row.phase))
       managed.add(currentBrowserRoute(row.conversationId));
   const commandTargets = new Set(
-    commands.map((command) => commandTabTargets.get(command.id)).filter(Boolean),
+    commands
+      .map((command) => commandTabTargets.get(command.id))
+      .filter(Boolean),
   );
   const kept = new Set<string>();
   const keptByCommand = new Set<string>();
@@ -6595,7 +6693,10 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
     ...tabs.filter((tab) => commandTargets.has(tab.id)),
     ...tabs
       .filter((tab) => !commandTargets.has(tab.id))
-      .sort((a, b) => (tabFirstSeen.get(b.id) ?? now) - (tabFirstSeen.get(a.id) ?? now)),
+      .sort(
+        (a, b) =>
+          (tabFirstSeen.get(b.id) ?? now) - (tabFirstSeen.get(a.id) ?? now),
+      ),
   ];
   for (const tab of ordered) {
     const shown = tabConversation(tab.url);
@@ -6646,9 +6747,14 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
   // The other half of the tally: a managed workstream chat with no tab cannot report its turn
   // boundaries, so completed turns never advance and stalls surface only through the lease.
   // Open it once per window; a revive's own command tab supersedes this one if both exist.
-  if (openInBrowser && blanks.every((tab) => leaks.some((leak) => leak.id === tab.id)))
+  if (
+    openInBrowser &&
+    blanks.every((tab) => leaks.some((leak) => leak.id === tab.id))
+  )
     for (const row of workstreamStatus()) {
-      const conversation = row.conversationId ? currentBrowserRoute(row.conversationId) : null;
+      const conversation = row.conversationId
+        ? currentBrowserRoute(row.conversationId)
+        : null;
       if (
         !conversation ||
         provisionalRoute(conversation) ||
@@ -6662,7 +6768,9 @@ async function reapBrowserTabs(now = Date.now()): Promise<void> {
       )
         continue;
       tabOpenedFor.set(conversation, now);
-      logWarn(`tab reaper: ${row.id} has no tab for ${conversation}; opening one`);
+      logWarn(
+        `tab reaper: ${row.id} has no tab for ${conversation}; opening one`,
+      );
       await openInBrowser(`https://chatgpt.com/c/${conversation}`);
     }
   for (const leak of leaks) {
@@ -6844,9 +6952,15 @@ function drop(command: Command, why: string): boolean {
       // that needs a tab gets a clean one from reapBrowserTabs().
       await tabs.close(target);
     })().catch((err: Error) =>
-      logWarn(`bridge: could not close the tab opened for ${specKey(command.spec)} — ${err.message}`),
+      logWarn(
+        `bridge: could not close the tab opened for ${specKey(command.spec)} — ${err.message}`,
+      ),
     );
-  } else if (closeInBrowser && command.claimedAt !== null && command.owner === null) {
+  } else if (
+    closeInBrowser &&
+    command.claimedAt !== null &&
+    command.owner === null
+  ) {
     // Only a tab no page ever redeemed from: a redeemed marker stays in the URL of the chat the
     // page is now working in, and closing that would kill a live turn to tidy a receipt.
     void closeInBrowser(openedUrlFor(command)).catch((err) => {
@@ -6994,10 +7108,7 @@ function tidyCommands(): void {
 const isLeased = (command: Command): boolean => {
   if (command.claimedAt === null) return false;
   if (waitingForRevivalReadiness(command)) return true;
-  if (
-    Date.now() - command.claimedAt <
-    commandAckDeadlineMs(command.spec)
-  )
+  if (Date.now() - command.claimedAt < commandAckDeadlineMs(command.spec))
     return true;
   if (command.spec.type !== "resume") return false;
   const state = continuationByToken(command.spec.token)?.state;
@@ -7442,10 +7553,7 @@ function planCommandRestore(
         ? raw.claimedAt
         : null;
     if (leased && claimedAt === null) claimedAt = now;
-    if (
-      claimedAt !== null &&
-      claimedAt > now + commandAckDeadlineMs(spec)
-    )
+    if (claimedAt !== null && claimedAt > now + commandAckDeadlineMs(spec))
       claimedAt = now;
     plannedCommands.push({
       id: raw.id!,

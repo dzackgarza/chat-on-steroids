@@ -25,9 +25,10 @@
  *    `Array.prototype.map` — anything this file touches. Native references are captured
  *    at load, and page-owned arrays are walked with index loops, never array methods.
  *  · **It emits an allowlist, never a filtered copy.** Only the named fields below cross
- *    into the extension. A tool call contributes its id, its tool name and whether the
- *    turn has moved past it. `invocation.arguments` is never read: tool arguments are the
- *    user's own text and this app's own secrets.
+ *    into the extension. A tool call contributes its id, its tool name and one argument:
+ *    `workstream_id`, the lock this app issued to the chat, which the chat also prints in
+ *    its claim line. No other argument is read: tool arguments are the user's own text
+ *    and this app's own secrets.
  *  · **It fails closed.** An unrecognised shape yields no descriptor for that turn.
  *
  * The receiving side treats everything here as page-controlled evidence regardless: the
@@ -38,7 +39,7 @@
   'use strict';
 
   /** Bumped when the descriptor shape changes, so a stale pair cannot half-understand. */
-  const VERSION = 11;
+  const VERSION = 12;
   // The MAIN world survives an extension reload because the ChatGPT document survives it.
   // Recovery may therefore execute this file again in a page that still has an older helper
   // listener. Keep at most one listener for this protocol version; content.js rejects older
@@ -58,12 +59,16 @@
   /** The role units chatgpt-dom.js reports as page turns, inside one exchange. */
   const UNIT = '[data-chatgpt-search-unit-key], [data-content-search-unit-key]';
   const STAMP = 'data-clf-fiber-turn';
+  /** The element ChatGPT renders one prose item into. */
+  const PROSE = '[data-markdown-text-style]';
   // A 15k–20k-token compaction answer is routinely 60k–90k characters. Safety guard only:
   // one event must stay below the 512 KiB bridge body cap.
   const MAX_RENDERED_TEXT = 256_000;
   /** Aggregate authored text copied through MAIN -> isolated world in one scan. */
   const MAX_RESPONSE_TEXT = MAX_TURNS * 512 * 1024;
   const MAX_TURN_TEXT = 512 * 1024;
+  /** Rendered HTML longer than this is left out rather than cut into broken markup. */
+  const MAX_RENDERED_HTML = 120_000;
   /**
    * The connectors this app is reached through. Nothing else is ours to vouch for.
    *
@@ -77,6 +82,8 @@
   const LABEL = /^ \([^()]{1,64}\)$/;
   /** A tool name we are willing to report. */
   const NAME = /^[a-z0-9_.-]{1,64}$/i;
+  /** A workstream lock as the app issues it. */
+  const LOCK = /^wl_[A-Za-z0-9_-]{43}$/;
 
   // Captured before the page can swap them.
   const post = window.postMessage.bind(window);
@@ -95,6 +102,14 @@
     const taken = value.slice(0, Math.min(MAX_RENDERED_TEXT, budget.remaining));
     budget.remaining -= taken.length;
     return taken;
+  }
+
+  /** The whole markup, or '' when it does not fit the cap or what is left of the budget. */
+  function budgetedHtml(value, budget) {
+    if (typeof value !== 'string' || !value || value.length > MAX_RENDERED_HTML) return '';
+    if (value.length > budget.remaining) return '';
+    budget.remaining -= value.length;
+    return value;
   }
 
   /** Whether a connector name is one of this app's own connectors. */
@@ -186,19 +201,41 @@
   }
 
   /**
-   * Whether the tool call at `at` has returned.
+   * The rendered markup of each prose item in this exchange, keyed by the item object.
    *
-   * The view model leaves `completed: false` on every call it rehydrated from the server,
-   * so that field is not evidence. The model cannot write past a call until its result
-   * arrives, so any later non-call item proves every call before it has returned. A run of
-   * calls at the tail of an unfinished turn is still waiting.
+   * A prose element joins to its item by identity: the first Fiber above the element whose
+   * `item` prop is one of this exchange's items. The join is exact, not positional. An item
+   * that two elements claim is ambiguous and gets no markup.
    */
-  function answeredAt(items, at, finished) {
-    if (finished || items[at].completed === true) return true;
-    for (let later = at + 1; later < items.length; later++) {
-      if (items[later].type !== 'mcp-tool-call') return true;
+  function renderedOf(block, items) {
+    const known = new Set(items);
+    const claimed = new Set();
+    const out = new Map();
+    const nodes = block.querySelectorAll(PROSE);
+    for (let at = 0; at < nodes.length; at++) {
+      let fiber = fiberOf(nodes[at]);
+      for (let up = 0; fiber && up < MAX_CLIMB; up++, fiber = fiber.return) {
+        const props = fiber.memoizedProps;
+        const item = props && typeof props === 'object' ? props.item : null;
+        if (!item || !known.has(item)) continue;
+        if (claimed.has(item)) {
+          out.delete(item);
+        } else {
+          claimed.add(item);
+          out.set(item, nodes[at].innerHTML);
+        }
+        break;
+      }
     }
-    return false;
+    return out;
+  }
+
+  /** The call's workstream lock, or null. Only `workstream_id` is read. */
+  function lockOf(invocation) {
+    const args = invocation.arguments;
+    if (!args || typeof args !== 'object') return null;
+    const lock = args.workstream_id;
+    return typeof lock === 'string' && LOCK.test(lock) ? lock : null;
   }
 
   /**
@@ -212,11 +249,12 @@
    *    at its tail, and the anchor is a server id, so the name survives streaming and
    *    reload alike.
    */
-  function describeTurn(block, key, index, budget) {
+  function describeTurn(block, key, index, budget, htmlBudget) {
     const found = entryOf(block, key);
     if (!found) return null;
     const turn = found.entry.turn;
     const items = flatItems(turn);
+    const rendered = renderedOf(block, items);
     const finished = turn.status === 'complete';
     const calls = [];
     const messages = [];
@@ -260,14 +298,7 @@
         if (!tool || calls.length >= MAX_CALLS) continue;
         if (callIds.has(id)) duplicated.add(id);
         callIds.add(id);
-        calls.push({
-          messageId: id,
-          tool,
-          order: 0,
-          answered: answeredAt(items, at, finished),
-          requestId: null,
-          createTime: null
-        });
+        calls.push({ messageId: id, tool, order: 0, workstream: lockOf(invocation) });
         continue;
       }
       if (type === 'assistant-message') {
@@ -285,7 +316,7 @@
             order: at,
             createTime: null,
             rawText,
-            renderedHtml: ''
+            renderedHtml: budgetedHtml(rendered.get(item), htmlBudget)
           });
         }
         finalAnswer = item.completed === true && item.phase === 'final_answer' ? id : null;
@@ -305,7 +336,7 @@
           order: at,
           createTime: null,
           rawText,
-          renderedHtml: ''
+          renderedHtml: budgetedHtml(rendered.get(item), htmlBudget)
         });
       } else if (item.presentation === 'thought') {
         const label = str(item.content);
@@ -329,7 +360,6 @@
       // last item of a still-running exchange is not yet terminal.
       endMessageId: finished && finalAnswer && items[items.length - 1].type === 'assistant-message' ? finalAnswer : null,
       calls: kept,
-      requests: [],
       messages,
       activities
     };
@@ -349,6 +379,7 @@
     // trigger the next. Build the desired stamps first, then change only what differs.
     const desired = new Map();
     const budget = { remaining: MAX_RESPONSE_TEXT };
+    const htmlBudget = { remaining: MAX_RESPONSE_TEXT };
     const first = Math.max(0, blocks.length - MAX_TURNS);
     for (let at = first; at < blocks.length; at++) {
       const block = blocks[at];
@@ -357,9 +388,12 @@
       let descriptor = null;
       try {
         const turnBudget = { remaining: Math.min(MAX_TURN_TEXT, budget.remaining) };
+        const turnHtmlBudget = { remaining: Math.min(MAX_TURN_TEXT, htmlBudget.remaining) };
         const before = turnBudget.remaining;
-        descriptor = describeTurn(block, key, out.length, turnBudget);
+        const htmlBefore = turnHtmlBudget.remaining;
+        descriptor = describeTurn(block, key, out.length, turnBudget, turnHtmlBudget);
         budget.remaining -= before - turnBudget.remaining;
+        htmlBudget.remaining -= htmlBefore - turnHtmlBudget.remaining;
       } catch {
         // One unreadable exchange must not cost the others their evidence.
         descriptor = null;
@@ -391,7 +425,7 @@
       turns = [];
       scanOk = false;
     }
-    post({ source: REPLY, nonce, scanToken: nonce, v: VERSION, scanOk, rows: [], turns }, location.origin);
+    post({ source: REPLY, nonce, scanToken: nonce, v: VERSION, scanOk, turns }, location.origin);
   }
 
   const listener = (event) => {
@@ -405,7 +439,7 @@
       scan(nonce);
     } catch {
       try {
-        post({ source: REPLY, nonce, scanToken: nonce, v: VERSION, scanOk: false, rows: [], turns: [] }, location.origin);
+        post({ source: REPLY, nonce, scanToken: nonce, v: VERSION, scanOk: false, turns: [] }, location.origin);
       } catch {
         // Nothing further to try. The other side times out.
       }

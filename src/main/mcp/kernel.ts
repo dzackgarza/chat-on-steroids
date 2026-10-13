@@ -21,10 +21,7 @@
 
 import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
-import {
-  admitWorkstreamCall,
-  workstreamWorkspace,
-} from "../workstreams.js";
+import { admitWorkstreamCall, workstreamWorkspace } from "../workstreams.js";
 import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Capabilities, Root } from "../../shared/types.js";
@@ -76,7 +73,12 @@ import {
 } from "./call-context.js";
 import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
 import { rulesGateRefusal } from "../rules-gate.js";
-import { noteCommandMinted, noteSearch, reusePendingRefusal, snapshotBeforeCommand } from "../reuse-gate.js";
+import {
+  noteCommandMinted,
+  noteSearch,
+  reusePendingRefusal,
+  snapshotBeforeCommand,
+} from "../reuse-gate.js";
 import { readOverflowText } from "../session/store.js";
 import type { StoredText } from "../../shared/session.js";
 
@@ -314,11 +316,7 @@ function withInbox(
   result: ToolResult,
   onFinish = false,
 ): ToolResult {
-  const scoped = offerMessagesForWorkstream(
-    workstreamId,
-    onFinish,
-    onFinish,
-  );
+  const scoped = offerMessagesForWorkstream(workstreamId, onFinish, onFinish);
   const recipient = scoped?.agentId ?? agent;
   const messages =
     scoped?.messages ?? (agent ? offerMessages(agent, onFinish) : []);
@@ -488,10 +486,7 @@ async function dispatchTracked(
   for (const message of acknowledged) {
     // Delivery ownership was already resolved by the admitted workstream above. Recording must
     // not re-resolve a parked prime through whichever browser conversation happens to be active.
-    await recordAgentMessage(
-      message,
-      "delivered",
-    );
+    await recordAgentMessage(message, "delivered");
   }
   // This is the MCP call's wall-clock latency. A managed child can outlive the call, and
   // its own lifetime is process evidence; letting that number overwrite ToolCallRecord's
@@ -607,9 +602,7 @@ async function dispatchNested(
             ? "CODE_MODE_FINISH: call agents action=finish directly, not from exec. No tool was run."
             : workerFenceRefusal(context.workstreamId, false);
       const result = await runInCallContext(context, () =>
-        refusal
-          ? Promise.resolve(fail(refusal))
-          : run(),
+        refusal ? Promise.resolve(fail(refusal)) : run(),
       );
       await recordToolCall({
         tool: name,
@@ -699,9 +692,7 @@ export async function resolveIn(
   // workspace: `posix.normalize('/root/a/../../elsewhere')` is a perfectly clean-looking
   // `/elsewhere`, and nothing downstream can tell it apart from a path that was always that.
   const base =
-    options.base !== undefined
-      ? options.base
-      : (workspace?.virtual ?? null);
+    options.base !== undefined ? options.base : (workspace?.virtual ?? null);
   const resolved = await resolvePath(roots, requested, {
     ...(options.allowMissing === undefined
       ? {}
@@ -891,13 +882,15 @@ function gatedHandler(
     // A chat acts only after it has read its repository's rules (rules-gate.ts).
     const unread = await rulesGateRefusal(
       name,
-      async (virtualWorkspace) => (await resolvePath(roots, virtualWorkspace)).real,
+      async (virtualWorkspace) =>
+        (await resolvePath(roots, virtualWorkspace)).real,
     );
     if (unread) return fail(unread);
     const reusePending = reusePendingRefusal(name, args);
     if (reusePending) return fail(reusePending);
     noteSearch(name, args);
-    if (name !== "exec_command" && name !== "write_stdin") return handler(args as never);
+    if (name !== "exec_command" && name !== "write_stdin")
+      return handler(args as never);
     // Shell commands can mint definitions without apply_patch; see reuse-gate.ts.
     // No workspace: the workstream has no repository to watch. A workspace that fails
     // to resolve is an error for this call, never an unwatched command.
@@ -907,8 +900,14 @@ function gatedHandler(
     const snapshot = await snapshotBeforeCommand(root);
     const result = await handler(args as never);
     const minted = await noteCommandMinted(snapshot);
-    if (minted.length > 0 && result && Array.isArray((result as { content?: unknown }).content)) {
-      (result as { content: Array<{ type: "text"; text: string }> }).content.push({
+    if (
+      minted.length > 0 &&
+      result &&
+      Array.isArray((result as { content?: unknown }).content)
+    ) {
+      (
+        result as { content: Array<{ type: "text"; text: string }> }
+      ).content.push({
         type: "text",
         text:
           `REUSE_SEARCH_PENDING: this command added ${minted.join(", ")} without a reuse record. ` +
@@ -955,7 +954,10 @@ export function createRegistrar(
     findExposed,
     registered: () => [...names],
     descriptions: () =>
-      [...handlers].map(([name, entry]) => ({ name, description: entry.description })),
+      [...handlers].map(([name, entry]) => ({
+        name,
+        description: entry.description,
+      })),
     async invokeNested(name, args, parent) {
       const admitted = parent.workstreamClaimId
         ? await admitWorkstreamCall(parent.workstreamClaimId)
@@ -975,17 +977,25 @@ export function createRegistrar(
     },
     register(name, config, handler) {
       names.push(name);
-      const gated = gatedHandler(name, ctx.roots, handler as (args: never) => Promise<ToolResult>);
+      const gated = gatedHandler(
+        name,
+        ctx.roots,
+        handler as (args: never) => Promise<ToolResult>,
+      );
       // The MCP SDK validates wire arguments; a code-mode child arrives without that layer,
       // so it is validated here against the same schema. Zod issues omit input values.
       handlers.set(name, {
         description: config.description,
         run: async (args) => {
           const parsed = await config.inputSchema.safeParseAsync(args);
-          if (parsed.success) return gated(parsed.data as Record<string, unknown>);
+          if (parsed.success)
+            return gated(parsed.data as Record<string, unknown>);
           const details = parsed.error.issues
             .slice(0, 3)
-            .map((issue) => `${issue.path.map(String).join(".").slice(0, 80) || "arguments"}: ${issue.message.slice(0, 300)}`)
+            .map(
+              (issue) =>
+                `${issue.path.map(String).join(".").slice(0, 80) || "arguments"}: ${issue.message.slice(0, 300)}`,
+            )
             .join("; ");
           return fail(`INVALID_ARGUMENTS: ${details}`);
         },
@@ -1029,7 +1039,11 @@ export function createRegistrar(
             );
           return fail(
             "WORKSTREAM_SETUP_REQUIRED: this workstream_id is missing or out of date (the workstream was claimed " +
-              "again, for example after a restart or by a newer chat), so nothing was run. Call the workstream tool " +
+              "again, for example after a restart or by a newer chat), so nothing was run. If your last call under it " +
+              "succeeded moments ago, your lock was rotated by another chat while you were working — do not sleep waiting " +
+              "to reclaim it: end your turn now with a one-line note of exactly where your work stands, including any " +
+              "uncommitted edits and any command still running. The app is watching this workstream and will re-drive or " +
+              "replace the holder. Otherwise call the workstream tool " +
               'with action="continue" and your workstream name (action="start" only for a brand-new one), then repeat ' +
               "this call with the workstream_id it returns.",
           );

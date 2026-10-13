@@ -65,15 +65,34 @@ function workstreamRefusal(
   switch (refusal.code) {
     case "WORKSTREAM_ALREADY_EXISTS":
       return 'That workstream is already registered. Call this tool with action="continue" and the same name to claim it.';
-    case "WORKSTREAM_PATH_TAKEN":
-      return `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path. One path has one workstream; claim "${refusal.holder}" with action="continue" instead.`;
+    case "WORKSTREAM_PATH_TAKEN": {
+      const live =
+        refusal.holderPhase === "active" ||
+        refusal.holderPhase === "advancing" ||
+        refusal.holderPhase === "recovering" ||
+        refusal.holderPhase === "opening";
+      return (
+        `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path ` +
+        `(phase ${refusal.holderPhase ?? "unknown"}). One path has at most one workstream. ` +
+        (live
+          ? `It is currently held: claim "${refusal.holder}" with action="continue" to take over its task (expect WORKSTREAM_HELD with a bounded sleep-retry while its lease is live). `
+          : `It is parked, not working: claiming it attaches you to that workstream's own task and history, it does not give you a fresh workstream on this path. `) +
+        "If you need this path for a different task than that workstream's task, you cannot have it while this row exists: " +
+        "end your turn with a one-line note naming this workstream and what unblocks it, so the owner can release or resume it. " +
+        "If a prescribed next call also refuses, retry your original call once before giving up — registry state may have changed."
+      );
+    }
     case "WORKSTREAM_HELD": {
       const held =
         "WORKSTREAM_HELD: another chat holds this workstream. Do not work on it here. The lock frees five minutes after its holder's last tool call. ";
       if (refusal.freesAt == null)
         return (
           held +
-          `A tool call under it is running now. Call \`sleep\` with seconds=${SLEEP_MAX_SECONDS}, then call this tool with action="continue" again. Do not end your turn.`
+          "Its holder has a tool call or command running right now, so there is no free time to wait for yet. " +
+          "Do not sleep in a loop waiting for it: end your turn now with a one-line note that this workstream is held elsewhere. " +
+          "The app's controller is watching this workstream; it re-drives it without your help. " +
+          "If you are the chat that was working on this workstream and your workstream_id was just rotated out from under you, " +
+          "say so in your note and stop: your in-flight work is protected, and the holder that claimed it will be told."
         );
       const seconds = Math.min(
         SLEEP_MAX_SECONDS,
@@ -82,7 +101,8 @@ function workstreamRefusal(
       return (
         held +
         `It frees at ${new Date(refusal.freesAt).toISOString()}. Call \`sleep\` with seconds=${seconds}, then call this tool with action="continue" again. ` +
-        "If its holder makes another call first, you get this refusal again with a later time; repeat. Do not end your turn."
+        "If its holder makes another call first, you get this refusal again with a later time; repeat at most twice, and if it is still held, " +
+        "end your turn with a one-line note that this workstream is held elsewhere. Do not sleep more than three times in a row for the same lock."
       );
     }
     case "WORKSTREAM_NOT_FOUND":
@@ -90,7 +110,10 @@ function workstreamRefusal(
     case "WORKSTREAM_UNAVAILABLE":
       return (
         "WORKSTREAM_UNAVAILABLE: this workstream is being moved to a fresh chat right now, and that chat carries " +
-        "the work on. Stop working on it in this chat and make no further tool calls for it here."
+        "the work on. Stop working on it in this chat and make no further tool calls for it here. " +
+        (refusal.freesAt != null
+          ? `If the move has not completed by ${new Date(refusal.freesAt).toISOString()}, it failed and this workstream can be claimed again with action="continue".`
+          : "")
       );
     case "WORKSTREAM_PAUSED":
       return (
@@ -183,14 +206,23 @@ function registerSleepTool(server: McpServer): void {
         const started = Date.now();
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, seconds * 1000);
-          signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
         });
         const slept = Math.round((Date.now() - started) / 1000);
         return {
           content: [
             {
               type: "text" as const,
-              text: signal.aborted ? `Cancelled after ${slept} s.` : `Slept ${slept} s. It is now ${new Date().toISOString()}.`,
+              text: signal.aborted
+                ? `Cancelled after ${slept} s.`
+                : `Slept ${slept} s. It is now ${new Date().toISOString()}.`,
             },
           ],
         };
@@ -266,7 +298,10 @@ function registerWorkstreamSetupTool(
             content: [
               {
                 type: "text" as const,
-                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
+                text:
+                  `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` +
+                  claimNotice(result.workstreamId) +
+                  rulesNotice(result.id),
               },
             ],
           };
@@ -281,7 +316,10 @@ function registerWorkstreamSetupTool(
           content: [
             {
               type: "text" as const,
-              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
+              text:
+                `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` +
+                claimNotice(result.workstreamId) +
+                rulesNotice(result.id),
             },
           ],
         };
