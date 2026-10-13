@@ -163,6 +163,8 @@ import {
   liveAgentConversations,
   workerOwnsWorkstream,
   workerStateForWorkstream,
+  promoteWorkerConversation,
+  failUnroutableSleepingWorkers,
   type WorkerRevival,
 } from "./agents.js";
 import {
@@ -2161,7 +2163,8 @@ async function handle(
     let promoted = 0;
     for (const entry of promotions) {
       noteBrowserRoutePromotion(entry.from, entry.to);
-      if (await promoteWorkstreamConversation(entry.from, entry.to)) {
+      const workerPromoted = promoteWorkerConversation(entry.from, entry.to);
+      if ((await promoteWorkstreamConversation(entry.from, entry.to)) || workerPromoted) {
         rebindAppOriginatedSend(entry.from, entry.to);
         promoted++;
       }
@@ -4625,6 +4628,16 @@ async function startBridgeOnce(epoch: number): Promise<number | null> {
   await restoreConversationKeys();
   await restoreWorkstreams();
   await restoreBrowserRoutePromotions();
+  for (const [from] of browserRoutePromotions) {
+    const to = currentBrowserRoute(from);
+    promoteWorkerConversation(from, to);
+    await promoteWorkstreamConversation(from, to);
+  }
+  if (failUnroutableSleepingWorkers() > 0) {
+    if (!(await persistCriticalSwarmNow()))
+      throw new Error('Could not persist the retirement of workers without durable conversations');
+    await restoreWorkstreams();
+  }
   bridgeRecovering = true;
   const instance = http.createServer((req, res) => {
     if (bridgeRecovering) {

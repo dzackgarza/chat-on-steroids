@@ -268,7 +268,7 @@ export async function promoteWorkstreamConversation(
     const matches = [...rows.values()].filter(
       (row) =>
         row.conversationId === previousConversationId &&
-        !["paused", "blocked", "archiving"].includes(row.phase),
+        row.phase !== "archiving",
     );
     if (matches.length !== 1) return false;
     const row = matches[0]!;
@@ -276,8 +276,7 @@ export async function promoteWorkstreamConversation(
       [...rows.values()].some(
         (other) =>
           other.id !== row.id &&
-          other.conversationId === conversationId &&
-          !["paused", "blocked"].includes(other.phase),
+          other.conversationId === conversationId,
       )
     )
       return false;

@@ -3776,6 +3776,49 @@ export function workerStateForWorkstream(workstreamId: string): AgentState | nul
   return null;
 }
 
+/** Replace a client-only worker route once the extension proves its server conversation id. */
+export function promoteWorkerConversation(from: string, to: string): boolean {
+  if (!/^(?:WEB|local-chatgpt):/i.test(from) || !to || from === to) return false;
+  const matches = [...runs.values(), ...dormantRuns.values()]
+    .flatMap((owner) => [...owner.agents.values()])
+    .filter((agent) => agent.info.role === 'worker' && agent.info.conversationId === from);
+  if (matches.length !== 1 || boundAgentAnywhere(to) || dormantAgentForConversation(to)) return false;
+  matches[0]!.info.conversationId = to;
+  changed();
+  return true;
+}
+
+/** A sleeping worker still on a client-only route has no chat the bridge can reopen. */
+export function failUnroutableSleepingWorkers(): number {
+  let failed = 0;
+  for (const owner of [...runs.values(), ...dormantRuns.values()]) {
+    const prime = owner.agents.get(PRIME_ID);
+    if (!prime) continue;
+    for (const agent of owner.agents.values()) {
+      if (
+        agent.info.role !== 'worker' ||
+        agent.info.state !== 'sleeping' ||
+        !/^(?:WEB|local-chatgpt):/i.test(agent.info.conversationId ?? '')
+      ) continue;
+      agent.info.state = 'failed';
+      agent.info.revivable = false;
+      agent.info.finishedAt = Date.now();
+      agent.info.result = 'The browser never reported a durable conversation for this worker.';
+      agent.queue = [];
+      recount(agent);
+      prime.queue.push(newMessage(
+        agent,
+        prime,
+        `[${agent.info.id} failed] Its chat never gained a durable conversation address, so it cannot be reopened. Spawn a replacement for any unfinished work.`,
+      ));
+      failed++;
+    }
+    recount(prime);
+  }
+  if (failed > 0) changed();
+  return failed;
+}
+
 /**
  * Whether the worker behind this workstream row has ended for good: failed or finished, and not
  * revivable. Its row then has nothing left to open or recover.
