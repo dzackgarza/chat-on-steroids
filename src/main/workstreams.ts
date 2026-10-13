@@ -99,7 +99,12 @@ function exclusive<T>(fn: () => Promise<T>): Promise<T> {
 }
 export async function restoreWorkstreams(): Promise<void> {
   return exclusive(async () => {
-    if (loadedRoot === durableRoot()) return;
+    // Headless starts MCP before restoring the broker, then starts the bridge. The second
+    // restore is when terminal worker ownership is finally known.
+    if (loadedRoot === durableRoot()) {
+      if (retireEndedWorkerRows()) await save();
+      return;
+    }
     const saved: unknown = durableRoot()
       ? await fs
           .readFile(path.join(durableRoot(), "workstreams.json"), "utf8")
