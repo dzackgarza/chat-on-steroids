@@ -645,8 +645,14 @@ export async function scheduleWorkstreamAfterTurn(
     const row = [...rows.values()].find(
       (candidate) =>
         candidate.conversationId === conversationId &&
-        candidate.phase === "active" &&
-        candidate.autoAdvance,
+        candidate.autoAdvance &&
+        (candidate.phase === "active" ||
+          // The advance may have reached ChatGPT but its turn can end before
+          // the new worker makes a Core call.  Ignoring that terminal result
+          // strands the row in `advancing` with a committed command forever.
+          (candidate.phase === "advancing" &&
+            candidate.commandId !== null &&
+            time > candidate.lastAdvancedTurnTime)),
     );
     if (
       !row ||
@@ -655,11 +661,12 @@ export async function scheduleWorkstreamAfterTurn(
       return false;
     if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
 
+    const unclaimedAdvance = row.phase === "advancing";
     row.lastAdvancedTurnId = turnId;
     row.lastAdvancedTurnTime = time;
     row.commandId = null;
     row.error = null;
-    if (outcome === "completed") {
+    if (outcome === "completed" && !unclaimedAdvance) {
       row.phase = "advancing";
       row.attempts = 0;
       row.nextCheck = 0;
@@ -673,6 +680,8 @@ export async function scheduleWorkstreamAfterTurn(
       row.attempts = 0;
       row.nextCheck = now;
       row.actionId = null;
+      if (unclaimedAdvance)
+        row.error = `advance_turn_ended_without_claim:${outcome}`;
     }
     await save();
     return true;
