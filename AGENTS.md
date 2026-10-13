@@ -3717,6 +3717,19 @@ the orchestrator temporarily pauses their workstream, owns the build, and resume
 with its result. This temporary build pause is not an owner stop requiring another permission to
 resume. Inspect actual activity to diagnose drift or wedges; proxy changes never trigger intervention.
 
+### Managed lean-cas-dsl validation runs
+
+Required Lean compilations and long-running acceptance-harness executions run
+once in the background with a durable output log, source revision and identifiable
+process. They are not worker-turn polling jobs:
+while one runs, continue independent B0 construction and source-level repairs.
+If no such work remains, give the live process and log to the fleet steward,
+which owns the wait and may temporarily pause this stream until it can return
+the actual compiler or harness result. Do not relaunch a live run or kill it for
+elapsed time alone. A vanished compiler, harness, or terminal session is diagnosed from its
+actual process and output before choosing the next action; repeated empty
+`write_stdin` calls do not establish progress or acceptance.
+
 **2026-10-10, owner rule: blocking work is serial.** When an active stream is blocked on work in another repository, pause the blocked stream and run a temporary workstream in the blocking repository in its place, whatever that repository's standing status, until the blocking task is delivered; then close it and resume the blocked stream. The blocked worker never "commissions" the work, and the blocked stream and its blocker do not run side by side. Applied the same day to `lean-cas-dsl` (paused), in order: `lean-cas-dsl-leaves` decodes the released descriptor forms (products, coproduct); `lean-categories` registers the named output forms of `colim.bil_w_form.cokernel`; `lean-cas-dsl-leaves` computes the discriminant cokernel; then `lean-cas-dsl` resumes.
 
 **2026-10-08: the owner resumed `research` as the only active managed stream.** It works from its `HANDOFF.md` first, then its `TODO.md` DAG. `new-qual-site`, `math-notes-ipad` and every other row are paused, and `sage-indefinite-port` stays stopped (2026-10-07). This supersedes the 2026-10-04 allocation below; resume nothing else until a later explicit owner instruction.
