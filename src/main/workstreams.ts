@@ -761,7 +761,9 @@ export async function replaceWorkstream(id: string): Promise<boolean> {
       await save();
       return true;
     }
-    if (!["active", "recovering"].includes(row.phase) || !row.conversationId) return false;
+    // The steward may replace an unclaimed advance after verifying the old
+    // conversation has ended; the stranded command is not a surviving holder.
+    if (!["active", "advancing", "recovering"].includes(row.phase) || !row.conversationId) return false;
     row.phase = "archiving";
     row.attempts = 3;
     row.nextCheck = 0;
