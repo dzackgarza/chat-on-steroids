@@ -22,9 +22,9 @@ the initial launch requests by at least 10 seconds each** — a simultaneous bur
 new-worker requests trips rate limiting; spacing the kickoffs costs nothing against
 hours-long streams.
 
-**Current owner state (2026-10-13): `sage-indefinite-port` and `research` are resumed.** Use one existing logical workstream per repository and verify each starts substantive work. The one-off starter does not orchestrate the fleet. The orchestrator and every other row remain paused. The earlier 09:43 blanket pause below remains in force for those other rows.
+**Current owner state (2026-10-13): `sage-indefinite-port`, `research`, and the `orchestrator` are resumed.** Use one existing logical workstream per repository. The orchestrator runs the evidence-based steward tick and controls worker pauses; it is not itself paused through the worker pause endpoint. Every other row remains paused. The earlier 09:43 blanket pause below remains in force for those other rows.
 
-**2026-10-13 09:43 UTC: the owner paused all managed workstreams, including the orchestrator.** Four logical workstreams were active immediately before the pause; the controller's 207 retained rows also included worker history and old failures. This entry is superseded for `sage-indefinite-port` and `research` only by the owner decision above. Earlier allocations below are cold-resume context only.
+**2026-10-13 09:43 UTC: the owner paused all managed workstreams, including the orchestrator.** Four logical workstreams were active immediately before the pause; the controller's 207 retained rows also included worker history and old failures. This entry is superseded for `sage-indefinite-port`, `research`, and the `orchestrator` by the owner decision above. Earlier allocations below are cold-resume context only.
 
 **2026-10-12: the owner explicitly resumed `sage-indefinite-port` (`/home/dzack/gitclones/sage-indefinite-port`) and requested its completion under its existing repository DAG and acceptance rules.** The prior 2026-10-07 stop was superseded for this stream only. `research` and `lean-cas-dsl` were active; every other paused stream remained paused. Use the existing sage-indefinite-port worker, not a competing repository worker.
 

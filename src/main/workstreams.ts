@@ -24,6 +24,7 @@ export function provisionalRoute(conversationId: string): boolean {
  * and never initiates conversation recovery; the steward owns that decision.
  */
 export const WORKSTREAM_LEASE_MS = 5 * 60_000;
+export const ORCHESTRATOR_WORKSTREAM_ID = "orchestrator";
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
 const REVIVE_RESPONSE_MS = 2 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
@@ -721,6 +722,9 @@ export async function configureWorkstream(
 
 export async function pauseWorkstream(id: string): Promise<boolean> {
   return exclusive(async () => {
+    // The steward controls worker pauses. Subjecting its own chat to the worker pause
+    // boundary leaves it unable to run the tick that would resume the fleet.
+    if (id === ORCHESTRATOR_WORKSTREAM_ID) return false;
     const row = rows.get(id);
     if (!row) return false;
     // A paused stream's swarm workers stop with it. Pausing only the prime row left 23

@@ -3692,7 +3692,7 @@ Consult when an instrument is about to change what you do. None of it is the job
   Exact-current-head behavioral acceptance is the current completion frontier, followed by
   final framework delivery. Publication remains independent of these completion nodes.
 
-**2026-10-13: the owner resumed `sage-indefinite-port` and `research` only.** Use their existing logical workstreams and repository-selected tasks. The one-off starter verifies that each begins substantive work, then stops; it does not orchestrate the fleet. The orchestrator and every other managed workstream remain owner-paused. This supersedes the blanket pause below for these two rows only.
+**2026-10-13: the owner resumed `sage-indefinite-port`, `research`, and the `orchestrator`.** Use the existing repository workstreams and their selected tasks. The orchestrator runs the evidence-based steward tick; every other managed workstream remains owner-paused. The orchestrator controls worker pauses and is not itself pausable through the worker `/workstreams/pause` endpoint. Its Core calls still use an attributed workstream identity. This supersedes the blanket pause below for these three rows only.
 
 **2026-10-13 09:43 UTC: the owner paused all managed workstreams, including the orchestrator.**
 The controller reported 207 retained rows at the time, including worker history; this was not

@@ -64,6 +64,7 @@ import {
   scheduleWorkstreamAfterTurn,
   setWorkstreamAutoAdvance,
   RECOVERY_BACKOFF_MS,
+  ORCHESTRATOR_WORKSTREAM_ID,
   WORKSTREAM_LEASE_MS,
   workstreamIdSchema,
   WORKSTREAM_CLAIM_LINE,
@@ -1555,6 +1556,8 @@ async function handle(
       return json(res, resumed ? 200 : 409, { resumed }, origin);
     }
     if (route === "/workstreams/pause") {
+      if (id.data === ORCHESTRATOR_WORKSTREAM_ID)
+        return json(res, 409, { error: "orchestrator_not_pausable" }, origin);
       const paused = await pauseWorkstream(id.data);
       await sweepWorkstreams();
       return json(res, paused ? 200 : 404, { paused }, origin);
