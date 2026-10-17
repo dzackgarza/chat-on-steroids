@@ -52,6 +52,7 @@ import {
   pauseWorkstream,
   promoteWorkstreamConversation,
   recordWorkstreamCommand,
+  recoverWorkstreamNow,
   releaseFailedWorkstreamDelivery,
   noteWorkstreamRecoveryDelivered,
   releaseFailedWorkstreamReplacementBind,
@@ -1519,6 +1520,7 @@ async function handle(
     route === "/workstreams/pause" ||
     route === "/workstreams/retire" ||
     route === "/workstreams/resume" ||
+    route === "/workstreams/recover" ||
     route === "/workstreams/replace" ||
     route === "/workstreams/context"
   ) {
@@ -1579,6 +1581,18 @@ async function handle(
       const replacing = await replaceWorkstream(id.data);
       await sweepWorkstreams();
       return json(res, replacing ? 202 : 409, { replacing }, origin);
+    }
+    if (route === "/workstreams/recover") {
+      // Recovery is an explicit steward decision after examining the live chat,
+      // tool-call and repository evidence. The maintenance timer does not infer
+      // a dead model from a quiet lease. Prefer revival of the exact last claimant
+      // over replacing an unbound-but-identifiable conversation unnecessarily.
+      const reason = body["reason"];
+      if (typeof reason !== "string" || !reason.trim() || reason.length > 500)
+        return json(res, 400, { error: "recovery_reason_required_max_500" }, origin);
+      const recovering = await recoverWorkstreamNow(id.data, reason);
+      if (recovering) await sweepWorkstreams();
+      return json(res, recovering ? 202 : 409, { recovering }, origin);
     }
     if (route === "/workstreams/auto-advance") {
       if (typeof body["enabled"] !== "boolean")

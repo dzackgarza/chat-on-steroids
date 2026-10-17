@@ -843,9 +843,22 @@ export async function recoverWorkstreamNow(
     if (
       !row ||
       !["active", "advancing"].includes(row.phase) ||
-      !row.conversationId
+      runningToolCallsForWorkstream(id) > 0
     )
       return false;
+    // Explicit steward recovery is also needed after an automation-owned chat has
+    // claimed this workstream without a live page to rebind the browser route.
+    // A previously observed claim line identifies the exact chat to revive. Do
+    // not guess an earlier claimant or revive a retired/provisional conversation:
+    // the steward can choose the existing fenced replacement path in that case.
+    const conversation = row.conversationId ?? row.claimedBy.at(-1) ?? null;
+    if (
+      !conversation ||
+      provisionalRoute(conversation) ||
+      row.retiredConversations.includes(conversation)
+    )
+      return false;
+    row.conversationId = conversation;
     row.phase = "recovering";
     row.attempts = 0;
     row.nextCheck = now;
