@@ -33,19 +33,31 @@ sessions:
                 .id, "\(.userMessages)msg \(.toolCalls)tool", .title] | @tsv' "$meta"
     done | sort -rn | cut -f2-
 
-# Continuously print timestamped activity, scrolling like journalctl -xef.
-# Examples: just journal; just journal 24 1000; just journal 6 300 sage-indefinite-port
-# The initial 300 entries are followed by new recorder events as they arrive.
-journal $hours="6" $lines="300" $chat="":
+# A readable, live workstream monitor: chronological meaningful actions above
+# continuously refreshed workstream/turn/tool state and inactivity evidence.
+# Repeated source inspections and auto-continuation turns are summarized, while
+# edits, tests, failures and process completions retain their recorded times.
+# Examples: just journal; just journal 3 50 sage-indefinite-port
+#           just journal 3 50 sage-indefinite-port verbose
+# Uses Python Rich for the live status panel (apt install python3-rich).
+journal $hours="3" $lines="50" $chat="" $detail="":
     #!/usr/bin/env bash
     set -euo pipefail
+    extra=()
+    case "$detail" in
+        "") ;;
+        verbose) extra+=(--verbose) ;;
+        trace) extra+=(--verbose --trace) ;;
+        plain) extra+=(--plain) ;;
+        *) echo 'Detail must be verbose, trace, plain, or empty' >&2; exit 2 ;;
+    esac
     exec python3 -u "{{justfile_directory()}}/scripts/activity-journal.py" \
-        --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat"
+        --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat" "${extra[@]}"
 
 # Full-screen searchable lnav alternative. Press G to move to the end and
 # automatically follow new events; scrolling up pauses the displayed position.
 # Install lnav first (sudo apt install lnav / brew install lnav).
-journal-ui $hours="6" $lines="300" $chat="":
+journal-ui $hours="3" $lines="100" $chat="":
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v lnav >/dev/null 2>&1; then
