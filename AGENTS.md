@@ -3285,6 +3285,10 @@ Verbs, authenticated with `Authorization: Bearer $(cat ~/.config/chat-on-steroid
 (never print the token):
 
 - pause or resume: `POST /workstreams/pause` or `/workstreams/resume` with `{"id": "<workstream>"}`;
+- revive the recorded claimant of an active workstream whose browser conversation is unbound,
+  **only after checking that its worker is actually stopped**: `POST /workstreams/recover`
+  with `{"id": "<workstream>", "reason": "<observed failure>"}`. This enters the native
+  revive/replace state machine; it refuses active tool calls and unknown or retired claimants.
 - replace a blocked chat for an owned logical workstream: `POST /workstreams/replace`; retire an abandoned, paused or blocked logical workstream with no worker history: `POST /workstreams/retire` (both take the same `id` body);
 - send a chat a pointer: `just say <conversation-id> "<text>"`;
 - refresh ChatGPT's copy of the Core tool schema when `connectorSchema` is not `current`:
