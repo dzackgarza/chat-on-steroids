@@ -33,11 +33,19 @@ sessions:
                 .id, "\(.userMessages)msg \(.toolCalls)tool", .title] | @tsv' "$meta"
     done | sort -rn | cut -f2-
 
-# Chronological live activity across recorded chats, in lnav's journal-like TUI.
+# Continuously print timestamped activity, scrolling like journalctl -xef.
 # Examples: just journal; just journal 24 1000; just journal 6 300 sage-indefinite-port
-# lnav: sudo apt install lnav (Linux) / brew install lnav (macOS).
-# Default: last 300 entries from the previous 6 hours, then live follow.
+# The initial 300 entries are followed by new recorder events as they arrive.
 journal $hours="6" $lines="300" $chat="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exec python3 -u "{{justfile_directory()}}/scripts/activity-journal.py" \
+        --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat"
+
+# Full-screen searchable lnav alternative. Press G to move to the end and
+# automatically follow new events; scrolling up pauses the displayed position.
+# Install lnav first (sudo apt install lnav / brew install lnav).
+journal-ui $hours="6" $lines="300" $chat="":
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v lnav >/dev/null 2>&1; then
@@ -46,7 +54,7 @@ journal $hours="6" $lines="300" $chat="":
     fi
     python3 -u "{{justfile_directory()}}/scripts/activity-journal.py" \
         --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat" \
-        | lnav -N
+        | lnav -N -c ':goto 100%'
 
 # Print a chat transcript; ID may be any substring, default is the newest chat
 transcript $id="":
