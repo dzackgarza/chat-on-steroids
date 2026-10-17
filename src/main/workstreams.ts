@@ -1111,6 +1111,11 @@ export async function noteWorkstreamRecoveryDelivered(
     )
       return false;
     row.commandId = null;
+    // The revive was delivered. Its action is complete; only the response
+    // deadline remains. Leaving actionId set makes nextWorkstreamActions() return
+    // the same row on the very next sweep and queues another stop-first send,
+    // interrupting the newly restarted ChatGPT turn before it can re-attach.
+    row.actionId = null;
     row.nextCheck = deliveredAt + REVIVE_RESPONSE_MS;
     await save();
     return true;
