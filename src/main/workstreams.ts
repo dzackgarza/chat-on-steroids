@@ -663,6 +663,7 @@ export async function scheduleWorkstreamAfterTurn(
   outcome: NonNullable<ChatObservation["outcome"]>,
   time: number,
   now = Date.now(),
+  conversationLengthExhausted = false,
 ): Promise<boolean> {
   return exclusive(async () => {
     ready();
@@ -702,7 +703,17 @@ export async function scheduleWorkstreamAfterTurn(
     row.lastAdvancedTurnTime = time;
     row.commandId = null;
     row.error = null;
-    if (outcome === "completed" && !unclaimedAdvance) {
+    if (outcome === "failed" && conversationLengthExhausted) {
+      // ChatGPT explicitly rejected this *conversation*, not just this turn. Reviving
+      // it returns to the same exhausted context and can repeat forever while ordinary
+      // Core calls keep the workstream claim healthy. Enter the existing fenced
+      // archive/replace state machine instead, once no tool call is in flight.
+      row.phase = "recovering";
+      row.attempts = MAX_RECOVERY_ATTEMPTS;
+      row.nextCheck = now;
+      row.actionId = null;
+      row.error = "conversation_length_exhausted";
+    } else if (outcome === "completed" && !unclaimedAdvance) {
       row.phase = "advancing";
       row.attempts = 0;
       row.nextCheck = 0;
@@ -1003,6 +1014,9 @@ export async function nextWorkstreamActions(
       // waits in `recovering` with its pending revive, which goes out when the hold lifts.
       if (sendsHeld) continue;
       if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
+        // Terminal context exhaustion or exhausted revives must not archive a
+        // chat while a connector call accepted under its claim is still running.
+        if (runningToolCallsForWorkstream(row.id) > 0) continue;
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
         row.commandId = null;

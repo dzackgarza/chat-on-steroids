@@ -2495,6 +2495,9 @@ async function handle(
           completedBoundary.turnId,
           completedBoundary.outcome,
           completedBoundary.time,
+          Date.now(),
+          completedBoundary.outcome === "failed" &&
+            /maximum length for this conversation/i.test(completedBoundary.detail ?? ""),
         ))
       ) {
         void sweepWorkstreams().catch((err: Error) =>
