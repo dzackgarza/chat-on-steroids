@@ -33,6 +33,21 @@ sessions:
                 .id, "\(.userMessages)msg \(.toolCalls)tool", .title] | @tsv' "$meta"
     done | sort -rn | cut -f2-
 
+# Chronological live activity across recorded chats, in lnav's journal-like TUI.
+# Examples: just journal; just journal 24 1000; just journal 6 300 sage-indefinite-port
+# lnav: sudo apt install lnav (Linux) / brew install lnav (macOS).
+# Default: last 300 entries from the previous 6 hours, then live follow.
+journal $hours="6" $lines="300" $chat="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v lnav >/dev/null 2>&1; then
+        echo 'lnav is required (sudo apt install lnav / brew install lnav)' >&2
+        exit 127
+    fi
+    python3 -u "{{justfile_directory()}}/scripts/activity-journal.py" \
+        --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat" \
+        | lnav -N
+
 # Print a chat transcript; ID may be any substring, default is the newest chat
 transcript $id="":
     #!/usr/bin/env python3
