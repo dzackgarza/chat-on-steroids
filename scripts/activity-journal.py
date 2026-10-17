@@ -64,6 +64,8 @@ class Session:
         self.routine = []
         self.last = None
         self.last_signal = 0
+        # Includes recorder calls suppressed from the timeline (e.g. process polls).
+        self.last_tool = None
 
     def projection(self, row, *, verbose=False, trace=False):
         stamp = row.get("time")
@@ -77,10 +79,42 @@ class Session:
             c = row.get("call") or {}
             tool = c.get("tool", "")
             title = str((c.get("summary") or {}).get("title") or tool)
+            if tool == "exec_command" and title in ("Ran a command", "Started a command", "exec_command"):
+                # Batched commands sometimes receive a generic recorder title.
+                # Show the first command rather than leaving the user with "a command".
+                try:
+                    arguments = json.loads((c.get("args") or {}).get("text") or "{}")
+                    commands = arguments.get("cmd") or arguments.get("cmds") or ""
+                    command = commands[0] if isinstance(commands, list) and commands else commands
+                    if isinstance(command, str) and command.strip():
+                        command = re.sub(r"(?i)(Bearer\s+)\S+", r"\1***", command)
+                        command = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "sk-***", command)
+                        command = re.sub(r"\b[A-Za-z0-9_-]{40,}\b", "***", command)
+                        title = f"{'Started' if title.startswith('Started') else 'Ran'} {short(command, 140)}"
+                        if isinstance(commands, list) and len(commands) > 1:
+                            title += f" (+{len(commands) - 1} commands)"
+                except (TypeError, ValueError):
+                    pass
             name = c.get("workstreamId") or name
             output = str((c.get("result") or {}).get("text") or "")
             outcome = c.get("outcome")
             duration = int(c.get("durationMs") or 0)
+            label = re.sub(r"^(Ran|Started) ", "", title)
+            if tool == "write_stdin":
+                process = poll_pid(c)
+                source = self.processes.get(process)
+                code = exit_code(output)
+                if source:
+                    label = f"{short(source, 105)} · " + (f"exit {code}" if code is not None else "process poll")
+                else:
+                    label = f"process session {process or '?'} · " + (f"exit {code}" if code is not None else "polled")
+            elif tool == "exec_command":
+                code = exit_code(output)
+                if code is not None:
+                    label += f" · exit {code}"
+                elif pid_of(output):
+                    label += " · process running"
+            self.last_tool = (stamp, tool, short(label, 155), str(outcome or "?"))
             if tool == "write_stdin":
                 pid = poll_pid(c)
                 code = exit_code(output)
@@ -90,7 +124,8 @@ class Session:
                 source = self.processes.pop(pid, f"session {pid}") if pid else "process"
                 severity = "error" if code not in (0, None) or outcome != "ok" else "success"
                 if severity == "success" and not verbose and (
-                    not known_process or source in {"Select next ready issue", "Source inspection"}
+                    not known_process
+                    or source.startswith(("itree next ", "Source inspection: "))
                 ):
                     # A successful wait for an untracked process proves no
                     # user-meaningful work; the launch may predate our history
@@ -106,13 +141,14 @@ class Session:
             if tool == "exec_command" and selects_issue and outcome == "ok" and not verbose:
                 pending = pid_of(output)
                 if pending:
-                    self.processes[pending] = "Select next ready issue"
+                    match = re.search(r"\bitree next\s+([\w./-]+)", args_text)
+                    self.processes[pending] = f"itree next {match.group(1) if match else '(repository)'}"
                 self.routine.append((stamp, "selection", ""))
                 return None
             if inspection(tool, title) and outcome == "ok" and not verbose:
                 pending = pid_of(output) if tool == "exec_command" else None
                 if pending:
-                    self.processes[pending] = "Source inspection"
+                    self.processes[pending] = f"Source inspection: {short(title, 95)}"
                 self.routine.append((stamp, "inspection", short(title.replace("Ran ", ""), 90)))
                 return None
             if tool == "exec_command":
@@ -311,38 +347,44 @@ class Controller:
 def current_state(row, controller, session, now):
     name, phase = row["id"], row.get("phase","?")
     last = max(int(row.get("lastActivity") or 0), session.last_signal if session else 0)
-    recent = f"{session.last[0]}: {short(session.last[3], 46)}" if session and session.last else "No recorded action"
+    if session and session.last_tool:
+        called_at, method, summary, outcome = session.last_tool
+        recent = f"{moment(called_at)[6:]} {method} · {short(summary, 105)} ({outcome})"
+    else:
+        recent = "No recorded tool call"
+
+    def showing(context):
+        return f"{recent}\n{context}"
+
     inflight = [x for x in controller.calls if x.get("workstreamId")==name]
     if inflight:
         call = max(inflight, key=lambda x:x.get("ageMs") or 0)
         started = now - int(call.get("ageMs") or 0)
         phase_note = f" · phase {phase}" if phase != "active" else ""
-        return (name, "TOOL RUNNING", f"{call.get('tool','tool')} since ~{moment(started)[6:]} ({age(now-started)}){phase_note}", max(last,started), "tool")
+        return (name, "TOOL RUNNING", showing(f"In flight: {call.get('tool','tool')} since {moment(started)[6:]} ({age(now-started)}){phase_note}"), max(last,started), "tool")
     if phase in ("paused","blocked","recovering","archiving","opening"):
-        return (name, phase.upper(), short(row.get("error") or recent, 70), last, phase)
+        return (name, phase.upper(), showing(short(row.get("error") or phase, 85)), last, phase)
     chat = controller.chats.get(name) or {}
     if chat.get("generating") is True:
         observed = max(int(chat.get("lastStoredAt") or 0),int(chat.get("lastContactAt") or 0))
         silence = now-observed if observed else now-last
         started = int(chat.get("turnStartedAt") or 0)
-        detail = f"Open turn {age(now-started) if started else '?'}; last page observation {age(silence)} ago"
-        if row.get("lastActivity"):
-            detail += f"; last admitted tool call {age(now-int(row['lastActivity']))} ago"
+        detail = showing(f"Open turn {age(now-started) if started else '?'}; page observation {age(silence)} ago")
         if silence >=300000:return(name,"NO SIGNAL",detail,max(last,observed),"no-signal")
         if silence >=90000:return(name,"QUIET TURN",detail,max(last,observed),"quiet")
         return (name,"GENERATING",detail,max(last,observed),"generating")
     if chat.get("known") is True and chat.get("generating") is False:
         last = max(last,int(chat.get("lastStoredAt") or 0))
         if last and now-last>=300000:
-            return (name,"INACTIVE",f"No new observation for {age(now-last)}; last {recent}",last,"inactive")
-        return (name,"IDLE",recent,last,"idle")
+            return (name,"INACTIVE",showing(f"No new observation for {age(now-last)}"),last,"inactive")
+        return (name,"IDLE",showing("No generating turn or tool in flight"),last,"idle")
     if phase == "advancing":
-        return (name,"ADVANCING",f"Next turn scheduled; {recent}",last,"advancing")
+        return (name,"ADVANCING",showing("Next turn scheduled"),last,"advancing")
     if last and now-last>=300000:
-        return(name,"NOT OBSERVED",f"No admitted call for {age(now-last)}; no proven live turn",last,"unobserved")
+        return(name,"NOT OBSERVED",showing(f"No admitted call for {age(now-last)}; no proven live turn"),last,"unobserved")
     if row.get("conversationId"):
-        return(name,"PAGE UNKNOWN",f"Cannot confirm live browser turn; {recent}",last,"unknown")
-    return(name,"UNBOUND",f"No bound chat; {recent}",last,"unbound")
+        return(name,"PAGE UNKNOWN",showing("Browser turn state unavailable"),last,"unknown")
+    return(name,"UNBOUND",showing("No bound ChatGPT conversation"),last,"unbound")
 
 def states(recorder, controller, now, chat, show_paused):
     if not controller.rows:
@@ -377,7 +419,7 @@ def status_table(rows, error):
     table=Table(expand=True,box=None,show_edge=False,padding=(0,1),header_style="bold")
     table.add_column("Workstream",no_wrap=True,ratio=2)
     table.add_column("State",no_wrap=True,ratio=1)
-    table.add_column("Current activity",ratio=3,overflow="ellipsis")
+    table.add_column("Current activity",ratio=5,overflow="ellipsis")
     table.add_column("Last seen",no_wrap=True,justify="right")
     now=int(time.time()*1000)
     for name,state,desc,last,bucket in rows:
