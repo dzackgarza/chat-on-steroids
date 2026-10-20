@@ -84,7 +84,7 @@ export function requireManagedIdentity(id: string | null): void {
 
 export function managedToolRefusal(id: string | null, tool: string): string | null {
   managedExecution(id);
-  if (!['read', 'find', 'view_image', 'apply_patch', 'exec_command', 'write_stdin', 'exec', 'list_roots'].includes(tool))
+  if (!['read', 'find', 'view_image', 'apply_patch', 'exec', 'list_roots'].includes(tool))
     return 'MANAGED_OPERATION_UNAVAILABLE: this endpoint owns development and structured validation only.';
   return null;
 }
@@ -96,7 +96,7 @@ export function requireManagedPath(id: string | null, tool: string, target: stri
 }
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-function sourceCommand(id: string | null, cwd: string, command: string, writable: boolean): string[] {
+export function repositoryCommand(id: string | null, cwd: string, command: string[]): string[] {
   const config = managedExecution(id);
   if (!contains(config.workspace, cwd)) throw new Error('Development command cwd must be in the assigned workspace');
   const args = [config.docker, 'run', '--rm', '-i', '--network', 'none', '--read-only',
@@ -105,17 +105,6 @@ function sourceCommand(id: string | null, cwd: string, command: string, writable
     '--workdir', cwd, '--env', 'HOME=/tmp', '--env', 'PATH=/usr/bin:/bin'];
   for (const root of [config.workspace, ...config.readPaths])
     args.push('--mount', `type=bind,src=${root},dst=${root},readonly`);
-  for (const root of writable ? config.writablePaths : [])
-    args.push('--mount', `type=bind,src=${root},dst=${root}`);
-  args.push(config.developmentImage, '/bin/sh', '-c', command);
+  args.push(config.developmentImage, ...command);
   return ['/usr/bin/sg', config.dockerGroup, '-c', args.map(quote).join(' ')];
-}
-
-export function developmentCommand(id: string | null, cwd: string, command: string): string[] {
-  return sourceCommand(id, cwd, command, true);
-}
-
-/** Repository configuration can execute programs even during a nominally read-only Git query. */
-export function repositoryCommand(id: string | null, cwd: string, args: string[]): string[] {
-  return sourceCommand(id, cwd, args.map(quote).join(' '), false);
 }

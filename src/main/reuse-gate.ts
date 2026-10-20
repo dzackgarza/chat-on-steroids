@@ -8,23 +8,15 @@
  * method, Lean declaration, …) or a new code file is refused unless it carries `reuse_search`:
  * for every minted name, the searches run, what they found, and why none of it is reused.
  *
- * Each listed search must be one this conversation actually ran — a `find` call or a search
- * command (rg, grep, git grep, fd, ast-grep, probe, …) through `exec_command`. A search for the
+ * Each listed search must be one this conversation actually ran — a `find` call. A search for the
  * new name itself does not count: nothing can be found under a name that was just invented.
  * The app checks that the searches happened; whether they were adequate is read by whoever
  * reviews the record, which the session recorder keeps with the patch arguments.
  *
- * Shell commands are watched too. Around every `exec_command` / `write_stdin` the workspace's
- * git tree is compared with the HEAD from before the command (so a commit made inside the
- * command hides nothing). A name minted that way with no record becomes pending, and every
- * tool except reading ones and `reuse_record` is refused until `reuse_record` supplies the
- * same verified entries on its next apply_patch (a separate tool would change the connector's
- * published shape, which ChatGPT does not re-discover mid-conversation).
  */
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 
 import { repositoryCommand } from "./managed-execution.js";
 import { currentCall } from "./mcp/call-context.js";
@@ -42,9 +34,8 @@ export interface ReuseSearchEntry {
   why_new: string;
 }
 
-/** Per conversation: names covered by an accepted record, and names minted by a command with none. */
+/** Per conversation: names covered by an accepted patch record. */
 const accounted = new Map<string, Set<string>>();
-const pending = new Map<string, Set<string>>();
 
 function setFor(map: Map<string, Set<string>>, key: string): Set<string> {
   let set = map.get(key);
@@ -52,7 +43,6 @@ function setFor(map: Map<string, Set<string>>, key: string): Set<string> {
   return set;
 }
 
-const SEARCH_COMMAND = /(^|[\s;&|(])(rg|grep|egrep|git\s+grep|fd|fdfind|find|ast-grep|sg|probe|ack|ag|loogle|just\s+placement)(\s|$)/;
 const searches = new Map<string, string[]>();
 
 function readerKey(): string | null {
@@ -66,7 +56,7 @@ function normalise(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** Records a search this conversation ran. `find` arguments always count; commands only when they search. */
+/** Records a search this conversation ran. Only structured `find` requests count. */
 export function noteSearch(tool: string, args: Record<string, unknown>): void {
   const key = readerKey();
   if (!key) return;
@@ -76,9 +66,7 @@ export function noteSearch(tool: string, args: Record<string, unknown>): void {
       if (typeof value === "string") texts.push(value);
       else if (Array.isArray(value)) texts.push(...value.filter((item): item is string => typeof item === "string"));
     }
-  } else if (tool === "exec_command") {
-    const commands = [args["cmd"], ...(Array.isArray(args["cmds"]) ? args["cmds"] : [])];
-    for (const command of commands) if (typeof command === "string" && SEARCH_COMMAND.test(command)) texts.push(command);
+
   }
   if (texts.length === 0) return;
   const list = searches.get(key) ?? [];
@@ -150,14 +138,7 @@ const DEFINITION_WORDS = new Set([
  * yields both words rather than one opaque string.
  */
 function searchTerms(query: string): string[] {
-  const quoted = [...query.matchAll(/'([^']*)'|"([^"]*)"/g)].map((match) => match[1] ?? match[2] ?? "");
-  let patterns = quoted;
-  if (patterns.length === 0) {
-    const words = query.split(" ");
-    const tool = words.findIndex((word) => SEARCH_COMMAND.test(word));
-    patterns = tool < 0 ? [query] : words.slice(tool + 1).filter((word) => !word.startsWith("-")).slice(0, 1);
-  }
-  return patterns
+  return [query]
     .flatMap((pattern) => pattern.replace(/\\[A-Za-z]/g, " ").split(/[^A-Za-z0-9_]+/))
     .filter((term) => term.length >= 2 && !DEFINITION_WORDS.has(term.toLowerCase()));
 }
@@ -260,24 +241,6 @@ export async function reuseGateRefusal(
   return null;
 }
 
-/** Lets an apply_patch reuse_search also settle names a shell command minted. Null on success. */
-export function settlePendingThroughPatch(record: readonly ReuseSearchEntry[] | undefined): string | null {
-  const key = readerKey();
-  if (!key || !pending.get(key)?.size) return null;
-  if (!record?.length) return reusePendingRefusal("apply_patch", {});
-  const accepted = acceptReuseRecord(record);
-  return accepted.ok ? null : accepted.text;
-}
-
-// ------------------------------------------------------------------ shell-made definitions
-
-interface Snapshot {
-  key: string;
-  root: string;
-  base: string;
-  before: Set<string>;
-}
-
 /** A git invocation's outcome as data: its exit status is the answer, not an exception. */
 interface GitOutcome {
   status: number | null;
@@ -287,7 +250,7 @@ interface GitOutcome {
 
 function runGit(root: string, args: string[]): Promise<GitOutcome> {
   return new Promise((resolve) => {
-    const command = repositoryCommand(currentCall()?.workstreamId ?? null, root, ["git", "-C", root, ...args]);
+    const command = repositoryCommand(currentCall()?.workstreamId ?? null, root, ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", root, ...args]);
     const child = spawn(command[0]!, command.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -332,93 +295,4 @@ export async function alreadyDefined(root: string, rev: string, candidates: read
     for (const name of batch) if (new RegExp(`\\s${escapeRegex(name)}([^A-Za-z0-9_'.]|$)`).test(out)) found.add(name);
   }
   return found;
-}
-
-/** Definition names and new code files in the working tree relative to `base`. */
-export async function worktreeMinted(root: string, base: string): Promise<Set<string>> {
-  const minted = new Set<string>();
-  const diff = await git(root, ["diff", "-U0", "--no-color", "--no-ext-diff", base, "--"]);
-  let path = "";
-  const added = new Map<string, Set<string>>();
-  const removed = new Map<string, Set<string>>();
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+++ ")) {
-      path = line.startsWith("+++ b/") ? line.slice(6) : "";
-      continue;
-    }
-    if (line.startsWith("--- ") || !path || !CODE_FILE.test(path) || TEST_FILE.test(path)) continue;
-    const pattern = definitionPattern(path);
-    if (!pattern || !(line.startsWith("+") || line.startsWith("-"))) continue;
-    const match = pattern.exec(line.slice(1));
-    if (!match?.[1] || exempt(match[1])) continue;
-    setFor(line.startsWith("+") ? added : removed, path).add(match[1]);
-  }
-  for (const [file, names] of added) for (const name of names) if (!removed.get(file)?.has(name)) minted.add(name);
-  const untracked = (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean);
-  for (const file of untracked) {
-    if (!CODE_FILE.test(file) || TEST_FILE.test(file)) continue;
-    minted.add(file);
-    const pattern = definitionPattern(file);
-    const text = pattern ? await readFile(`${root}/${file}`, "utf8") : "";
-    if (pattern) for (const name of names(text.slice(0, 1_000_000).split("\n"), pattern)) if (!exempt(name)) minted.add(name);
-  }
-  return minted;
-}
-
-/** Taken before a shell command runs in a workstream. Null when there is nothing to watch. */
-export async function snapshotBeforeCommand(root: string | null): Promise<Snapshot | null> {
-  const key = readerKey();
-  // A command without a claimed workspace has no repository to compare.
-  if (!key || !root) return null;
-  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
-  const base = (await git(top, ["rev-parse", "HEAD"])).trim();
-  return { key, root: top, base, before: await worktreeMinted(top, base) };
-}
-
-/** After the command: names it minted with no record become pending for this conversation. */
-export async function noteCommandMinted(snapshot: Snapshot | null): Promise<string[]> {
-  if (!snapshot) return [];
-  const after = await worktreeMinted(snapshot.root, snapshot.base);
-  const done = accounted.get(snapshot.key);
-  let fresh = [...after].filter((name) => !snapshot.before.has(name) && !done?.has(name));
-  const existing = await alreadyDefined(snapshot.root, snapshot.base, fresh);
-  fresh = fresh.filter((name) => !existing.has(name));
-  for (const name of fresh) setFor(pending, snapshot.key).add(name);
-  return fresh;
-}
-
-/** Refusal while shell-minted names await their record; null otherwise. */
-export function reusePendingRefusal(tool: string, args: Record<string, unknown>): string | null {
-  if (tool === "read" || tool === "find" || tool === "view_image") return null;
-  // The record for shell-made names travels on the next apply_patch.
-  if (tool === "apply_patch" && Array.isArray(args["reuse_search"])) return null;
-  const key = readerKey();
-  if (!key) return null;
-  const waiting = pending.get(key);
-  if (!waiting || waiting.size === 0) return null;
-  return (
-    `REUSE_SEARCH_PENDING: a command you ran added ${[...waiting].join(", ")} with no reuse record, so nothing was run. ` +
-    `${HOW} ${quotableSearches(key, [...waiting])} Then call apply_patch with a reuse_search whose entries cover those names ` +
-    "(the patch may be the next edit you were going to make, or a one-line comment change). If the addition was a mistake, " +
-    "revert it and say so in why_new. read and find stay available meanwhile."
-  );
-}
-
-/** The reuse_record tool: accepts a verified record for the pending names. */
-export function acceptReuseRecord(record: readonly ReuseSearchEntry[]): { ok: true; text: string } | { ok: false; text: string } {
-  const key = readerKey();
-  if (!key) return { ok: false, text: "reuse_record works only inside a claimed workstream." };
-  const waiting = [...(pending.get(key) ?? [])];
-  if (waiting.length === 0) return { ok: true, text: "Nothing is pending; no record was needed." };
-  const problems = recordProblems(key, waiting, record);
-  if (problems.length > 0)
-    return {
-      ok: false,
-      text:
-        `REUSE_SEARCH_REJECTED: ${problems.join("; ")}. ${quotableSearches(key, waiting)} ` +
-        "Then call apply_patch again with the corrected reuse_search.",
-    };
-  for (const name of waiting) setFor(accounted, key).add(name);
-  pending.delete(key);
-  return { ok: true, text: `Recorded. ${waiting.join(", ")} are accounted for; continue.` };
 }

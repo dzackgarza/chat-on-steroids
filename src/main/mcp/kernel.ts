@@ -77,7 +77,7 @@ import {
 } from "./call-context.js";
 import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
 import { rulesGateRefusal } from "../rules-gate.js";
-import { noteCommandMinted, noteSearch, reusePendingRefusal, snapshotBeforeCommand } from "../reuse-gate.js";
+import { noteSearch } from "../reuse-gate.js";
 import { readOverflowText } from "../session/store.js";
 import type { StoredText } from "../../shared/session.js";
 
@@ -110,12 +110,7 @@ export interface ToolContext {
   /**
    * Whether `find` must stay registered for the lifetime of the endpoint.
    *
-   * `find` and the exec pair are mutually exclusive, and that choice cannot be derived
-   * from `exposedCaps.command` on each request: `exposedCaps` only ever widens, so a user
-   * switching command execution on mid-run would silently *delete* `find` from under a
-   * cached ChatGPT snapshot — the exact stale-snapshot failure the monotonic rule exists
-   * to prevent. So the decision is made once, from the live capabilities, and then only
-   * ever added to. Defaults to the live answer when the caller does not track it.
+   * Search is independent of command permissions and remains exposed once enabled.
    */
   exposedFind?: boolean;
 }
@@ -840,17 +835,6 @@ export interface SurfaceRegistrar {
   descriptions(): Array<{ name: string; description: string }>;
 }
 
-// ------------------------------------------------------------------ emergency recovery bypass
-//
-// Temporary, exact-chat maintenance exception, installed only while the unscoped
-// setup/attachment operation was absent. Gated entirely on process environment so it is
-// inert everywhere unless the daemon is launched with the recovery credentials.
-//
-// It does NOT create, claim, renew, retire, or otherwise touch a workstream, and it does
-// NOT alter conversation-key bindings. It lets a single known chat reach the four
-// filesystem/execution tools directly, bypassing workstream admission. Remove this block
-// and its systemd drop-in once the `workstream` setup tool is confirmed live.
-
 /**
  * The per-tool gates every admitted call passes before its handler runs.
  *
@@ -872,29 +856,8 @@ function gatedHandler(
       async (virtualWorkspace) => (await resolvePath(roots, virtualWorkspace)).real,
     );
     if (unread) return fail(unread);
-    const reusePending = reusePendingRefusal(name, args);
-    if (reusePending) return fail(reusePending);
     noteSearch(name, args);
-    if (name !== "exec_command" && name !== "write_stdin") return handler(args as never);
-    // Shell commands can mint definitions without apply_patch; see reuse-gate.ts.
-    // No workspace: the workstream has no repository to watch. A workspace that fails
-    // to resolve is an error for this call, never an unwatched command.
-    const workstreamId = currentCall()?.workstreamId ?? null;
-    const workspace = workstreamId ? workstreamWorkspace(workstreamId) : null;
-    const root = workspace ? (await resolvePath(roots, workspace)).real : null;
-    const snapshot = await snapshotBeforeCommand(root);
-    const result = await handler(args as never);
-    const minted = await noteCommandMinted(snapshot);
-    if (minted.length > 0 && result && Array.isArray((result as { content?: unknown }).content)) {
-      (result as { content: Array<{ type: "text"; text: string }> }).content.push({
-        type: "text",
-        text:
-          `REUSE_SEARCH_PENDING: this command added ${minted.join(", ")} without a reuse record. ` +
-          "Every tool except read and find is now refused until an apply_patch carries a reuse_search covering those names: " +
-          "the searches you ran for existing owners, what they found and why none is reused.",
-      });
-    }
-    return result;
+    return handler(args as never);
   };
 }
 
@@ -915,7 +878,7 @@ export function createRegistrar(
   const sessionToolsExposed = ctx.exposedSessionTools ?? sessionToolsLive;
   const agentToolsExposed = ctx.exposedAgentTools ?? agentToolsLive;
   const findExposed =
-    ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
+    ctx.exposedFind ?? exposedCaps.search;
   const names: string[] = [];
   const handlers = new Map<
     string,

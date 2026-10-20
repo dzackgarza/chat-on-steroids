@@ -353,8 +353,7 @@ export async function startMcpServer(
   const stableContext = (surface: SurfaceId): ToolContext => {
     const live = getContext();
     const exposed = exposureFor(surface);
-    if (exposed.find === null)
-      exposed.find = !live.caps.command && live.caps.search;
+    exposed.find = Boolean(exposed.find || live.caps.search);
     if (exposed.caps === null) {
       exposed.caps = { ...live.caps };
     } else {

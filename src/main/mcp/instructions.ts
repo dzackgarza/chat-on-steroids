@@ -58,7 +58,7 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform): string {
     : "Read/write for the tools that are listed. Anything not listed is switched off.";
 
   const lines = [
-    `Local ${hostName} coding bridge: read and change files in folders the user approved, and run commands on this computer.`,
+    `Local ${hostName} coding bridge: read, search and patch assigned source trees.`,
     "",
     `Roots: ${roots}`,
     `Mode: ${mode}`,
@@ -70,39 +70,18 @@ function coreInstructions(ctx: ToolContext, platform: NodeJS.Platform): string {
       ? "Paths are virtual, like /project/src/main.ts. Native Windows paths inside an approved folder are also accepted and normalized to the equivalent virtual path."
       : "Paths are virtual, like /project/src/main.ts. Absolute native paths inside an approved folder are also accepted and normalized to the equivalent virtual path.",
     // Taught once here rather than in every tool description: it is one rule that holds
-    // across read, find, exec_command and apply_patch alike, and repeating it per tool would
+    // across read, find and apply_patch alike, and repeating it per tool would
     // cost more context than the shorthand saves.
     "Once you use a full path this chat remembers that project, so later paths may be relative to it; use a full path again to move to another project. If a relative path is refused, this chat has no folder yet — use a full one.",
     // Reading is three milliseconds of work behind a multi-second round trip, so the expensive
     // mistake is splitting one file across calls, not asking for too much in one. The default
     // per-file budget already covers an ordinary source file whole.
     "read batches paths, lists folders, expands globs and returns images — use one call, and read a file whole rather than in windows. A start_line/end_line range applies to every file the call reads; use it only for a known region.",
-    ...(windows
-      ? [
-          // The gap that produced the most repeated shell failures: a POSIX shell expands globs
-          // before the program runs and PowerShell does not, so the program receives the asterisk.
-          "PowerShell does not expand * or ? for native programs. Pass ripgrep filename patterns as -g '*.go', and expand other globs with Get-ChildItem before use.",
-          "Bare rg/ripgrep in PowerShell is bound to this app’s bundled ripgrep; name an explicit path for a different one.",
-          // Two bash habits that Windows PowerShell answers with a failure the output does not
-          // explain. Neither can be rewritten safely — stripping the redirect changes what the
-          // command returns, and `;` is not what `&&` means — so they are said once, up front.
-          "In Windows PowerShell do not append 2>&1 to a native program: stderr is already captured, and redirecting it leaves $? false even after exit 0. PowerShell 5.1 has no && or ||: use cmds, or A; if ($?) { B }.",
-        ]
-      : [
-          "exec_command uses the host’s normal POSIX shell (zsh/bash/sh unless you request another one), so ordinary shell quoting, pipes and glob expansion work normally.",
-          "The bundled ripgrep directory is placed first on PATH; name an explicit executable path when you intentionally want another rg.",
-        ]),
     "Never send read’s line-number prefixes to apply_patch; they are display metadata, not file content.",
     "apply_patch is the only way to change files: it adds, updates, moves and deletes, and it is atomic across files.",
-    "exec_command runs git, npm, builds, tests and anything else; a long-running one gives you a session_id to continue with write_stdin.",
-    // The recorded sessions show this done by hand — several checks glued together with
-    // Write-Output banners inside one cmd — whenever the model happened to think of it, and
-    // split across separate calls whenever it did not. `cmds` is that habit made explicit, and
-    // it earns its space here because the saving is a round trip per command, not shell time.
-    "Batch related checks with exec_command cmds: [...]: they share one shell session, keep per-command labels/exit codes, and continue after non-zero results.",
-    // The one exception to the virtual-path rule above, and the model has to be told: cmd
-    // is a program, not a path, so it reaches the shell exactly as written.
-    "exec_command’s workdir is virtual, but its cmd is not translated — set workdir and write paths inside the command relative to it.",
+    "Use find for structured file and content searches.",
+    "Request assigned validation with workstream action=validate and its consumer identity. The controller owns command, runtime, selection and lifetime.",
+    "Validation registers its durable wait automatically; end the turn after launch. The controller delivers the terminal result without polling.",
     "Output is capped. When a result says it was truncated, narrow the request instead of repeating it.",
   ];
 

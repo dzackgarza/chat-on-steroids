@@ -167,9 +167,8 @@ choices so a config moved back to Windows does not lose them.
 Do not "restore" these from an older document:
 
 - `view_image` is its own Core tool, not a mode of `read`.
-- Core declares **8** tool names but at most **7** are live: `find` and the exec pair are
-  mutually exclusive. Desktop adds at most 2. Live ceiling is 9, and reporting must derive
-  from the surface projection, never a hardcoded count.
+- Worker shell execution is absent. `find` is independent of command permissions.
+  Derive exposed tool names from the surface projection, never a hardcoded count.
 - `session` has exactly two actions, `search` and `read`. Search discovers recordings; read
   requires an explicit local session id and returns lossless cursor pages. Compact & Resume is
   app/browser orchestration — there is no model-visible `save_handoff`.
@@ -305,9 +304,8 @@ earn it today.
 | --- | --- | --- |
 | `read` | `read` \| `browse` \| `metadata` | `tools-core.ts` → `codex/read-backend.ts` |
 | `view_image` | `read` | `tools-core.ts` → `codex/view-image.ts` |
-| `find` | `search` **and not** `command` | `tools-core.ts` → `search.ts` |
+| `find` | `search` | `tools-core.ts` → `search.ts` |
 | `apply_patch` | any of `create`/`edit`/`move`/`deleteFile` | `codex/apply-patch/*` |
-| `exec_command`, `write_stdin` | `command` | `codex/unified-exec.ts` |
 | `session` | recording enabled | session subsystem |
 | `agents` | multi-agent enabled | `agents.ts` |
 | `exec` (code mode) | always; each child call re-admits the workstream claim and re-checks its own permission and gates | `mcp/code-mode-*.ts` (QuickJS worker), children via `kernel.ts::dispatchNested` |
@@ -367,14 +365,11 @@ registrar):
   was told the rule descriptively ended its turn calling it a blocker.
 - **Reuse gate** (`reuse-gate.ts`): a patch that adds a new code file or a definition name that
   no tracked file already defines must carry `reuse_search`. Per name, it gives the searches
-  run, what they found, and why none is reused. Each search must match a `find` call or
-  rg/grep/fd/ast-grep/probe command this conversation actually ran, and a search that looks
+  run, what they found, and why none is reused. Each search must match a `find` call this conversation actually ran, and a search that looks
   only for invented names does not count; one that includes a new name among other terms does
   (2026-10-10: a helper named `cokernel` voided the real search `'cokernel|elementary_divisors'`
   and the bare refusal locked lean-cas-dsl-leaves out for 80 minutes). A refusal says, per
-  quoted search, why it failed, and lists the chat's searches that would count. Around every `exec_command`/`write_stdin` the workspace is
-  diffed against the pre-command HEAD, so shell-written definitions become pending, and every
-  tool except reading ones is refused until an `apply_patch` carries a covering `reuse_search`.
+  quoted search, why it failed, and lists the chat's searches that would count.
   Names already defined elsewhere (Sage's `one()`, `zero()`, `_repr_`) are overrides, not
   mints; before that rule, a new `one()` locked research out for half an hour.
 
@@ -436,12 +431,15 @@ The authority for every model-supplied path. Approved folders get virtual roots 
   only on an earlier pathname check when the underlying target can change.
 - Native filesystem error text must not leak hidden physical root paths back to the model.
 
-**Not contained: shell commands.** `exec_command` is arbitrary code execution as the
-logged-in user. Its *starting cwd* is restricted to an approved folder; the command is not.
-That is why `command` is the strongest permission and why read-only mode disables it
-outright. Never claim approved roots contain arbitrary commands — they contain the app's
-filesystem tools. Read-only derives from the complete write-capability list, so a new write
-capability must become read-only-blocked automatically.
+**Controller-owned execution.** Both normal entrypoints require operator-owned execution
+configuration before starting services. Workers have read/search/patch operations and request an
+assigned consumer with `workstream action=validate`. They cannot submit command text, selectors,
+runtime overrides, stdin, or execution deadlines. No shell handlers are registered, including in
+nested code mode; the common gate also refuses their old names. Repository queries use fixed argv
+in a read-only container. Existing Codex terminal internals are not a worker capability.
+
+The candidate-import/pytest report-ownership defect remains open in COMPLAINTS.md. Snapshotting
+and mandatory dispatch alone do not establish independent selection or reporting.
 
 **Acceptance.** Exercise real approved/outside paths on the target OS. Security claims are about
 what the filesystem actually permits or refuses, not an in-memory path fixture.
@@ -469,15 +467,8 @@ worker ownership/routing requires live ChatGPT workstreams.
 Selected public Codex behavior ported into TypeScript. **It does not launch a Codex model
 or require a Codex installation.**
 
-**`exec_command` / `write_stdin`.** `unified-exec.ts` ports session ids, output draining,
-head/tail buffering, yield deadlines, output token policy, interactive stdin, and sessions
-that outlive the call that created them. Windows adaptations (quoting, interrupt) live
-beside the port and stay explicit and tested against model-facing behavior. There is a
-known Ctrl+C vs. natural-exit race worth keeping a regression for. The local MCP adaptation
-also accepts `cmds` to run related commands sequentially in one labeled shell session, and an
-empty `write_stdin` poll returns on first output instead of holding Codex's full collection
-window. Start at `tools-core.ts`
-→ `unified-exec.ts` → `shell.ts` → `ownership.ts` → `exec-output.ts`.
+**Terminal internals.** `unified-exec.ts` retains process/session plumbing used by the app's
+internal lifecycle code. The worker MCP surface does not register terminal operations.
 
 **`apply_patch`.** Model syntax is Codex V4A. MCP cannot expose a true freeform tool, so
 the raw patch rides inside the `patch` string while the grammar lives in the description.

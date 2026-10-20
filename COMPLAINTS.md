@@ -4,6 +4,23 @@ Friction, deficiencies, and observed-but-unfixed defects, logged per the AGENTS.
 standing directive. Each entry names what was observed, where, and what (if anything)
 was done about it.
 
+## 2026-10-20 — validation authority review
+
+- **Worker shell bypass — corrected and independently checked in source.** The ordinary development
+  command ran `timeout 5 python3 -m pytest ...::test_other` outside the controller job
+  store. Worker-supplied execution and stdin handlers have been removed, including their
+  nested registration. Structured read/search/patch remain available. The actual HTTP
+  regression failed before the correction and passes afterward; no live workers changed.
+- **Candidate code owns pytest selection/reporting — OPEN.** A candidate module set
+  `PYTEST_ADDOPTS=-k test_other` during its configured import. The required failing test
+  was deselected, yet the job returned success and its report claimed both tests were
+  selected. `scripts/validation-run.py` still imports candidate code in the interpreter
+  that owns collection and report hooks. Environment cleanup cannot establish separation.
+  Actual Sage consumers import candidate modules and operate on live candidate objects;
+  preserving every assertion while separating those processes requires execution-plumbing
+  changes at that interface. Do not claim the validation ownership repair complete while
+  this defect remains.
+
 ## 2026-09-09 — sleep/wake architecture agent
 
 - **`storedHistory()` closed `observer_lost` turns in the durable rebuild — FIXED.** The

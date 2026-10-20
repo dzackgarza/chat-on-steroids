@@ -47,15 +47,6 @@ async function main() {
   process.env.COS_RECOVERY_WORKSTREAM_LOCK = 'old-recovery-lock';
   const managed = await import(modulePath);
   managed.initExecutionConfig(state);
-  const command = managed.developmentCommand('proof', workspace,
-    'python3 -c "import pathlib,importlib.util; assert importlib.util.find_spec(\'sage\') is None; assert not pathlib.Path(\'/run/docker.sock\').exists(); pathlib.Path(\'src/edited\').write_text(\'42\')" && printf boundary-ok');
-  const result = await exec(command[0]!, command.slice(1));
-  assert.equal(result.stdout, 'boundary-ok');
-  assert.equal(await fs.readFile(path.join(workspace, 'src/edited'), 'utf8'), '42');
-  const escaped = managed.developmentCommand('proof', workspace, 'printf changed > frozen');
-  await assert.rejects(exec(escaped[0]!, escaped.slice(1)));
-  assert.equal(await fs.readFile(path.join(workspace, 'frozen'), 'utf8'), 'unchanged');
-  assert.throws(() => managed.developmentCommand('other-stream', workspace, 'true'));
   await fs.writeFile(path.join(workspace, 'AGENTS.md'), 'Use this isolated fixture.\n');
   await fs.writeFile(path.join(workspace, 'src/value.py'), 'value = 0\n');
   await fs.writeFile(path.join(workspace, 'test_consumer.py'), 'import pytest, time\nfrom pathlib import Path\nfrom value import value\nif value == 0:\n    reports = Path(__file__).parents[2] / "reports"\n    (reports / "ready").write_text("running")\n    while not (reports / "release").exists():\n        time.sleep(.05)\n@pytest.mark.parametrize("case", [16, 160])\ndef test_case(case):\n    assert case != 16 or value == 42\n');
@@ -99,7 +90,7 @@ async function main() {
   }
   try {
     const recovery = await call('exec_command', {workstream_id: 'old-recovery-lock', cmd: 'printf bypass', workdir: '/work'});
-    assert(recovery.isError, 'Recovery credentials bypassed required workstream admission');
+    assert(recovery.isError || recovery.code, 'Recovery credentials bypassed required workstream admission');
     const setup = await call('workstream', {action: 'start', workstream: 'proof', path: '/work'});
     let claim = JSON.stringify(setup).match(/wl_[A-Za-z0-9_-]+/)?.[0];
     assert(claim, JSON.stringify(setup));
@@ -109,13 +100,16 @@ async function main() {
     assert(policyRead.isError || JSON.stringify(policyRead).includes('not inside an approved folder'), JSON.stringify(policyRead));
     const read = await call('read', {workstream_id: claim, paths: ['/work/AGENTS.md']});
     assert(!read.isError, JSON.stringify(read));
-    const direct = await call('exec_command', {workstream_id: claim, cmd: 'test ! -S /run/docker.sock && test ! -e /usr/bin/sage && printf direct-ok', workdir: '/work'});
-    assert.match(JSON.stringify(direct), /direct-ok/);
-    assert(!direct.isError, JSON.stringify(direct));
+    // Reproduce the reviewer's bypass through the actual worker endpoint, including
+    // nested code mode. A worker must have no command/selector/lifetime authority.
+    const bypass = 'timeout 5 python3 -m pytest -p no:cacheprovider -q test_consumer.py::test_case[160]';
+    const direct = await call('exec_command', {workstream_id: claim, cmd: bypass, workdir: '/work'});
+    assert(direct.isError || direct.code, 'Worker executed an unassigned subset outside controller validation');
+    const nested = await call('exec', {workstream_id: claim, code: `text(await tools.exec_command({cmd:${JSON.stringify(bypass)},workdir:"/work"}))`});
+    assert(nested.isError || /Unknown tool|not a function|not available|unavailable/i.test(JSON.stringify(nested)), JSON.stringify(nested));
+    const search = await call('find', {workstream_id: claim, path: '/work/src', mode: 'content', query: 'value = 0'});
+    assert(!search.isError && JSON.stringify(search).includes('value = 0'), JSON.stringify(search));
     assert(!await fs.stat(escapedWrite).then(() => true, () => false), 'Repository Git executed with host access');
-    const nested = await call('exec', {workstream_id: claim, code: 'text(await tools.exec_command({cmd:"test ! -S /run/docker.sock && test ! -e /usr/bin/sage && printf nested-ok",workdir:"/work"}))'});
-    assert.match(JSON.stringify(nested), /nested-ok/);
-    assert(!nested.isError, JSON.stringify(nested));
     const patch = await call('apply_patch', {workstream_id: claim, patch: '*** Begin Patch\n*** Update File: frozen\n@@\n-unchanged\n+changed\n*** End Patch'});
     assert(patch.isError, JSON.stringify(patch));
     assert.equal(await fs.readFile(path.join(workspace, 'frozen'), 'utf8'), 'unchanged');
@@ -201,7 +195,7 @@ async function main() {
     assert.match(JSON.stringify(repeated), /Repair the recorded failure/);
     assert(!streams.workstreamStatus()[0]?.validationRequest);
     assert(!streams.workstreamPrompt(streams.workstreamStatus()[0]!, 'Core').includes('Validation finished:'), 'Result was offered again after worker resumed');
-    const repair = await call('exec_command', {workstream_id: claim, workdir: '/work', cmd: "printf 'value = 42\\n' > src/value.py"});
+    const repair = await call('apply_patch', {workstream_id: claim, patch: '*** Begin Patch\n*** Update File: src/value.py\n@@\n-value = 0\n+value = 42\n*** End Patch'});
     assert(!repair.isError, JSON.stringify(repair));
     const retry = await validate();
     assert(!retry.isError, JSON.stringify(retry));
@@ -233,14 +227,14 @@ async function main() {
     assert(secondClaim, JSON.stringify(second));
     const secondRead = await call('read', {workstream_id: secondClaim, paths: ['/second/AGENTS.md']});
     assert(!secondRead.isError, JSON.stringify(secondRead));
-    const ownSource = await call('exec_command', {workstream_id: secondClaim, workdir: '/second', cmd: 'cat src/marker'});
+    const ownSource = await call('read', {workstream_id: secondClaim, paths: ['/second/src/marker']});
     assert.match(JSON.stringify(ownSource), /second-workstream/);
-    const foreign = await call('exec_command', {workstream_id: secondClaim, workdir: '/work', cmd: 'cat src/value.py'});
+    const foreign = await call('read', {workstream_id: secondClaim, paths: ['/work/src/value.py']});
     assert(foreign.isError, 'Another configured workstream obtained this source authority');
     console.log('Normal app endpoint: multiple workstreams remain confined to their assigned policies.');
     console.log('Actual MCP validation: launch owns wait; duplicate retained; exact failure retry automatically followed by full consumer on identical snapshot.');
-    console.log('Actual MCP HTTP: direct and nested commands confined; frozen patch and alternate identity refused.');
+    console.log('Actual MCP HTTP: direct and nested commands unavailable; frozen patch and alternate identity refused.');
   } finally { await endpoint.stop({forceAfterMs: 1000}); }
-  console.log('Real development container: source edits work; frozen files, Sage runtime and Docker socket unavailable.');
+  console.log('Worker development: read/search/patch work; arbitrary execution is absent.');
 }
 void main().catch(error => {console.error(error); process.exitCode = 1;});
