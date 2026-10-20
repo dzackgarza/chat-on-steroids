@@ -36,6 +36,7 @@ import {
   admitWorkstreamCall,
   checkpointWorkstreamAssignment,
   workstreamStatus,
+  waitForWorkstreamValidation,
 } from "../workstreams.js";
 import { assignmentPrompt, checkpointSchema } from "../work-assignment.js";
 
@@ -224,18 +225,20 @@ function registerWorkstreamSetupTool(
   server.registerTool(
     "workstream",
     {
-      title: "Claim workstream identity or checkpoint its assignment",
+      title: "Claim workstream identity, checkpoint, or hand off a validation wait",
       description:
         "Identity setup required before ordinary Core/Desktop calls. Use action=start with a new logical " +
         "workstream name and the repository directory it works in, to register and claim it for this chat. Use " +
         "action=continue with an already-registered name to claim it. The returned workstream_id is the identity " +
         "token required on every ordinary connector call. action=checkpoint records the unfinished operation " +
-        "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance.",
+        "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance. " +
+        "action=wait hands a durable validation-run.py job to the controller; end your turn after it succeeds. " +
+        "The controller resumes you with its result without worker polling.",
       inputSchema: z.object({
         action: z
-          .enum(["start", "continue", "checkpoint"])
+          .enum(["start", "continue", "checkpoint", "wait"])
           .describe(
-            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim.",
+            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim. wait: hand off a durable validation job.",
           ),
         workstream: workstreamIdSchema.describe(
           "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
@@ -248,15 +251,28 @@ function registerWorkstreamSetupTool(
               "for example /research/math-notes-app. It is fixed for the life of the workstream.",
           ),
         workstream_id: z.string().optional().describe("Required for checkpoint: the currently held identity token."),
+        validation_directory: z.string().optional().describe("wait only: approved path of the job directory printed by scripts/validation-run.py start."),
         checkpoint: checkpointSchema.optional().describe("Worker-reported resume point; never acceptance evidence."),
       }),
     },
-    async ({ action, workstream, path, workstream_id, checkpoint }) =>
+    async ({ action, workstream, path, workstream_id, checkpoint, validation_directory }) =>
       guard("workstream", async () => {
         const refused = (text: string) => ({
           content: [{ type: "text" as const, text }],
           isError: true,
         });
+        if (action === "wait") {
+          if (!workstream_id || !validation_directory || checkpoint || path)
+            return refused("wait requires workstream_id and validation_directory only.");
+          const admitted = await admitWorkstreamCall(workstream_id);
+          if (!admitted.ok || admitted.id !== workstream)
+            return refused("Wait requires the current claim for this workstream.");
+          const resolved = await resolvePath(liveContext().roots, validation_directory);
+          await waitForWorkstreamValidation(admitted.id, workstream_id, resolved.real);
+          return { content: [{ type: "text" as const, text:
+            "Validation wait handed to the controller. End this turn. It will resume you with the durable result; do not poll or relaunch the calculation." }] };
+        }
+        if (validation_directory) return refused("validation_directory is accepted only with action=wait.");
         if (action === "checkpoint") {
           if (!workstream_id || !checkpoint || path)
             return refused("checkpoint requires workstream_id and checkpoint, and takes no path.");
