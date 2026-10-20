@@ -1,5 +1,6 @@
 """Real detached-process regression for the validation launcher; no Sage job is started."""
 import hashlib
+import fcntl
 import json
 import os
 import shutil
@@ -48,9 +49,22 @@ for target in (pathlib.Path('value'), pathlib.Path(__file__).parents[2] / 'manif
     refused = subprocess.run([sys.executable, str(runner), 'start', str(native), str(root / 'native-jobs')], capture_output=True)
     assert refused.returncode != 0, 'Native validation remains available'
     jobs = root / 'jobs'
+    lock_path = Path.home() / '.local/state/chat-on-steroids/runtime-locks' / (image.removeprefix('sha256:') + '.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_lock = lock_path.open('a')
+    fcntl.flock(runtime_lock, fcntl.LOCK_EX)
     launch = subprocess.run([sys.executable, str(runner), 'start', str(spec), str(jobs)], text=True, capture_output=True, check=True,
                             env={**os.environ, 'COS_HOST_ONLY_PROBE': 'must-not-cross'})
     run = Path(json.loads(launch.stdout)['directory'])
+    deadline = time.monotonic() + 20
+    while not (run / 'process.json').exists() and time.monotonic() < deadline:
+        time.sleep(.05)
+    queued = json.loads((run / 'process.json').read_text())
+    try:
+        assert queued.get('state') == 'waiting_for_runtime' and 'child' not in queued, queued
+        assert not (run / 'output.log').exists(), 'Computation ran while its runtime was occupied'
+    finally:
+        runtime_lock.close()
     assert not (run / 'result.json').exists(), 'launch waited for the computation'
     duplicate = subprocess.run([sys.executable, str(runner), 'start', str(spec), str(jobs)], capture_output=True)
     assert duplicate.returncode != 0, 'duplicate launched while the first run was active'
@@ -94,7 +108,7 @@ def test_consumer(case):
             return directory, json.loads((directory / 'result.json').read_text())
         # Reproduce the review finding: an imported module adds a selector before
         # pytest starts. The controller must still run the assigned failing case.
-        (source / 'pytest.ini').write_text('[pytest]\naddopts = -k case160 -x\n')
+        (source / 'pytest.ini').write_text('[pytest]\naddopts = -k case160 -x\nlog_file = forbidden.log\n')
         (source / 'selection.py').write_text('import os\nos.environ["PYTEST_ADDOPTS"] = "-k case160"\n')
         configured = json.loads(spec.read_text())
         configured['imports'] = ['selection']
