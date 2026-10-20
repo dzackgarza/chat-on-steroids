@@ -11,10 +11,6 @@ import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
 import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream, workerWorkstreamsOf } from "./agents.js";
-import {
-  applyAssignmentDecision, assignmentPrompt, checkpointAssignment, checkpointSchema,
-  verifyAssignmentDecision, workAssignmentSchema,
-} from "./work-assignment.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -40,7 +36,6 @@ const rowSchema = z
   .object({
     id: workstreamIdSchema,
     context: z.string().max(40_000),
-    assignment: workAssignmentSchema.nullable().default(null),
     workspace: z.string().nullable(),
     ownerKey: z.string(),
     conversationId: z.string().nullable(),
@@ -176,7 +171,6 @@ export function workstreamStatus(): Workstream[] {
 function retireEndedWorkerRows(): boolean {
   let changed = false;
   for (const row of rows.values()) {
-    if (row.assignment) continue;
     if (!workerEndedForWorkstream(row.id) || inFlightCallsForWorkstream(row.id).length > 0)
       continue;
     rows.delete(row.id);
@@ -311,7 +305,6 @@ export function autoAdvancingWorkstreamForCommand(commandId: string): boolean {
     (row) =>
       row.commandId === commandId &&
       row.autoAdvance &&
-      !row.assignment?.verdict &&
       !["paused", "blocked", "archiving"].includes(row.phase),
   );
 }
@@ -325,7 +318,6 @@ export type WorkstreamSetupResult =
         | "WORKSTREAM_HELD"
         | "WORKSTREAM_NOT_FOUND"
         | "WORKSTREAM_UNAVAILABLE"
-        | "WORKSTREAM_ASSIGNMENT_LOCKED"
         | "WORKSTREAM_PAUSED";
       /** The workstream that already owns the requested path. */
       holder?: string;
@@ -368,7 +360,6 @@ export async function startWorkstream(
     rows.set(logicalWorkstream, {
       id: logicalWorkstream,
       context: "",
-      assignment: null,
       workspace,
       ownerKey: logicalWorkstream,
       conversationId: null,
@@ -413,7 +404,6 @@ export async function continueWorkstream(
     workstreamIdSchema.parse(logicalWorkstream);
     const prior = rows.get(logicalWorkstream);
     if (!prior) return { ok: false, code: "WORKSTREAM_NOT_FOUND" };
-    if (prior.assignment?.verdict) return { ok: false, code: "WORKSTREAM_ASSIGNMENT_LOCKED" };
     if (["active", "advancing"].includes(prior.phase)) {
       if (runningToolCallsForWorkstream(prior.id) > 0)
         return { ok: false, code: "WORKSTREAM_HELD", freesAt: null };
@@ -436,7 +426,6 @@ export async function continueWorkstream(
     rows.set(logicalWorkstream, {
       id: logicalWorkstream,
       context: prior.context,
-      assignment: prior.assignment,
       workspace: prior.workspace,
       ownerKey: logicalWorkstream,
       conversationId: prior.phase === "opening" ? prior.conversationId : null,
@@ -484,13 +473,11 @@ export async function reserveWorkstream(
     ready();
     workstreamIdSchema.parse(logicalWorkstream);
     const prior = rows.get(logicalWorkstream);
-    if (prior?.assignment) return { ok: false, code: "WORKSTREAM_ASSIGNMENT_LOCKED" };
     const conversationId = prior?.conversationId ?? null;
     const lock = prior?.lock ?? freshWorkstreamId();
     rows.set(logicalWorkstream, {
       id: logicalWorkstream,
       context,
-      assignment: prior?.assignment ?? null,
       workspace: prior?.workspace ?? null,
       ownerKey: logicalWorkstream,
       conversationId,
@@ -527,39 +514,6 @@ export async function setWorkstreamAutoAdvance(
     row.autoAdvance = enabled;
     await save();
     return true;
-  });
-}
-
-/** Local controller API; neither assignment nor disposition is authored through MCP. */
-export async function decideWorkstreamAssignment(id: string, envelope: unknown): Promise<void> {
-  const publicKey = process.env.COS_ASSIGNMENT_VERIFIER_PUBLIC_KEY;
-  if (!publicKey) throw new Error("Independent assignment verifier is not configured");
-  const decision = verifyAssignmentDecision(envelope, publicKey);
-  if (decision.workstream !== id) throw new Error("Decision addresses a different workstream");
-  await exclusive(async () => {
-    ready();
-    const row = rows.get(id);
-    if (!row) throw new Error("Unknown workstream");
-    const previous = row.assignment;
-    row.assignment = applyAssignmentDecision(previous, decision);
-    if (decision.kind === "assign" && previous?.verdict && row.autoAdvance && row.conversationId) {
-      row.phase = "advancing";
-      row.commandId = null;
-      row.actionId = `assignment-${decision.assignment.id}`;
-      row.nextCheck = 0;
-    }
-    await save();
-  });
-}
-
-export async function checkpointWorkstreamAssignment(id: string, input: unknown): Promise<void> {
-  const checkpoint = checkpointSchema.parse(input);
-  await exclusive(async () => {
-    ready();
-    const row = rows.get(id);
-    if (!row) throw new Error("Unknown workstream");
-    row.assignment = checkpointAssignment(row.assignment, checkpoint);
-    await save();
   });
 }
 
@@ -732,7 +686,6 @@ export async function scheduleWorkstreamAfterTurn(
     )
       return false;
     if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
-    if (row.assignment?.verdict) return false;
 
     if (row.id === ORCHESTRATOR_WORKSTREAM_ID) {
       // A real terminal turn frees the next scheduled tick. A call still executing
@@ -822,7 +775,6 @@ export async function retireWorkstream(id: string): Promise<boolean> {
     const row = rows.get(id);
     if (
       !row ||
-      row.assignment !== null ||
       !["paused", "blocked"].includes(row.phase) ||
       inFlightCallsForWorkstream(id).length > 0 ||
       workerOwnsWorkstream(id) ||
@@ -959,7 +911,7 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
       : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call. Do not reclaim it routinely. If an ordinary call returns WORKSTREAM_SETUP_REQUIRED, follow that refusal: call \`workstream\` with action="continue" and workstream="${row.id}", then retry using its returned workstream_id. WORKSTREAM_BUSY instead requires retrying with the existing workstream_id, not reclaiming.`;
-  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}${row.assignment ? assignmentPrompt(row.assignment) : ""}`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
 }
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
@@ -972,7 +924,6 @@ export async function nextWorkstreamActions(
     ready();
     retireEndedWorkerRows();
     for (const row of rows.values()) {
-      if (row.assignment?.verdict) continue;
       // Swarm workers are driven by agents.ts alone (see workerOwnsWorkstream).
       if (workerOwnsWorkstream(row.id)) continue;
       // An archive is performed by the extension, which is offered none while auto-continuation
@@ -1084,7 +1035,6 @@ export async function nextWorkstreamActions(
     return workstreamStatus().filter(
       (row) =>
         row.actionId !== null &&
-        !row.assignment?.verdict &&
         !workerOwnsWorkstream(row.id) &&
         ["advancing", "recovering", "archiving", "opening"].includes(row.phase) &&
         // An opening row whose replacement chat already bound has been delivered; it waits for
@@ -1107,7 +1057,7 @@ export function currentWorkstreamAction(
   actionId: string,
 ): Workstream | null {
   const row = rows.get(id);
-  return row?.actionId === actionId && !row.assignment?.verdict ? structuredClone(row) : null;
+  return row?.actionId === actionId ? structuredClone(row) : null;
 }
 
 export async function recordWorkstreamCommand(

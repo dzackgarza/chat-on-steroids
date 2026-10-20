@@ -44,8 +44,6 @@ import {
   bindWorkstreamReplacement,
   blockWorkstreamAction,
   configureWorkstream,
-  decideWorkstreamAssignment,
-  checkpointWorkstreamAssignment,
   currentWorkstreamAction,
   finishWorkstreamArchive,
   invalidateWorkstreamConversation,
@@ -1524,9 +1522,7 @@ async function handle(
     route === "/workstreams/resume" ||
     route === "/workstreams/recover" ||
     route === "/workstreams/replace" ||
-    route === "/workstreams/context" ||
-    route === "/workstreams/assignment" ||
-    route === "/workstreams/checkpoint"
+    route === "/workstreams/context"
   ) {
     if (!(await localSenderAuthorised(req)))
       return json(res, 401, { error: "unauthorised" }, origin);
@@ -1557,18 +1553,6 @@ async function handle(
     const id = workstreamIdSchema.safeParse(body["id"]);
     if (!id.success)
       return json(res, 400, { error: "invalid_workstream_id" }, origin);
-    if (route === "/workstreams/assignment" || route === "/workstreams/checkpoint") {
-      try {
-        if (route === "/workstreams/assignment") {
-          await decideWorkstreamAssignment(id.data, body["envelope"]);
-        } else {
-          await checkpointWorkstreamAssignment(id.data, body["checkpoint"]);
-        }
-      } catch (error) {
-        return json(res, 409, { error: (error as Error).message }, origin);
-      }
-      return json(res, 200, { recorded: true }, origin);
-    }
     if (route === "/workstreams/resume") {
       const resumed = await resumeWorkstream(id.data);
       return json(res, resumed ? 200 : 409, { resumed }, origin);
@@ -1638,8 +1622,6 @@ async function handle(
     }
     if (!openInBrowser)
       return json(res, 503, { error: "browser_driver_unavailable" }, origin);
-    if (workstreamStatus().some((row) => row.id === id.data && row.assignment))
-      return json(res, 409, { error: "assignment_requires_continuation_not_reselection" }, origin);
     if (await browserDisconnected())
       return json(res, 409, { error: "browser_disconnected" }, origin);
     const command = queue({
