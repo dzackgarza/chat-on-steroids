@@ -86,6 +86,17 @@ async function main() {
     assert(extra.isError || extra.code, JSON.stringify(extra));
     assert(!streams.workstreamStatus()[0]?.validationRequest, 'Rejected override persisted a request');
     const validate = () => call('workstream', {action: 'validate', workstream: 'proof', workstream_id: claim, consumer: 'fixture'});
+    // A source disappearing at launch is a real filesystem failure, not a fake runner result.
+    await fs.rename(workspace, workspace + '-saved');
+    try {
+      const unavailable = await validate();
+      assert(unavailable.isError, JSON.stringify(unavailable));
+    } finally { await fs.rename(workspace + '-saved', workspace); }
+    const failedLaunchFiles = await fs.readdir(path.join(root, 'jobs'));
+    await streams.nextWorkstreamActions(Date.now(), true);
+    await streams.nextWorkstreamActions(Date.now(), true);
+    assert.deepEqual(await fs.readdir(path.join(root, 'jobs')), failedLaunchFiles, 'Scheduler repeated a failed launch');
+    assert.match(streams.workstreamStatus()[0]!.error!, /validation_launch/);
     const launched = await validate();
     assert(!launched.isError, JSON.stringify(launched));
     const first = streams.workstreamStatus()[0]!.validationWait!;

@@ -819,12 +819,18 @@ export async function requestWorkstreamValidation(id: string, claim: string, con
     const request = row.validationRequest ?? {id: randomBytes(16).toString("hex"), consumer};
     await prepareValidation(id, consumer, request.id);
     row.validationRequest = request;
+    row.error = null;
     row.commandId = null;
     row.actionId = null;
     row.validationResult = null;
     row.validationOutput = null;
     await save();
-    row.validationWait = await launchValidation(id, consumer, request.id);
+    try { row.validationWait = await launchValidation(id, consumer, request.id); }
+    catch (error) {
+      row.error = `validation_launch: ${(error as Error).message}`;
+      await save();
+      throw error;
+    }
     await save();
   });
 }
@@ -1037,7 +1043,7 @@ export async function nextWorkstreamActions(
     for (const row of rows.values()) {
       if (row.assignment?.verdict) continue;
       if (row.validationRequest && !row.validationWait) {
-        if (row.phase === "paused") continue;
+        if (row.phase === "paused" || row.error?.startsWith("validation_launch:")) continue;
         try { row.validationWait = await launchValidation(row.id, row.validationRequest.consumer, row.validationRequest.id); }
         catch (error) { row.error = `validation_launch: ${(error as Error).message}`; continue; }
       }
