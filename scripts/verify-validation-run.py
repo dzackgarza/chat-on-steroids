@@ -32,8 +32,6 @@ with tempfile.TemporaryDirectory(prefix='validation-proof-', dir=cache) as tempo
     program.write_text(f"""import pathlib,time,os
 assert 'COS_HOST_ONLY_PROBE' not in os.environ
 assert not pathlib.Path({str(outside)!r}).exists()
-scratch = pathlib.Path(__file__).parent.parent / '.tmp'
-(scratch / 'temporary').write_text('scratch')
 for target in (pathlib.Path('value'), pathlib.Path(__file__).parents[2] / 'manifest.json'):
     try:
         target.write_text('forbidden')

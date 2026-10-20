@@ -177,11 +177,8 @@ def execute(run):
     command = [expand(arg) for arg in spec['argv']]
     if spec['mode'] == 'pytest':
         command += [str(run / 'runner.py'), '_pytest', str(run)]
-    scratch = run / 'inputs' / '.tmp'
-    scratch.mkdir(exist_ok=True)
     command = container_command(spec['runtime'], spec['runtime']['image'], command,
-                                expand(spec['cwd']), [(str(run), True), (str(run / 'reports'), False),
-                                                     (str(scratch), False)],
+                                expand(spec['cwd']), [(str(run), True), (str(run / 'reports'), False)],
                                 environment)
     # One installed runtime owns one calculation at a time, across workstreams.
     # Waiting happens in this detached supervisor, never in a worker polling turn.
