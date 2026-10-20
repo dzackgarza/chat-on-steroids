@@ -24,6 +24,10 @@ files:
 # Common real-filesystem resources. Platform-specific tunnel/rg/native notices are appended
 # below because their filenames and executable formats differ by OS.
 extraResources:
+  - from: scripts
+    to: validation
+    filter:
+    - validation-run.py
   - from: LICENSE
     to: LICENSE
   - from: extension

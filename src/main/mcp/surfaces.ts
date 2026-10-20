@@ -90,23 +90,16 @@ export interface SurfaceDefinition {
  *    it here. A dedicated connector for one conditional schema is pure setup overhead with
  *    no discovery benefit.
  *
- * Core declares 9 possible tool names below, but at most 8 schemas are live at once. `find`
- * and the exec pair are mutually exclusive — `find` exists only when command execution is
- * off — so no runtime tools/list reaches all 9 declarations. `workstream` is the one
- * unscoped setup tool and is always advertised alongside the ordinary tools.
+ * Workers develop through read, find and apply_patch. Assigned execution is owned by
+ * the workstream controller; no shell or interactive process tool is exposed.
  */
 const CORE: SurfaceDefinition = {
   id: "core",
   serverName: "chat-on-steroids-core",
   connectorName: `${CONNECTOR_BRAND} Core`,
   description:
-    "Read and edit code and text files on this computer, and run commands in a real terminal. " +
-    "Use for: opening and reading files, searching a repository, applying patches, creating, renaming and deleting files, " +
-    "running builds, tests, linters, git, npm and shell commands, and continuing long-running or interactive terminal sessions. " +
-    "Also searches and reads local recordings of previous or concurrently running ChatGPT work, and — when the user has " +
-    "enabled it — spawns and coordinates worker agents, subagents or a parallel swarm across several ChatGPT conversations.",
-  cardSummary:
-    "Files, patches and the terminal. Required — this is the coding connector.",
+    "Read, search and edit assigned source files. Request controller-owned validation through workstream identities.",
+  cardSummary: "Source files, patches and assigned validation.",
   required: true,
   tools: [
     "workstream",
@@ -115,8 +108,6 @@ const CORE: SurfaceDefinition = {
     "view_image",
     "find",
     "apply_patch",
-    "exec_command",
-    "write_stdin",
     "session",
     "agents",
     "exec",

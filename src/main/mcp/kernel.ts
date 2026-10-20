@@ -18,6 +18,7 @@
  * without readOnlyHint as a write action and asks the user to confirm each call, so every
  * genuinely read-only tool is marked as such.
  */
+import { managedToolRefusal } from '../managed-execution.js';
 
 import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
@@ -76,7 +77,7 @@ import {
 } from "./call-context.js";
 import { recordAgentMessage, recordToolCall } from "../session/recorder.js";
 import { rulesGateRefusal } from "../rules-gate.js";
-import { noteCommandMinted, noteSearch, reusePendingRefusal, snapshotBeforeCommand } from "../reuse-gate.js";
+import { noteSearch } from "../reuse-gate.js";
 import { readOverflowText } from "../session/store.js";
 import type { StoredText } from "../../shared/session.js";
 
@@ -109,12 +110,7 @@ export interface ToolContext {
   /**
    * Whether `find` must stay registered for the lifetime of the endpoint.
    *
-   * `find` and the exec pair are mutually exclusive, and that choice cannot be derived
-   * from `exposedCaps.command` on each request: `exposedCaps` only ever widens, so a user
-   * switching command execution on mid-run would silently *delete* `find` from under a
-   * cached ChatGPT snapshot — the exact stale-snapshot failure the monotonic rule exists
-   * to prevent. So the decision is made once, from the live capabilities, and then only
-   * ever added to. Defaults to the live answer when the caller does not track it.
+   * Search is independent of command permissions and remains exposed once enabled.
    */
   exposedFind?: boolean;
 }
@@ -839,42 +835,6 @@ export interface SurfaceRegistrar {
   descriptions(): Array<{ name: string; description: string }>;
 }
 
-// ------------------------------------------------------------------ emergency recovery bypass
-//
-// Temporary, exact-chat maintenance exception, installed only while the unscoped
-// setup/attachment operation was absent. Gated entirely on process environment so it is
-// inert everywhere unless the daemon is launched with the recovery credentials.
-//
-// It does NOT create, claim, renew, retire, or otherwise touch a workstream, and it does
-// NOT alter conversation-key bindings. It lets a single known chat reach the four
-// filesystem/execution tools directly, bypassing workstream admission. Remove this block
-// and its systemd drop-in once the `workstream` setup tool is confirmed live.
-
-const recoveryConversationKey =
-  process.env.COS_RECOVERY_CONVERSATION_KEY?.trim() ?? "";
-
-const recoveryWorkstreamLock =
-  process.env.COS_RECOVERY_WORKSTREAM_LOCK?.trim() ?? "";
-
-const RECOVERY_TOOL_NAMES = new Set([
-  "read",
-  "exec_command",
-  "apply_patch",
-  "write_stdin",
-]);
-
-function isEmergencyRecoveryCall(
-  toolName: string,
-  workstreamId: string | undefined,
-): boolean {
-  if (!recoveryConversationKey || !recoveryWorkstreamLock) return false;
-  // The recovery sentinel rides the ordinary workstream_id slot on this exact chat. It is
-  // the value of the old `workstream_lock` recovery credential, now carried in the single
-  // identity field the ordinary-tool schema exposes.
-  if (workstreamId !== recoveryWorkstreamLock) return false;
-  return RECOVERY_TOOL_NAMES.has(toolName);
-}
-
 /**
  * The per-tool gates every admitted call passes before its handler runs.
  *
@@ -886,37 +846,18 @@ function gatedHandler(
   roots: Root[],
   handler: (args: never) => Promise<ToolResult>,
 ): (args: Record<string, unknown>) => Promise<ToolResult> {
-  if (name === "exec") return (args) => handler(args as never);
   return async (args) => {
+    const managedRefusal = managedToolRefusal(currentCall()?.workstreamId ?? null, name);
+    if (managedRefusal) return fail(managedRefusal);
+    if (name === "exec") return handler(args as never);
     // A chat acts only after it has read its repository's rules (rules-gate.ts).
     const unread = await rulesGateRefusal(
       name,
       async (virtualWorkspace) => (await resolvePath(roots, virtualWorkspace)).real,
     );
     if (unread) return fail(unread);
-    const reusePending = reusePendingRefusal(name, args);
-    if (reusePending) return fail(reusePending);
     noteSearch(name, args);
-    if (name !== "exec_command" && name !== "write_stdin") return handler(args as never);
-    // Shell commands can mint definitions without apply_patch; see reuse-gate.ts.
-    // No workspace: the workstream has no repository to watch. A workspace that fails
-    // to resolve is an error for this call, never an unwatched command.
-    const workstreamId = currentCall()?.workstreamId ?? null;
-    const workspace = workstreamId ? workstreamWorkspace(workstreamId) : null;
-    const root = workspace ? (await resolvePath(roots, workspace)).real : null;
-    const snapshot = await snapshotBeforeCommand(root);
-    const result = await handler(args as never);
-    const minted = await noteCommandMinted(snapshot);
-    if (minted.length > 0 && result && Array.isArray((result as { content?: unknown }).content)) {
-      (result as { content: Array<{ type: "text"; text: string }> }).content.push({
-        type: "text",
-        text:
-          `REUSE_SEARCH_PENDING: this command added ${minted.join(", ")} without a reuse record. ` +
-          "Every tool except read and find is now refused until an apply_patch carries a reuse_search covering those names: " +
-          "the searches you ran for existing owners, what they found and why none is reused.",
-      });
-    }
-    return result;
+    return handler(args as never);
   };
 }
 
@@ -937,7 +878,7 @@ export function createRegistrar(
   const sessionToolsExposed = ctx.exposedSessionTools ?? sessionToolsLive;
   const agentToolsExposed = ctx.exposedAgentTools ?? agentToolsLive;
   const findExposed =
-    ctx.exposedFind ?? (!exposedCaps.command && exposedCaps.search);
+    ctx.exposedFind ?? exposedCaps.search;
   const names: string[] = [];
   const handlers = new Map<
     string,
@@ -1005,20 +946,6 @@ export function createRegistrar(
         mcpCtx?: McpCallContext,
       ) => {
         const { workstream_id, ...args } = input;
-        if (isEmergencyRecoveryCall(name, workstream_id as string)) {
-          logWarn(`EMERGENCY_RECOVERY_BYPASS tool=${name} surface=${surface}`);
-          return dispatch(
-            name,
-            args,
-            mcpCtx?.sessionId ?? null,
-            requestIdOf(mcpCtx),
-            surface,
-            null,
-            null,
-            null,
-            () => handler(args as never),
-          );
-        }
         const admitted = await admitWorkstreamCall(workstream_id as string);
         if (!admitted.ok) {
           if (admitted.code === "WORKSTREAM_BUSY")
