@@ -64,6 +64,8 @@ async function main() {
   assert.equal(action.validationResult?.exitCode, 9);
   assert(streams.workstreamPrompt(action, 'Core').includes(job.directory));
   assert.equal((await streams.nextWorkstreamActions(Date.now(), true))[0]?.actionId, action.actionId, 'Completion scheduled duplicate actions');
+  await streams.admitWorkstreamCall(claim.workstreamId);
+  assert(!streams.workstreamPrompt(streams.workstreamStatus()[0]!, 'Core').includes('Validation finished:'), 'A consumed result was injected again on ordinary continuations');
   console.log('Real process wait suppresses turns, persists, and returns exact failing result in one action.');
 }
 void main().catch(error => { console.error(error); process.exitCode = 1; });
