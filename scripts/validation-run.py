@@ -180,17 +180,9 @@ def execute(run):
     command = container_command(spec['runtime'], spec['runtime']['image'], command,
                                 expand(spec['cwd']), [(str(run), True), (str(run / 'reports'), False)],
                                 environment)
-    # One installed runtime owns one calculation at a time, across workstreams.
-    # Waiting happens in this detached supervisor, never in a worker polling turn.
-    locks = Path.home() / '.local/state/chat-on-steroids/runtime-locks'
-    locks.mkdir(parents=True, exist_ok=True)
-    runtime_lock = (locks / (spec['runtime']['image'].removeprefix('sha256:') + '.lock')).open('a')
     code, signal, error = None, None, None
     failed_nodes = []
     try:
-        write_json(run / 'process.json', dict(runId=run.name, supervisor=os.getpid(),
-                   state='waiting_for_runtime', queuedAt=time.time()))
-        fcntl.flock(runtime_lock, fcntl.LOCK_EX)
         with (run / 'output.log').open('ab', buffering=0) as output:
             child = subprocess.Popen(command,
                                      stdin=subprocess.DEVNULL, stdout=output, stderr=output)
@@ -225,8 +217,6 @@ def execute(run):
                 code = 1
     except Exception as exception:
         error = f'{type(exception).__name__}: {exception}'
-    finally:
-        runtime_lock.close()
     write_json(run / 'result.json', dict(version=1, runId=run.name, exitCode=code,
                signal=signal, error=error, failedNodes=failed_nodes,
                manifestHash=digest(run / 'manifest.json'),
@@ -297,8 +287,7 @@ def pytest_run(run):
     # setup modules and repository addopts cannot narrow scope or impose fail-fast.
     os.environ.pop('PYTEST_ADDOPTS', None)
     args = [*spec['files'], '-o', 'addopts=', '-k', '', '-m', '', '--maxfail=0',
-            '--runxfail', '-vv', '--tb=long', '--log-file', str(run / 'reports' / 'pytest.log'),
-            '-p', 'no:cacheprovider']
+            '--runxfail', '-vv', '--tb=long', '-p', 'no:cacheprovider']
     for plugin in spec['plugins']:
         args += ['-p', plugin]
     raise SystemExit(pytest.main(args, plugins=[report]))
