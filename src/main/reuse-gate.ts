@@ -26,6 +26,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
+import { repositoryCommand } from "./managed-execution.js";
 import { currentCall } from "./mcp/call-context.js";
 import type { Hunk } from "./codex/apply-patch/index.js";
 import { workstreamConversation } from "./workstreams.js";
@@ -286,7 +287,8 @@ interface GitOutcome {
 
 function runGit(root: string, args: string[]): Promise<GitOutcome> {
   return new Promise((resolve) => {
-    const child = spawn("git", ["-C", root, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const command = repositoryCommand(currentCall()?.workstreamId ?? null, root, ["git", "-C", root, ...args]);
+    const child = spawn(command[0]!, command.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
@@ -366,7 +368,7 @@ export async function worktreeMinted(root: string, base: string): Promise<Set<st
 /** Taken before a shell command runs in a workstream. Null when there is nothing to watch. */
 export async function snapshotBeforeCommand(root: string | null): Promise<Snapshot | null> {
   const key = readerKey();
-  // No claimed workstream (the emergency recovery path) or no workspace: nothing to watch.
+  // A command without a claimed workspace has no repository to compare.
   if (!key || !root) return null;
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
   const base = (await git(top, ["rev-parse", "HEAD"])).trim();

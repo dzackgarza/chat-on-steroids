@@ -18,7 +18,10 @@ export async function prepareValidation(id: string, consumer: string, requestId:
   requireManagedIdentity(id);
   const config = managedExecution(id);
   if (!Object.hasOwn(config.consumers, consumer)) throw new Error('Unknown assigned consumer');
-  const spec = {...config.spec, files: config.consumers[consumer]};
+  const spec = {...config.spec, files: config.consumers[consumer], runtime: {
+    image: config.validationImage, developmentImage: config.developmentImage,
+    docker: config.docker, group: config.dockerGroup,
+  }};
   await fs.mkdir(config.jobsRoot, {recursive: true});
   const runner = validationRunner();
   let prior: string | null = null;

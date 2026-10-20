@@ -8,11 +8,12 @@ const configSchema = z.object({
   workstream: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
   workspace: absolute, writablePaths: z.array(absolute), readPaths: z.array(absolute),
   developmentImage: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  validationImage: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   docker: absolute, dockerGroup: z.string().regex(/^[a-z_][a-z0-9_-]*$/),
   jobsRoot: absolute, python: absolute,
   spec: z.object({
     sources: z.record(z.string(), absolute), cwd: z.string(), argv: z.array(z.string()).min(1),
-    env: z.record(z.string(), z.string()), transport: z.array(z.string()),
+    env: z.record(z.string(), z.string()),
     mode: z.literal('pytest'), imports: z.array(z.string()), plugins: z.array(z.string()),
   }).strict(),
   consumers: z.record(z.string(), z.array(z.string()).min(1)),
@@ -95,7 +96,7 @@ export function requireManagedPath(id: string | null, tool: string, target: stri
 }
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-export function developmentCommand(id: string | null, cwd: string, command: string): string[] {
+function sourceCommand(id: string | null, cwd: string, command: string, writable: boolean): string[] {
   const config = managedExecution(id);
   if (!contains(config.workspace, cwd)) throw new Error('Development command cwd must be in the assigned workspace');
   const args = [config.docker, 'run', '--rm', '-i', '--network', 'none', '--read-only',
@@ -104,8 +105,17 @@ export function developmentCommand(id: string | null, cwd: string, command: stri
     '--workdir', cwd, '--env', 'HOME=/tmp', '--env', 'PATH=/usr/bin:/bin'];
   for (const root of [config.workspace, ...config.readPaths])
     args.push('--mount', `type=bind,src=${root},dst=${root},readonly`);
-  for (const root of config.writablePaths)
+  for (const root of writable ? config.writablePaths : [])
     args.push('--mount', `type=bind,src=${root},dst=${root}`);
   args.push(config.developmentImage, '/bin/sh', '-c', command);
   return ['/usr/bin/sg', config.dockerGroup, '-c', args.map(quote).join(' ')];
+}
+
+export function developmentCommand(id: string | null, cwd: string, command: string): string[] {
+  return sourceCommand(id, cwd, command, true);
+}
+
+/** Repository configuration can execute programs even during a nominally read-only Git query. */
+export function repositoryCommand(id: string | null, cwd: string, args: string[]): string[] {
+  return sourceCommand(id, cwd, args.map(quote).join(' '), false);
 }

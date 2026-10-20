@@ -18,6 +18,9 @@ async function main() {
   await exec('git', ['init', workspace]);
   const docker = (await exec('/bin/sh', ['-c', 'command -v docker'])).stdout.trim();
   const image = (await exec('/usr/bin/sg', ['docker', '-c', `${docker} image inspect cos-validation-development:local --format "{{.Id}}"`])).stdout.trim();
+  const hostOnly = path.join(root, 'host-only');
+  const escapedWrite = path.join(root, 'escaped-write');
+  await fs.writeFile(hostOnly, 'host-only');
   const state = path.join(root, 'state');
   await fs.mkdir(state);
   const otherWorkspace = path.join(root, 'other-workspace');
@@ -30,9 +33,9 @@ async function main() {
   const config = path.join(state, 'execution.json');
   await fs.writeFile(config, JSON.stringify([{workstream: 'proof', workspace,
     writablePaths: [path.join(workspace, 'src')], readPaths: [],
-    developmentImage: image, docker, dockerGroup: 'docker',
+    developmentImage: image, validationImage: image, docker, dockerGroup: 'docker',
     jobsRoot: path.join(root, 'jobs'), python,
-    spec: {sources: {project: workspace}, cwd: '{project}', argv: [python], env: {PYTHONPATH: '{project}/src', PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'}, transport: [],
+    spec: {sources: {project: workspace}, cwd: '{project}', argv: ['/usr/bin/python3'], env: {PYTHONPATH: '{project}/src', PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'},
       mode: 'pytest', imports: [], plugins: []}, consumers: {fixture: ['test_consumer.py']}}]));
   const policies = JSON.parse(await fs.readFile(config, 'utf8'));
   policies.push({...policies[0], workstream: 'proof-two', workspace: otherWorkspace,
@@ -56,8 +59,18 @@ async function main() {
   await fs.writeFile(path.join(workspace, 'AGENTS.md'), 'Use this isolated fixture.\n');
   await fs.writeFile(path.join(workspace, 'src/value.py'), 'value = 0\n');
   await fs.writeFile(path.join(workspace, 'test_consumer.py'), 'import pytest\nfrom value import value\n@pytest.mark.parametrize("case", [16, 160])\ndef test_case(case):\n    assert case != 16 or value == 42\n');
+  await fs.writeFile(path.join(workspace, '.gitattributes'), '*.py diff=boundary\n');
+  await fs.writeFile(path.join(workspace, 'src/converter.sh'),
+    `#!/bin/sh\nif test -e '${hostOnly}'; then printf escaped > '${escapedWrite}'; fi\ncat "$1"\n`);
+  await fs.chmod(path.join(workspace, 'src/converter.sh'), 0o755);
+  await exec('git', ['-C', workspace, 'config', 'diff.boundary.textconv', path.join(workspace, 'src/converter.sh')]);
   await exec('git', ['-C', workspace, 'add', '.']);
   await exec('git', ['-C', workspace, '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'Frozen consumer fixture']);
+  const importProbe = `from pathlib import Path\nif Path(${JSON.stringify(hostOnly)}).exists():\n    Path(${JSON.stringify(escapedWrite)}).write_text('escaped')\n`;
+  await fs.writeFile(path.join(workspace, 'src/value.py'), importProbe + 'value = 0\n');
+  await exec('git', ['-C', workspace, 'diff', '-U0', '--no-color', '--no-ext-diff', 'HEAD', '--']);
+  assert.equal(await fs.readFile(escapedWrite, 'utf8'), 'escaped', 'Fixture did not reproduce host Git execution');
+  await fs.unlink(escapedWrite);
   const {initConfigPath, loadConfig, getConfig, effectiveCapabilities} = await import('../src/main/config.js');
   const {initDurableStore} = await import('../src/main/durable.js');
   const {initSessionStore} = await import('../src/main/session/store.js');
@@ -91,6 +104,7 @@ async function main() {
     const direct = await call('exec_command', {workstream_id: claim, cmd: 'test ! -S /run/docker.sock && test ! -e /usr/bin/sage && printf direct-ok', workdir: '/work'});
     assert.match(JSON.stringify(direct), /direct-ok/);
     assert(!direct.isError, JSON.stringify(direct));
+    assert(!await fs.stat(escapedWrite).then(() => true, () => false), 'Repository Git executed with host access');
     const nested = await call('exec', {workstream_id: claim, code: 'text(await tools.exec_command({cmd:"test ! -S /run/docker.sock && test ! -e /usr/bin/sage && printf nested-ok",workdir:"/work"}))'});
     assert.match(JSON.stringify(nested), /nested-ok/);
     assert(!nested.isError, JSON.stringify(nested));
@@ -150,6 +164,7 @@ async function main() {
     assert.match(streams.workstreamStatus()[0]!.error!, /identity mismatch/);
     await fs.writeFile(resultFile, originalResult);
     const failed = await finish();
+    assert(!await fs.stat(escapedWrite).then(() => true, () => false), 'Validation import executed with host access');
     assert.match(streams.workstreamPrompt(failed, 'Core'), /Corrected dispatch/);
     assert.deepEqual(failed.validationResult?.failedNodes, ['test_consumer.py::test_case[16]']);
     assert.match(failed.validationOutput!, /FAILED/);

@@ -2,15 +2,12 @@
 """Detached validation over copied inputs.
 
 start SPEC JOBS [--retry RUN | --full-after RUN]
-SPEC supplies sources (name -> directory), cwd, argv, env, transport and mode.
-Paths in cwd/argv/env use {source-name}. Mode is command or pytest. For pytest,
-argv is the interpreter prefix (e.g. ["/usr/bin/sage", "-python"]); files,
-imports and plugins are explicit lists. A retry selects the recorded failed
-node IDs exactly. A full-after reuses the passing retry's *same* snapshot.
-Transport is [] for native execution, or a detached container exec argv prefix
-ending in its Python interpreter. For a group-switch shell, use one {runner}
-placeholder containing the shell-quoted Python supervisor command. JOBS must be visible at the same absolute path
-inside that container. No computation timeout is inferred from tool deadlines.
+SPEC supplies sources, cwd, argv, env, mode and a mandatory container runtime.
+Paths in cwd/argv/env use {source-name}. The host supervisor owns snapshots and
+terminal receipts. Candidate code runs only inside a fresh container with
+read-only inputs and a writable report directory. Retry selects exact failed
+pytest node IDs; full-after retains the passing retry snapshot.
+No computation timeout is inferred from tool deadlines.
 """
 import argparse
 import fcntl
@@ -20,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import shlex
 import subprocess
 import sys
@@ -66,6 +64,34 @@ def copy_source(source, destination):
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*IGNORED, '*.pyc'))
 
 
+def validate_runtime(spec):
+    if 'transport' in spec:
+        raise ValueError('Validation transport overrides are not supported')
+    runtime = spec['runtime']
+    if set(runtime) != {'image', 'developmentImage', 'docker', 'group'}:
+        raise ValueError('A complete container runtime is required')
+    for key in ('image', 'developmentImage'):
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', runtime[key]):
+            raise ValueError('Runtime images must be immutable image IDs')
+    if not Path(runtime['docker']).is_absolute() or not re.fullmatch(r'[a-z_][a-z0-9_-]*', runtime['group']):
+        raise ValueError('Invalid container runtime')
+
+
+def container_command(runtime, image, argv, cwd, mounts, environment):
+    command = [runtime['docker'], 'run', '--rm', '--network', 'none', '--read-only',
+               '--cap-drop', 'ALL', '--pids-limit', '256', '--user', f'{os.getuid()}:{os.getgid()}',
+               '--tmpfs', '/tmp:rw,nosuid,nodev', '--workdir', cwd,
+               '--env', 'HOME=/tmp', '--env', 'PATH=/usr/bin:/bin']
+    for source, readonly in mounts:
+        if ',' in source or not Path(source).is_absolute():
+            raise ValueError('Container mounts require absolute paths without commas')
+        command += ['--mount', f'type=bind,src={source},dst={source}' + (',readonly' if readonly else '')]
+    for key, value in environment.items():
+        command += ['--env', f'{key}={value}']
+    command += ['--entrypoint', argv[0], image, *argv[1:]]
+    return ['/usr/bin/sg', runtime['group'], '-c', shlex.join(command)]
+
+
 def start(spec_path, jobs, retry, full_after, request_id):
     jobs.mkdir(parents=True, exist_ok=True)
     with (jobs / 'launch.lock').open('a') as lock:
@@ -80,6 +106,7 @@ def start(spec_path, jobs, retry, full_after, request_id):
             if not (prior / 'result.json').exists():
                 raise RuntimeError(f'Existing validation has no terminal result: {prior}; inspect it, do not duplicate it')
         spec = json.loads(spec_path.read_text())
+        validate_runtime(spec)
         if spec['mode'] not in ('command', 'pytest'):
             raise ValueError('mode must be command or pytest')
         run = jobs / str(uuid.uuid4())
@@ -118,7 +145,10 @@ def start(spec_path, jobs, retry, full_after, request_id):
                 raise RuntimeError(f'Source changed during snapshot: {origin}; no validation launched')
         revisions = {}
         for name, source in spec['sources'].items():
-            revision = subprocess.run(['git', '-C', source, 'rev-parse', 'HEAD'], capture_output=True, text=True)
+            command = container_command(spec['runtime'], spec['runtime']['developmentImage'],
+                                        ['git', '-C', source, 'rev-parse', 'HEAD'], source,
+                                        [(source, True)], {})
+            revision = subprocess.run(command, capture_output=True, text=True)
             revisions[name] = revision.stdout.strip() if revision.returncode == 0 else None
         if full_after:
             revisions = previous_manifest['revisions']
@@ -129,22 +159,10 @@ def start(spec_path, jobs, retry, full_after, request_id):
         shutil.copyfile(__file__, run / 'runner.py')
         write_json(active, {'directory': str(run)})
         command = [str(run / 'runner.py'), '_execute', str(run)]
+        (run / 'reports').mkdir()
         with (run / 'supervisor.log').open('ab') as output:
-            if spec['transport']:
-                transport = spec['transport']
-                if any('{runner}' in argument for argument in transport):
-                    if sum(argument.count('{runner}') for argument in transport) != 1:
-                        raise ValueError('Transport requires exactly one runner placeholder')
-                    transport = [argument.replace('{runner}', shlex.join(['python3', *command])) for argument in transport]
-                else:
-                    transport = [*transport, *command]
-                launched = subprocess.run(transport, stdout=output, stderr=output)
-                if launched.returncode:
-                    # An ambiguous failed container launch is deliberately retained for inspection.
-                    raise RuntimeError(f'Transport failed; inspect {run / "supervisor.log"}')
-            else:
-                subprocess.Popen([sys.executable, *command], stdin=subprocess.DEVNULL,
-                                 stdout=output, stderr=output, start_new_session=True)
+            subprocess.Popen([sys.executable, *command], stdin=subprocess.DEVNULL,
+                             stdout=output, stderr=output, start_new_session=True)
         print(json.dumps({'directory': str(run), 'runId': run.name,
                           'result': str(run / 'result.json'), 'log': str(run / 'output.log')}))
 
@@ -154,28 +172,43 @@ def execute(run):
     spec = manifest['spec']
     mapping = {name: str(run / 'inputs' / name) for name in spec['sources']}
     expand = lambda value: value.format_map(mapping)
-    environment = dict(os.environ)
-    environment.update({key: expand(value) for key, value in spec['env'].items()})
+    environment = {key: expand(value) for key, value in spec['env'].items()}
     environment['PYTHONDONTWRITEBYTECODE'] = '1'
     command = [expand(arg) for arg in spec['argv']]
     if spec['mode'] == 'pytest':
         command += [str(run / 'runner.py'), '_pytest', str(run)]
+    command = container_command(spec['runtime'], spec['runtime']['image'], command,
+                                expand(spec['cwd']), [(str(run), True), (str(run / 'reports'), False)],
+                                environment)
     code, signal, error = None, None, None
+    failed_nodes = []
     try:
         with (run / 'output.log').open('ab', buffering=0) as output:
-            child = subprocess.Popen(command, cwd=expand(spec['cwd']), env=environment,
+            child = subprocess.Popen(command,
                                      stdin=subprocess.DEVNULL, stdout=output, stderr=output)
             write_json(run / 'process.json', dict(runId=run.name, supervisor=os.getpid(),
                        child=child.pid, command=command, startedAt=time.time()))
             status = child.wait()
             code = status if status >= 0 else None
             signal = -status if status < 0 else None
+        if spec['mode'] == 'pytest':
+            # Reports are candidate output. Never follow their links into host files.
+            descriptor = os.open(run / 'reports' / 'pytest.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor) as report_file:
+                metadata = os.fstat(report_file.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16 * 1024 * 1024:
+                    raise ValueError('Validation report must be a regular file under 16 MiB')
+                report = json.load(report_file)
+            if (not isinstance(report, dict) or set(report) != {'failedNodes', 'selected'} or
+                    any(not isinstance(report[key], list) or
+                        any(not isinstance(node, str) for node in report[key])
+                        for key in ('failedNodes', 'selected'))):
+                raise ValueError('Malformed pytest report')
+            failed_nodes = report['failedNodes']
     except Exception as exception:
         error = f'{type(exception).__name__}: {exception}'
-    report_path = run / 'pytest.json'
-    report = json.loads(report_path.read_text()) if report_path.exists() else {'failedNodes': []}
     write_json(run / 'result.json', dict(version=1, runId=run.name, exitCode=code,
-               signal=signal, error=error, failedNodes=report['failedNodes'],
+               signal=signal, error=error, failedNodes=failed_nodes,
                manifestHash=digest(run / 'manifest.json'),
                inputsUnchanged=inventory(run / 'inputs') == manifest['inputs'], finishedAt=time.time()))
 
@@ -185,7 +218,7 @@ def pytest_run(run):
     manifest = json.loads((run / 'manifest.json').read_text())
     spec = manifest['spec']
     import importlib.metadata
-    write_json(run / 'runtime.json', dict(executable=sys.executable, version=sys.version,
+    write_json(run / 'reports' / 'runtime.json', dict(executable=sys.executable, version=sys.version,
                distributions=sorted((item.metadata['Name'], item.version)
                                     for item in importlib.metadata.distributions() if item.metadata['Name'])))
     for module in spec['imports']:
@@ -214,7 +247,7 @@ def pytest_run(run):
                 self.failed.append(report.nodeid)
 
         def pytest_sessionfinish(self, session, exitstatus):
-            write_json(run / 'pytest.json', dict(failedNodes=self.failed, selected=self.selected))
+            write_json(run / 'reports' / 'pytest.json', dict(failedNodes=self.failed, selected=self.selected))
 
     report = Report()
     args = [*spec['files'], '--runxfail', '-vv', '--tb=long', '-p', 'no:cacheprovider']

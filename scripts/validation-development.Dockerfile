@@ -1,6 +1,6 @@
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git python3 ripgrep ca-certificates \
+ && apt-get install -y --no-install-recommends git python3 python3-pytest ripgrep ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 ENV PATH=/usr/bin:/bin HOME=/tmp
