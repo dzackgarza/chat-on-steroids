@@ -13,6 +13,7 @@
  * this special case…" belongs in a skill over these primitives, not in a schema every
  * conversation pays for.
  */
+import { managedExecution, developmentCommand, requireManagedPath } from '../managed-execution.js';
 
 import { rawPromises as fs } from '../rawfs.js';
 import nodeFs from 'node:fs';
@@ -663,7 +664,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               );
             }
           }
-          const shell = input.shell === undefined ? defaultUserShell() : getShellByModelProvidedPath(input.shell, dir.real);
+          const managed = managedExecution();
+          if (managed && input.shell && input.shell !== '/bin/sh') return fail('Managed development uses /bin/sh.');
+          const shell = managed ? getShellByModelProvidedPath('/bin/sh', dir.real) : input.shell === undefined ? defaultUserShell() : getShellByModelProvidedPath(input.shell, dir.real);
           if (!shell) {
             return fail(
               `SHELL_NOT_FOUND: the explicitly requested shell ${JSON.stringify(input.shell)} could not be resolved. ` +
@@ -696,6 +699,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             );
             const prefix = (note: string): string => (isBatch ? `Command ${index + 1}: ${note}` : note);
             commandNotes.push(...repaired.notes.map(prefix), ...normalized.notes.map(prefix));
+            if (managed) return normalized.cmd;
             return bindBundledRipgrep(
               normalized.cmd,
               shell.shellType,
@@ -716,7 +720,9 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           // profile work before the requested command even begins. Keep explicit login=true,
           // but make the deterministic/no-profile path the Windows default.
           const useLoginShell = input.login ?? process.platform !== 'win32';
-          const command = deriveExecArgs(shell, boundCommand, useLoginShell);
+          const command = managed
+            ? developmentCommand(currentCall()?.workstreamId ?? null, dir.real, boundCommand)
+            : deriveExecArgs(shell, boundCommand, useLoginShell);
           const processId = unifiedExecManager.allocateProcessId();
           // Process ids are deliberately small/reusable, while chat ownership lives in a
           // separate registry from the Codex process manager. An exited session may be
@@ -731,7 +737,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             // Current Codex intercepts an explicit `apply_patch` shell invocation before spawning
             // the shell process. The parser is the port of apply-patch/src/invocation.rs and uses
             // the same tree-sitter-bash grammar/query as upstream.
-            if (!isBatch) {
+            if (!isBatch && !managed) {
               const interceptedPatch = maybeParseApplyPatchForExec(command, dir.real);
               if (interceptedPatch.kind === 'correctness_error') {
                 unifiedExecManager.releaseProcessId(processId);
@@ -1739,6 +1745,7 @@ async function resolvePatchPaths(
     // First resolve the sandbox identity without requiring the leaf to exist. This gives later
     // hunks a stable real key even when the path exists only in the patch's simulated state.
     let resolved = await resolveIn(roots, spelledPath, { base: baseVirtual, allowMissing: true });
+    requireManagedPath(currentCall()?.workstreamId ?? null, 'apply_patch', resolved.real);
     const state = pendingPresence.get(pathKey(resolved.real));
     // An untouched initial Update/Delete keeps the old strict Not-found behaviour. Once an
     // earlier hunk has established presence/absence, the verifier owns the sequential verdict.

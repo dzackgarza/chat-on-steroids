@@ -66,13 +66,17 @@ def copy_source(source, destination):
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*IGNORED, '*.pyc'))
 
 
-def start(spec_path, jobs, retry, full_after):
+def start(spec_path, jobs, retry, full_after, request_id):
     jobs.mkdir(parents=True, exist_ok=True)
     with (jobs / 'launch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         active = jobs / 'active.json'
         if active.exists():
             prior = Path(json.loads(active.read_text())['directory'])
+            manifest = json.loads((prior / 'manifest.json').read_text())
+            if request_id and manifest.get('requestId') == request_id:
+                print(json.dumps({'directory': str(prior), 'runId': prior.name}))
+                return
             if not (prior / 'result.json').exists():
                 raise RuntimeError(f'Existing validation has no terminal result: {prior}; inspect it, do not duplicate it')
         spec = json.loads(spec_path.read_text())
@@ -118,7 +122,7 @@ def start(spec_path, jobs, retry, full_after):
             revisions[name] = revision.stdout.strip() if revision.returncode == 0 else None
         if full_after:
             revisions = previous_manifest['revisions']
-        manifest = dict(version=1, runId=run.name, spec=spec, selected=selected,
+        manifest = dict(version=1, runId=run.name, requestId=request_id, spec=spec, selected=selected,
                         inputs=inventory(snapshots), revisions=revisions, createdAt=time.time(),
                         previous=str(retry or full_after) if retry or full_after else None)
         write_json(run / 'manifest.json', manifest)
@@ -220,6 +224,12 @@ def pytest_run(run):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == 'unchanged':
+        run = Path(sys.argv[2])
+        manifest = json.loads((run / 'manifest.json').read_text())
+        current = {f'{name}/{key}': value for name, source in manifest['spec']['sources'].items()
+                   for key, value in inventory(Path(source)).items()}
+        raise SystemExit(0 if current == manifest['inputs'] else 1)
     if len(sys.argv) == 3 and sys.argv[1] in ('_execute', '_pytest'):
         {'_execute': execute, '_pytest': pytest_run}[sys.argv[1]](Path(sys.argv[2]))
         return
@@ -228,11 +238,12 @@ def main():
     launch = commands.add_parser('start', help='Snapshot and detach one validation; print durable job paths')
     launch.add_argument('spec', type=Path)
     launch.add_argument('jobs', type=Path)
+    launch.add_argument('--request-id', help='Controller idempotency key; reattach to the same launch after recovery')
     followup = launch.add_mutually_exclusive_group()
     followup.add_argument('--retry', type=Path, help='Run exactly the previously failed pytest consumers on new inputs')
     followup.add_argument('--full-after', type=Path, help='Run the full suite on the successful retry snapshot')
     args = parser.parse_args()
-    start(args.spec.resolve(), args.jobs.resolve(), args.retry, args.full_after)
+    start(args.spec.resolve(), args.jobs.resolve(), args.retry, args.full_after, args.request_id)
 
 
 if __name__ == '__main__':

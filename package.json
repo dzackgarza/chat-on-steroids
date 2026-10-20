@@ -42,7 +42,9 @@
     "dist:dir:linux:arm64": "node scripts/package.mjs --platform linux --arch arm64 --dir",
     "dist:dir:linux": "node scripts/package.mjs --platform linux --arch x64,arm64 --dir",
     "verify:assignments": "tsx scripts/verify-workstream-assignment.ts",
-    "verify:validation": "python3 scripts/verify-validation-run.py && tsx scripts/verify-validation-wait.ts"
+    "verify:validation": "python3 scripts/verify-validation-run.py && tsx scripts/verify-validation-wait.ts",
+    "managed": "tsx src/main/managed-headless.ts",
+    "verify:managed": "tsx scripts/verify-managed-execution.ts"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "0.32.0",

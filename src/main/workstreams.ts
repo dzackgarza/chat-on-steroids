@@ -1,4 +1,6 @@
 /** Exclusive workstream leases and their bounded recovery policy. The bridge owns delivery. */
+import { launchValidation, prepareValidation, validationOutput } from './validation-service.js';
+import { managedExecution } from './managed-execution.js';
 import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -43,6 +45,8 @@ const rowSchema = z
     id: workstreamIdSchema,
     context: z.string().max(40_000),
     assignment: workAssignmentSchema.nullable().default(null),
+    validationRequest: z.object({id: z.string(), consumer: z.string()}).nullable().default(null),
+    validationOutput: z.string().nullable().default(null),
     validationWait: validationWaitSchema.nullable().default(null),
     validationResult: validationResultSchema.nullable().default(null),
     workspace: z.string().nullable(),
@@ -373,6 +377,8 @@ export async function startWorkstream(
       id: logicalWorkstream,
       context: "",
       assignment: null,
+      validationRequest: null,
+      validationOutput: null,
       validationWait: null,
       validationResult: null,
       workspace,
@@ -443,6 +449,8 @@ export async function continueWorkstream(
       id: logicalWorkstream,
       context: prior.context,
       assignment: prior.assignment,
+      validationRequest: prior.validationRequest,
+      validationOutput: prior.validationOutput,
       validationWait: prior.validationWait,
       validationResult: prior.validationResult,
       workspace: prior.workspace,
@@ -499,6 +507,8 @@ export async function reserveWorkstream(
       id: logicalWorkstream,
       context,
       assignment: prior?.assignment ?? null,
+      validationRequest: prior?.validationRequest ?? null,
+      validationOutput: prior?.validationOutput ?? null,
       validationWait: prior?.validationWait ?? null,
       validationResult: prior?.validationResult ?? null,
       workspace: prior?.workspace ?? null,
@@ -755,7 +765,7 @@ export async function scheduleWorkstreamAfterTurn(
       return true;
     }
 
-    if (row.validationWait) {
+    if (row.validationWait || row.validationRequest) {
       row.lastAdvancedTurnId = turnId;
       row.lastAdvancedTurnTime = time;
       await save();
@@ -795,6 +805,27 @@ export async function scheduleWorkstreamAfterTurn(
     }
     await save();
     return true;
+  });
+}
+
+/** Persist launch intent before starting the process; scheduler recovery completes the same handoff. */
+export async function requestWorkstreamValidation(id: string, claim: string, consumer: string): Promise<void> {
+  await exclusive(async () => {
+    ready();
+    const row = rows.get(id);
+    if (!row || row.lock !== claim || row.phase !== "active") throw new Error("Validation requires the active worker claim");
+    if (row.validationRequest && row.validationRequest.consumer !== consumer) throw new Error("Validation already requested");
+    if (row.validationWait) return;
+    const request = row.validationRequest ?? {id: randomBytes(16).toString("hex"), consumer};
+    await prepareValidation(id, consumer, request.id);
+    row.validationRequest = request;
+    row.commandId = null;
+    row.actionId = null;
+    row.validationResult = null;
+    row.validationOutput = null;
+    await save();
+    row.validationWait = await launchValidation(id, consumer, request.id);
+    await save();
   });
 }
 
@@ -970,7 +1001,7 @@ export const FRESH_CHAT_ORIENTATION =
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "Preserve other workers’ changes and resolve the current repository task under its own phase and acceptance requirements. Continue the inherited unfinished implementation rather than repeating orientation, status checks or source surveys. Long-running required validation must retain its process identity, source revision, output and exit result; do not duplicate, prematurely stop or repeatedly poll it merely for elapsed time. Continue independent substantive work while it runs, or call workstream action=wait with the durable validation run directory and current claim, then end the turn. The controller owns that wait and resumes you with the result. Connector response deadlines never set a mathematical runtime cutoff. A live calculation does not prevent the steward correcting the next dispatch; preserve the calculation while applying the correction. Judge progress from accepted behavior and source changes, never elapsed time, tool-call counts, commits or checkboxes.";
+  "Preserve other workers’ changes and resolve the current repository task under its own phase and acceptance requirements. Continue the inherited unfinished implementation rather than repeating orientation, status checks or source surveys. Long-running required validation must retain its process identity, source revision, output and exit result; do not duplicate, prematurely stop or repeatedly poll it merely for elapsed time. Continue independent substantive work while it runs, or use the controller-owned validation wait described below and end the turn. The controller resumes you with the result. Connector response deadlines never set a mathematical runtime cutoff. A live calculation does not prevent the steward correcting the next dispatch; preserve the calculation while applying the correction. Judge progress from accepted behavior and source changes, never elapsed time, tool-call counts, commits or checkboxes.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
@@ -984,13 +1015,14 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
         ? `\nACTIVITY CHECK: An earlier controller flagged a long action: ${row.error.slice("five_minute_action_overrun:".length)}. Duration alone does not establish failure. Inspect the actual process and output against the current task. A progressing build continues in the background while you do useful adjacent work, or the orchestrator pauses this workstream and owns the wait. If it has exited, consume its result; if it is genuinely stalled, diagnose the cause before restarting.\n`
         : "\nACTIVITY CHECK: No recent activity was recorded. This does not establish whether the work is stalled. Inspect the current task, actual tool results and any background process. Continue a progressing required build without restarting it; consume a completed result; otherwise address the concrete obstruction or resume the unfinished task.\n"
       : "";
-  const launcher = validationLauncher();
-  const execution = launcher ? `\nFor Sage validation, run python3 ${JSON.stringify(launcher)} --help and use that launcher with the assigned source roots. It owns snapshots, exact failed-consumer retries, detached output and exit status. Pass its job directory to workstream action=wait only when no independent source work remains.\n` : "";
+  const managed = managedExecution();
+  const launcher = managed ? null : validationLauncher();
+  const execution = managed ? `\nRequest validation using workstream action=validate and an assigned consumer: ${Object.keys(managed.consumers).join(", ")}. The controller selects the command, snapshots inputs, and registers the wait in that operation. It resumes you with the result. Development commands cannot access the validation runtime.\n` : launcher ? `\nFor Sage validation, run python3 ${JSON.stringify(launcher)} --help and use that launcher with the assigned source roots. It owns snapshots, exact failed-consumer retries, detached output and exit status. Pass its job directory to workstream action=wait only when no independent source work remains.\n` : "";
   const claim =
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
       : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call. Do not reclaim it routinely. If an ordinary call returns WORKSTREAM_SETUP_REQUIRED, follow that refusal: call \`workstream\` with action="continue" and workstream="${row.id}", then retry using its returned workstream_id. WORKSTREAM_BUSY instead requires retrying with the existing workstream_id, not reclaiming.`;
-  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context.replace("Keep every individual command/check bounded below five minutes and prefer the narrow acceptance/oracle that falsifies the current artifact.", "Return connector control promptly; computation lifetime is independent of that response deadline. Use the exact failing consumer for a repair check, then complete acceptance on the same snapshot.")}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}${execution}${row.validationResult && row.actionId?.endsWith(`-validation-${row.validationResult.runId}`) ? `\nValidation finished: ${JSON.stringify(row.validationResult)}. Read its output.log and consume this result. This receipt is execution evidence, not acceptance. Repair the recorded failure before another complete run; a successful check applies only to its recorded inputs.\n` : ""}${row.assignment ? assignmentPrompt(row.assignment) : ""}`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context.replace("Keep every individual command/check bounded below five minutes and prefer the narrow acceptance/oracle that falsifies the current artifact.", "Return connector control promptly; computation lifetime is independent of that response deadline. Use the exact failing consumer for a repair check, then complete acceptance on the same snapshot.")}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}${execution}${row.validationResult && row.actionId?.endsWith(`-validation-${row.validationResult.runId}`) ? `\nValidation finished: ${JSON.stringify(row.validationResult)}. Consume this result.${row.validationOutput ? `\nValidation output (tail):\n${row.validationOutput}\n` : " Read its output.log."} This receipt is execution evidence, not acceptance. Repair the recorded failure before another complete run; a successful check applies only to its recorded inputs.\n` : ""}${row.assignment ? assignmentPrompt(row.assignment) : ""}`;
 }
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
@@ -1004,12 +1036,26 @@ export async function nextWorkstreamActions(
     retireEndedWorkerRows();
     for (const row of rows.values()) {
       if (row.assignment?.verdict) continue;
+      if (row.validationRequest && !row.validationWait) {
+        if (row.phase === "paused") continue;
+        try { row.validationWait = await launchValidation(row.id, row.validationRequest.consumer, row.validationRequest.id); }
+        catch (error) { row.error = `validation_launch: ${(error as Error).message}`; continue; }
+      }
       if (row.validationWait) {
         // Owner pauses remain pauses. A completed process must not undo them.
         if (row.phase === "paused") continue;
         try {
           const result = await validationResult(row.validationWait);
           if (!result) continue;
+          if (row.validationRequest && result.exitCode === 0 && result.inputsUnchanged) {
+            const manifest = JSON.parse(await fs.readFile(path.join(row.validationWait.directory, 'manifest.json'), "utf8"));
+            if (manifest.selected.length) {
+              row.validationWait = await launchValidation(row.id, row.validationRequest.consumer, `${row.validationRequest.id}:full`);
+              continue;
+            }
+          }
+          if (row.validationRequest) row.validationOutput = await validationOutput(row.validationWait.directory);
+          row.validationRequest = null;
           row.validationResult = result;
           row.validationWait = null;
           row.phase = row.conversationId ? "advancing" : "opening";
@@ -1135,7 +1181,7 @@ export async function nextWorkstreamActions(
       (row) =>
         row.actionId !== null &&
         !row.assignment?.verdict &&
-        !row.validationWait &&
+        !row.validationWait && !row.validationRequest &&
         !workerOwnsWorkstream(row.id) &&
         ["advancing", "recovering", "archiving", "opening"].includes(row.phase) &&
         // An opening row whose replacement chat already bound has been delivered; it waits for
@@ -1158,7 +1204,7 @@ export function currentWorkstreamAction(
   actionId: string,
 ): Workstream | null {
   const row = rows.get(id);
-  return row?.actionId === actionId && !row.assignment?.verdict && !row.validationWait ? structuredClone(row) : null;
+  return row?.actionId === actionId && !row.assignment?.verdict && !row.validationWait && !row.validationRequest ? structuredClone(row) : null;
 }
 
 export async function recordWorkstreamCommand(

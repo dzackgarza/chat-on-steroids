@@ -18,6 +18,7 @@
  * without readOnlyHint as a write action and asks the user to confirm each call, so every
  * genuinely read-only tool is marked as such.
  */
+import { managedExecution, managedToolRefusal } from '../managed-execution.js';
 
 import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
@@ -886,8 +887,10 @@ function gatedHandler(
   roots: Root[],
   handler: (args: never) => Promise<ToolResult>,
 ): (args: Record<string, unknown>) => Promise<ToolResult> {
-  if (name === "exec") return (args) => handler(args as never);
   return async (args) => {
+    const managedRefusal = managedToolRefusal(currentCall()?.workstreamId ?? null, name);
+    if (managedRefusal) return fail(managedRefusal);
+    if (name === "exec") return handler(args as never);
     // A chat acts only after it has read its repository's rules (rules-gate.ts).
     const unread = await rulesGateRefusal(
       name,
@@ -1005,7 +1008,7 @@ export function createRegistrar(
         mcpCtx?: McpCallContext,
       ) => {
         const { workstream_id, ...args } = input;
-        if (isEmergencyRecoveryCall(name, workstream_id as string)) {
+        if (!managedExecution() && isEmergencyRecoveryCall(name, workstream_id as string)) {
           logWarn(`EMERGENCY_RECOVERY_BYPASS tool=${name} surface=${surface}`);
           return dispatch(
             name,

@@ -12,6 +12,7 @@
  * There is no hidden acceptance of names a server did not advertise, and there is no
  * merged list — those would both be ways of claiming a separation the product does not have.
  */
+import { managedExecution, requireManagedIdentity } from '../managed-execution.js';
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -37,6 +38,7 @@ import {
   checkpointWorkstreamAssignment,
   workstreamStatus,
   waitForWorkstreamValidation,
+  requestWorkstreamValidation,
 } from "../workstreams.js";
 import { assignmentPrompt, checkpointSchema } from "../work-assignment.js";
 
@@ -233,12 +235,12 @@ function registerWorkstreamSetupTool(
         "token required on every ordinary connector call. action=checkpoint records the unfinished operation " +
         "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance. " +
         "action=wait hands a durable validation-run.py job to the controller; end your turn after it succeeds. " +
-        "The controller resumes you with its result without worker polling.",
+        "The controller resumes you with its result without worker polling. On a managed endpoint use action=validate with the assigned consumer; launch and handoff are one operation.",
       inputSchema: z.object({
         action: z
-          .enum(["start", "continue", "checkpoint", "wait"])
+          .enum(["start", "continue", "checkpoint", "wait", "validate"])
           .describe(
-            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim. wait: hand off a durable validation job.",
+            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim. wait: hand off a durable validation job. validate: request the assigned consumer with service-owned execution.",
           ),
         workstream: workstreamIdSchema.describe(
           "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
@@ -252,16 +254,29 @@ function registerWorkstreamSetupTool(
           ),
         workstream_id: z.string().optional().describe("Required for checkpoint: the currently held identity token."),
         validation_directory: z.string().optional().describe("wait only: approved path of the job directory printed by scripts/validation-run.py start."),
+        consumer: z.string().optional().describe("validate only: assigned consumer identity. Command, scope and lifetime are service-owned."),
         checkpoint: checkpointSchema.optional().describe("Worker-reported resume point; never acceptance evidence."),
-      }),
+      }).strict(),
     },
-    async ({ action, workstream, path, workstream_id, checkpoint, validation_directory }) =>
+    async ({ action, workstream, path, workstream_id, checkpoint, validation_directory, consumer }) =>
       guard("workstream", async () => {
         const refused = (text: string) => ({
           content: [{ type: "text" as const, text }],
           isError: true,
         });
+        const managed = managedExecution();
+        requireManagedIdentity(workstream);
+        if (action === "validate") {
+          if (!consumer || !workstream_id || checkpoint || path || validation_directory)
+            return refused("validate requires the current claim and assigned consumer only.");
+          const admitted = await admitWorkstreamCall(workstream_id);
+          if (!admitted.ok || admitted.id !== workstream) return refused("Validation requires the current claim.");
+          await requestWorkstreamValidation(workstream, workstream_id, consumer);
+          return {content: [{type: "text" as const, text: "Validation launched and controller wait registered. End this turn; the controller will deliver its result."}]};
+        }
+        if (consumer) return refused("consumer is accepted only with action=validate.");
         if (action === "wait") {
+          if (managed) return refused("Use action=validate; the controller selects and registers the job.");
           if (!workstream_id || !validation_directory || checkpoint || path)
             return refused("wait requires workstream_id and validation_directory only.");
           const admitted = await admitWorkstreamCall(workstream_id);
@@ -292,6 +307,7 @@ function registerWorkstreamSetupTool(
           let workspace: string;
           try {
             const resolved = await resolvePath(liveContext().roots, path);
+            if (managed && resolved.real !== managed.workspace) return refused("Use the assigned workspace.");
             if (!(await fs.stat(resolved.real)).isDirectory())
               return refused(`${resolved.virtual} is not a directory.`);
             workspace = resolved.virtual;
