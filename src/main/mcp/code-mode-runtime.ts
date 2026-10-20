@@ -49,7 +49,7 @@ export async function runCodeMode(
   if (!code.trim() || code.length > limits.codeChars) return errorResult('CODE_LIMIT');
   if (activeRuns >= limits.activeRuns) return errorResult('BUSY: too many code executions or unsettled nested calls.');
   // Yield/resume requires another durable lifecycle. Keep this endpoint one bounded call;
-  // assigned calculations have their own durable controller lifecycle.
+  // ordinary exec_command/write_stdin already own long-running process continuations.
   if (/^\s*\/\/ @exec:/m.test(code)) return errorResult('UNSUPPORTED_PRAGMA: use plain JavaScript; execution is bounded to one call.');
   activeRuns++;
   const pending = new Set<Promise<void>>();

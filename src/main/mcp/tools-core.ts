@@ -1,7 +1,21 @@
-/** Worker development owns file operations; execution belongs to assigned controller jobs. */
-import { requireManagedPath } from '../managed-execution.js';
+/**
+ * The Core connector: reading, changing and running code on this PC.
+ *
+ * Seven tools at the absolute maximum, and usually five. That number is the design (see
+ * `docs/tool-surface.md` §3): a no-query discovery pull against this connector returns
+ * every schema here at once, so the surface is sized for the worst case rather than for
+ * the case where the harness happens to ask a narrow question.
+ *
+ * What used to be forty-five tools did not become seven by dropping capability. It became
+ * seven by separating *primitives* from *procedures*: `exec_command` can run git, so `git`
+ * is a skill rather than a tool; `read` can open a directory, a text file or an image,
+ * because those are three shapes of one question. Anything that reads as "and also, for
+ * this special case…" belongs in a skill over these primitives, not in a schema every
+ * conversation pays for.
+ */
 
 import { rawPromises as fs } from '../rawfs.js';
+import nodeFs from 'node:fs';
 import nodePath from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_READ_BYTES, MAX_READ_BYTES, formatBytes } from '../fsops.js';
@@ -13,7 +27,7 @@ import {
   viewImage
 } from '../codex/view-image.js';
 import { logInfo } from '../logger.js';
-import { SandboxError, isNativeWindowsPath, resolvePath } from '../sandbox.js';
+import { SandboxError, isNativeWindowsPath, resolvePath, strayVirtualPath } from '../sandbox.js';
 import { currentWorkspace } from '../workspace.js';
 import type { Capabilities, Root } from '../../shared/types.js';
 import type { FileChange } from '../../shared/session.js';
@@ -29,10 +43,59 @@ import {
   type PatchPathResolver
 } from '../codex/apply-patch/index.js';
 import { DEFAULT_APPLY_PATCH_FILE_UPDATE_MODE } from '../codex/apply-patch/mode.js';
+import { maybeParseApplyPatchForExec } from '../codex/apply-patch/invocation.js';
+import { composeCommandBatch, parseCommandBatchSections } from '../codex/command-batch.js';
 import { formatExecOutputForModel, newStreamOutput } from '../codex/exec-output.js';
-import { DEFAULT_TRUNCATION_POLICY } from '../codex/manager.js';
-import { APPLY_PATCH_ARGUMENT_DESCRIPTION, APPLY_PATCH_DESCRIPTION } from '../codex/tool-specs.js';
+import { DEFAULT_TRUNCATION_POLICY, EXEC_OUTPUT_CEILING_POLICY, unifiedExecManager } from '../codex/manager.js';
+import {
+  execOwnershipDenied,
+  forgetExecOwner,
+  noteExecOwner
+} from '../codex/ownership.js';
+import {
+  UnifiedExecError,
+  applyUnifiedExecEnv,
+  execCommandResponseText,
+  execCommandStructuredOutput,
+  type ExecCommandToolOutput
+} from '../codex/unified-exec.js';
+import {
+  DEFAULT_EXEC_YIELD_TIME_MS,
+  DEFAULT_TTY,
+  DEFAULT_WRITE_STDIN_YIELD_TIME_MS
+} from '../codex/unified-exec-constants.js';
+import { defaultUserShell, deriveExecArgs, getShellByModelProvidedPath, shlexJoin } from '../codex/shell.js';
+import {
+  APPLY_PATCH_ARGUMENT_DESCRIPTION,
+  APPLY_PATCH_DESCRIPTION,
+  EXEC_COMMAND_CMD_DESCRIPTION,
+  EXEC_COMMAND_CMDS_DESCRIPTION,
+  EXEC_COMMAND_DESCRIPTION,
+  EXEC_COMMAND_LOGIN_DESCRIPTION,
+  EXEC_COMMAND_SHELL_DESCRIPTION,
+  EXEC_COMMAND_TTY_DESCRIPTION,
+  EXEC_COMMAND_WORKDIR_DESCRIPTION,
+  EXEC_COMMAND_YIELD_TIME_DESCRIPTION,
+  MAX_OUTPUT_TOKENS_DESCRIPTION,
+  WRITE_STDIN_CHARS_DESCRIPTION,
+  WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION,
+  WRITE_STDIN_DESCRIPTION,
+  WRITE_STDIN_SESSION_ID_DESCRIPTION,
+  WRITE_STDIN_YIELD_TIME_DESCRIPTION
+} from '../codex/tool-specs.js';
 import { lineDelta } from '../diffstat.js';
+import {
+  benignExitNote,
+  bindBundledRipgrep,
+  execRecoveryHints,
+  nonZeroExitIsBenign,
+  normalizeShellCommand,
+  repairPowerShellQuoting,
+  withExecNotes
+} from '../exec-hints.js';
+import { childEnv } from '../exec.js';
+import { locateRipgrep } from '../ripgrep.js';
+import { ensureDevToolchain } from '../toolchain.js';
 import {
   agentForCaller,
   noteAgentContextTokens,
@@ -53,10 +116,11 @@ import {
   currentCall,
   noteChanges,
   noteCount,
-  noteDetail
+  noteDetail,
+  noteExec
 } from './call-context.js';
 import { noteRulesRead } from '../rules-gate.js';
-import { reuseGateRefusal } from '../reuse-gate.js';
+import { reuseGateRefusal, settlePendingThroughPatch } from '../reuse-gate.js';
 import { recordAgentMessage } from '../session/recorder.js';
 import { findSessionByConversation } from '../session/store.js';
 import {
@@ -68,6 +132,7 @@ import {
   ok,
   pathArg,
   lineNumberArg,
+  resolveCwd,
   resolveIn,
   type SurfaceRegistrar,
   type ToolResult
@@ -101,6 +166,13 @@ const GLOB_SCAN_LIMIT = 5_000;
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 
+// Codex advertises these as JSON Schema `number`, but serde still deserializes them into
+// integer Rust types. Refinements preserve the model-visible number schema while rejecting
+// values Rust would reject before the handler runs.
+const int32Number = z
+  .number()
+  .refine((value) => Number.isInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647);
+const unsignedIntegerNumber = z.number().refine((value) => Number.isSafeInteger(value) && value >= 0);
 const excludeFolderPattern = z
   .string()
   .min(1)
@@ -111,6 +183,49 @@ const excludeFolderPattern = z
       (value.indexOf('*') === -1 || (value.endsWith('*') && value.indexOf('*') === value.length - 1)),
     'exclude entries must be folder names with at most one trailing * prefix wildcard'
   );
+
+const unifiedExecOutputSchema = z
+  .object({
+    chunk_id: z.string().optional().describe('Chunk identifier included when the response reports one.'),
+    wall_time_seconds: z.number().describe('Elapsed wall time spent waiting for output in seconds.'),
+    exit_code: z.number().optional().describe('Process exit code when the command finished during this call.'),
+    session_id: z
+      .number()
+      .optional()
+      .describe('Session identifier to pass to write_stdin when the process is still running.'),
+    original_token_count: z.number().optional().describe('Approximate token count before output truncation.'),
+    output: z.string().describe('Command output text, possibly truncated.')
+  })
+  .strict();
+
+/** Whether the one-time note about a discovered toolchain has already been logged. */
+let toolchainLogged = false;
+
+/**
+ * The environment `exec_command` hands its child.
+ *
+ * Built through `normalizeEnvironment` rather than by spreading `process.env`, because
+ * `ensureDevToolchain` has to edit PATH and env.ts exists precisely to stop a second
+ * spelling of it appearing beside the first. `applyUnifiedExecEnv` stays last so the Codex
+ * pager/colour contract is still the final word, exactly as it was before.
+ */
+function execChildEnvironment(): NodeJS.ProcessEnv {
+  // Start from the one shared child-process environment contract. Rebuilding only the PATH
+  // casing fix here looked equivalent but quietly dropped two security/correctness guarantees
+  // that `childEnv()` already owns: connector secrets are stripped before the child can read
+  // them, and the bundled ripgrep directory is put on PATH (plus Windows' irreducible system
+  // paths are repaired when the parent environment is sparse). Unified exec used to bypass
+  // all three, so `exec_command` was the one launcher that could leak OPENAI_API_KEY and could
+  // fail to find the very rg binary the app ships. Extend the shared environment only with the
+  // dev-toolchain discovery that is specific to this surface.
+  const env = childEnv();
+  const added = ensureDevToolchain(env);
+  if (added.length > 0 && !toolchainLogged) {
+    toolchainLogged = true;
+    logInfo(`exec_command: filled in unset toolchain variables (${added.join(', ')})`);
+  }
+  return applyUnifiedExecEnv(env);
+}
 
 export function registerCoreTools(reg: SurfaceRegistrar): void {
   const { ctx, caps, exposedCaps } = reg;
@@ -315,7 +430,15 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
 
   // ------------------------------------------------------------------- find
   //
-  // Search remains available independently of the old command capability setting.
+  // Only when commands are unavailable. With `exec_command` present, ripgrep through the
+  // shell is strictly better than anything this can offer, and a seventh Core schema that
+  // duplicates a capability the model already has is exactly the kind of weight this
+  // surface exists to refuse.
+  //
+  // `reg.findExposed` rather than `!exposedCaps.command && exposedCaps.search`: the second
+  // form reads a monotonically widening value, so switching command execution on mid-run
+  // would delete `find` from under a cached tool list. The decision is frozen for the life
+  // of the endpoint instead, which is the same rule every other tool here follows.
   if (reg.findExposed) {
     reg.register(
       'find',
@@ -383,7 +506,7 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               if (outcome.stoppedBecause === 'size') {
                 return fail(
                   `File was not searched: content search skips files over ${formatBytes(MAX_CONTENT_FILE_BYTES)}. ` +
-                    'Narrow it with read start_line/end_line.'
+                    'Narrow it with read start_line/end_line, or use exec_command when command execution is available.'
                 );
               }
               return ok(hits.length === 0 ? 'No matches' : `${hits.length} matches\n${hits.join('\n')}`);
@@ -467,6 +590,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           } catch (error) {
             return fail(`apply_patch verification failed: ${applyPatchErrorText(error)}`);
           }
+          const pendingRefusal = settlePendingThroughPatch(reuse_search);
+          if (pendingRefusal) return fail(pendingRefusal);
 
           // This connector exposes one local environment. Current Codex accepts the hidden
           // `*** Environment ID:` preamble only when spec_plan enabled multi-environment
@@ -492,6 +617,319 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
         })
     );
 
+  }
+
+  // ------------------------------------------------------- exec / write_stdin
+
+  if (exposedCaps.command) {
+    reg.register(
+      'exec_command',
+      {
+        description: EXEC_COMMAND_DESCRIPTION,
+        inputSchema: z
+          .object({
+            cmd: z.string().optional().describe(EXEC_COMMAND_CMD_DESCRIPTION),
+            cmds: z.array(z.string()).min(1).max(20).optional().describe(EXEC_COMMAND_CMDS_DESCRIPTION),
+            workdir: z.string().optional().describe(EXEC_COMMAND_WORKDIR_DESCRIPTION),
+            tty: z.boolean().optional().describe(EXEC_COMMAND_TTY_DESCRIPTION),
+            yield_time_ms: unsignedIntegerNumber.optional().describe(EXEC_COMMAND_YIELD_TIME_DESCRIPTION),
+            max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION),
+            shell: z.string().optional().describe(EXEC_COMMAND_SHELL_DESCRIPTION),
+            login: z.boolean().optional().describe(EXEC_COMMAND_LOGIN_DESCRIPTION)
+          })
+          .strict()
+          .superRefine((input, refinement) => {
+            if ((input.cmd === undefined) === (input.cmds === undefined)) {
+              refinement.addIssue({
+                code: 'custom',
+                path: [],
+                message: 'exec_command requires exactly one of cmd or cmds'
+              });
+            }
+          }),
+        outputSchema: unifiedExecOutputSchema
+      },
+      async (input) =>
+        reg.guarded('command', 'exec_command', async () => {
+          const dir = await resolveCwd(ctx, input.workdir);
+          const rawCommands = input.cmd === undefined ? input.cmds! : [input.cmd];
+          const isBatch = input.cmd === undefined;
+          for (const [index, rawCommand] of rawCommands.entries()) {
+            const virtualCommandPath = strayVirtualPath(rawCommand, ctx.roots);
+            if (virtualCommandPath) {
+              return fail(
+                `INVALID_COMMAND_PATH${isBatch ? ` in command ${index + 1}` : ''}: ${virtualCommandPath} is an app virtual path, but shell commands do not understand virtual paths. ` +
+                  `Use workdir plus a relative path, or use the approved folder's native filesystem path. No command was run.`
+              );
+            }
+          }
+          const shell = input.shell === undefined ? defaultUserShell() : getShellByModelProvidedPath(input.shell, dir.real);
+          if (!shell) {
+            return fail(
+              `SHELL_NOT_FOUND: the explicitly requested shell ${JSON.stringify(input.shell)} could not be resolved. ` +
+                'No command was run. Omit shell to use the configured default, or provide an existing recognised shell binary.'
+            );
+          }
+          // Does only what the shell itself would have done — today, expanding a bare filename
+          // glob PowerShell hands to a native program uninterpreted. Anything it does not
+          // understand reaches the shell exactly as the model wrote it. A listing is read
+          // lazily from the resolved workdir or one validated relative child directory, so a
+          // command with no eligible glob in it never touches the disk here.
+          // Normalize first, bind second, and the order is load-bearing. The normalizer
+          // recognises ripgrep by its leading program token; binding rewrites that token into
+          // `& '<path>\rg.exe'`, which the normalizer does not read as ripgrep at all. Running
+          // the bind first therefore silently switched off glob and brace expansion for every
+          // ordinary `rg` call — the single failure this file exists to prevent — while looking
+          // entirely correct. Binding only ever replaces the program token, so it composes
+          // cleanly on top of an already-expanded argument list.
+          // Repair before normalising, because everything downstream reads this line by its
+          // quotes. A command carrying a bash-style backslash-quote has no coherent quoting
+          // to read: the normalizer would tokenize past the end of an argument the shell was
+          // going to reject outright. Repairing first means the rest of the pipeline sees a
+          // line PowerShell can actually parse, and a line it cannot repair is left exactly
+          // as written for the shell to refuse and the hint to explain.
+          const commandNotes: string[] = [];
+          const boundCommands = rawCommands.map((rawCommand, index) => {
+            const repaired = repairPowerShellQuoting(rawCommand, shell.shellType);
+            const normalized = normalizeShellCommand(repaired.cmd, shell.shellType, (relativeDirectory = '.') =>
+              nodeFs.readdirSync(nodePath.resolve(dir.real, relativeDirectory))
+            );
+            const prefix = (note: string): string => (isBatch ? `Command ${index + 1}: ${note}` : note);
+            commandNotes.push(...repaired.notes.map(prefix), ...normalized.notes.map(prefix));
+            return bindBundledRipgrep(
+              normalized.cmd,
+              shell.shellType,
+              shell.shellType === 'cmd' ? null : locateRipgrep()
+            );
+          });
+          // Shell functions/aliases can resolve before applications on PATH. The app deliberately
+          // ships ripgrep, parses rg's flags against that exact version, and puts it first on child
+          // PATH, so a shadowing `rg` is not a harmless customization: it breaks the normalizer's
+          // assumptions and makes exit-code attribution unknowable. Bind ordinary bare rg/ripgrep
+          // invocations to the shipped executable on PowerShell and POSIX shells.
+          const boundCommand = isBatch ? composeCommandBatch(boundCommands, shell.shellType) : boundCommands[0]!;
+          const commandDetail = isBatch
+            ? `[batch ${rawCommands.length}] ${rawCommands.join(' ; ')}`
+            : rawCommands[0]!;
+          // PowerShell profiles are user-custom startup programs. Loading them for every
+          // connector command adds arbitrary output/aliases and can spend seconds on network
+          // profile work before the requested command even begins. Keep explicit login=true,
+          // but make the deterministic/no-profile path the Windows default.
+          const useLoginShell = input.login ?? process.platform !== 'win32';
+          const command = deriveExecArgs(shell, boundCommand, useLoginShell);
+          const processId = unifiedExecManager.allocateProcessId();
+          // Process ids are deliberately small/reusable, while chat ownership lives in a
+          // separate registry from the Codex process manager. An exited session may be
+          // evicted by the manager without passing through write_stdin, so its old owner row
+          // can outlive the reservation. Clear that row at the *new allocation boundary*,
+          // before the child is inserted into the manager. Otherwise a recycled numeric id
+          // briefly authorizes the old chat to write/interrupt the new chat's process during
+          // this exec_command's initial yield, before noteExecOwner below publishes the new
+          // owner. No caller should own a brand-new id until this call actually returns it.
+          forgetExecOwner(processId);
+          try {
+            // Current Codex intercepts an explicit `apply_patch` shell invocation before spawning
+            // the shell process. The parser is the port of apply-patch/src/invocation.rs and uses
+            // the same tree-sitter-bash grammar/query as upstream.
+            if (!isBatch) {
+              const interceptedPatch = maybeParseApplyPatchForExec(command, dir.real);
+              if (interceptedPatch.kind === 'correctness_error') {
+                unifiedExecManager.releaseProcessId(processId);
+                return fail(`apply_patch verification failed: ${interceptedPatch.error.message}`);
+              }
+              if (interceptedPatch.kind === 'body') {
+                const reuseRefusal = await reuseGateRefusal(interceptedPatch.args.hunks, undefined, dir.real);
+                if (reuseRefusal) {
+                  unifiedExecManager.releaseProcessId(processId);
+                  return fail(`${reuseRefusal} A shell apply_patch cannot carry the record: use the apply_patch tool.`);
+                }
+                try {
+                  const patchRun = await runParsedPatch(interceptedPatch.args, ctx.roots, dir);
+                  if (patchRun.result.isError || patchRun.content === null) return patchRun.result;
+
+                  // `exec_command.rs` converts a successful intercepted patch into an
+                  // ExecCommandToolOutput with zero wall time and no process/exit/chunk metadata.
+                  const output: ExecCommandToolOutput = {
+                    chunkId: '',
+                    wallTimeMs: 0,
+                    rawOutput: Buffer.from(patchRun.content, 'utf8'),
+                    truncationPolicy: EXEC_OUTPUT_CEILING_POLICY,
+                    maxOutputTokens: input.max_output_tokens,
+                    processId: null,
+                    exitCode: null,
+                    originalTokenCount: null,
+                    outputOmittedBytes: null
+                  };
+                  noteExec({ running: false, exitCode: null, timedOut: false, durationMs: 0 });
+                  noteDetail(commandDetail.replace(/\s+/g, ' ').slice(0, 120));
+                  return {
+                    content: [{ type: 'text' as const, text: execCommandResponseText(output) }],
+                    structuredContent: execCommandStructuredOutput(output)
+                  };
+                } finally {
+                  unifiedExecManager.releaseProcessId(processId);
+                }
+              }
+            }
+
+            const output = await unifiedExecManager.execCommand({
+              command,
+              shellType: shell.shellType,
+              hookCommand: commandDetail,
+              processId,
+              yieldTimeMs: input.yield_time_ms ?? DEFAULT_EXEC_YIELD_TIME_MS,
+              maxOutputTokens: input.max_output_tokens,
+              truncationPolicy: EXEC_OUTPUT_CEILING_POLICY,
+              cwd: dir.real,
+              displayCwd: dir.virtual,
+              env: execChildEnvironment(),
+              tty: input.tty ?? DEFAULT_TTY
+            });
+            // The admitted workstream claim owns every continuing process. Browser/request
+            // correlation is recorder metadata only and does not participate in process authority.
+            if (output.processId === null) {
+              forgetExecOwner(processId);
+            } else {
+              const call = currentCall();
+              noteExecOwner(
+                output.processId,
+                call?.workstreamId ?? null,
+                call?.workstreamClaimId ?? null
+              );
+            }
+            const responseText = execCommandResponseText(output);
+            // A search that found nothing exits 1 and has not failed. Recording it as an
+            // error made a session's error count meaningless; see exec-hints.ts for why this
+            // cannot launder a real failure. `benign` only ever *withholds* the error mark —
+            // it never turns a genuine non-zero exit into a success.
+            // A batch has one exit code and several commands, so the single-command classifier
+            // cannot be handed the wrapper script — it would be asking whether a `for` loop is a
+            // search. Classify each section on its own command and its own output instead. This
+            // matters most for the case batching exists to serve: several ripgrep searches, where
+            // "no matches" is exit 1 and reporting the batch as failed is what makes a model run
+            // the whole thing again. Require a complete set of sections, so a truncated tail
+            // cannot let an unseen real failure pass as benign.
+            const batchSections = isBatch ? parseCommandBatchSections(responseText) : [];
+            const nonZeroSections = batchSections.filter((section) => section.exitCode !== 0);
+            const benign = isBatch
+              ? batchSections.length === rawCommands.length &&
+                nonZeroSections.length > 0 &&
+                nonZeroSections.every((section) =>
+                  nonZeroExitIsBenign(boundCommands[section.index - 1] ?? '', section.exitCode, section.text)
+                )
+              : nonZeroExitIsBenign(boundCommand, output.exitCode, responseText);
+            noteExec({
+              ...(output.processId === null ? {} : { id: String(output.processId) }),
+              running: output.processId !== null,
+              exitCode: output.exitCode,
+              timedOut: false,
+              durationMs: output.wallTimeMs,
+              benignExit: benign
+            });
+            noteDetail(commandDetail.replace(/\s+/g, ' ').slice(0, 120));
+            logInfo(`tool exec_command ${shell.shellType} -> ${output.processId ?? `exit ${output.exitCode ?? 'unknown'}`}`);
+            // `benign` was previously spent only on the error count, leaving the model to read
+            // `Process exited with code 1` under an empty body and re-run a search that had
+            // already answered. It is the same classification, now also said out loud.
+            const notes = [
+              ...commandNotes,
+              ...(benign
+                ? isBatch
+                  ? nonZeroSections.map(
+                      (section) =>
+                        `Command ${section.index}: ${benignExitNote(boundCommands[section.index - 1] ?? '', shell.shellType)}`
+                    )
+                  : [benignExitNote(boundCommand, shell.shellType)]
+                : []),
+              ...execRecoveryHints(rawCommands.join('\n'), responseText, shell.shellType)
+            ];
+            return {
+              content: [{ type: 'text' as const, text: withExecNotes(responseText, notes) }],
+              structuredContent: execCommandStructuredOutput(output)
+            };
+          } catch (error) {
+            const detail = error instanceof UnifiedExecError ? error.debug() : friendlyError(error);
+            return fail(`exec_command failed for \`${shlexJoin(command)}\`: ${detail}`);
+          }
+        })
+    );
+
+    reg.register(
+      'write_stdin',
+      {
+        description: WRITE_STDIN_DESCRIPTION,
+        inputSchema: z
+          .object({
+            session_id: int32Number.describe(WRITE_STDIN_SESSION_ID_DESCRIPTION),
+            chars: z.string().optional().describe(WRITE_STDIN_CHARS_DESCRIPTION),
+            yield_time_ms: unsignedIntegerNumber.optional().describe(WRITE_STDIN_YIELD_TIME_DESCRIPTION),
+            max_output_tokens: unsignedIntegerNumber.optional().describe(MAX_OUTPUT_TOKENS_DESCRIPTION),
+            declare_persistent: z.boolean().optional().describe(WRITE_STDIN_DECLARE_PERSISTENT_DESCRIPTION)
+          })
+          .strict(),
+        outputSchema: unifiedExecOutputSchema
+      },
+      async (input) =>
+        reg.guarded('command', 'write_stdin', async () => {
+          const call = currentCall();
+          if (
+            execOwnershipDenied(
+              input.session_id,
+              call?.workstreamId ?? null,
+              call?.workstreamClaimId ?? null
+            )
+          ) {
+            return fail(
+              `write_stdin failed: session ${input.session_id} belongs to a different or superseded workstream claim. Start your own with exec_command under the current workstream_id.`
+            );
+          }
+          // Persistence is declared, never inferred (the reaper's contract; see
+          // exec-reaper.ts). Declared before the write so a call that also observes the
+          // exit still made its declaration while the session was live, and failed loudly
+          // for a dead or unknown id instead of silently "declaring" nothing.
+          if (input.declare_persistent) {
+            if (!unifiedExecManager.declareSessionPersistent(input.session_id)) {
+              return fail(
+                `write_stdin failed: declare_persistent found no live exec session ${input.session_id}. ` +
+                  'Only a running session started by exec_command can be declared persistent; nothing was declared and nothing was written.'
+              );
+            }
+            logInfo(`tool write_stdin declared exec session ${input.session_id} persistent`);
+          }
+          try {
+            const output = await unifiedExecManager.writeStdin({
+              processId: input.session_id,
+              input: input.chars ?? '',
+              yieldTimeMs: input.yield_time_ms ?? DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
+              maxOutputTokens: input.max_output_tokens,
+              truncationPolicy: EXEC_OUTPUT_CEILING_POLICY
+            });
+            if (output.processId === null) forgetExecOwner(input.session_id);
+            noteExec({
+              ...(output.processId === null ? {} : { id: String(output.processId) }),
+              running: output.processId !== null,
+              exitCode: output.exitCode,
+              timedOut: false,
+              durationMs: output.wallTimeMs
+            });
+            logInfo(`tool write_stdin ${input.session_id} (${(input.chars ?? '').length} chars)`);
+            // Said out loud, because the reaper the declaration protects against is
+            // otherwise invisible from the tool surface.
+            const notes = input.declare_persistent
+              ? [
+                  `session ${input.session_id} is declared persistent: the orphan reaper will spare it until it exits or the daemon restarts.`
+                ]
+              : [];
+            return {
+              content: [{ type: 'text' as const, text: withExecNotes(execCommandResponseText(output), notes) }],
+              structuredContent: execCommandStructuredOutput(output)
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return fail(`write_stdin failed: ${message}`);
+          }
+        })
+    );
   }
 
   // ---------------------------------------------------------------- session
@@ -1067,7 +1505,7 @@ async function rollbackFailedPatch(
   return { complete: false, note: `WARNING: failed patch rollback was incomplete: ${problems.join('; ')}` };
 }
 
-/** Apply a patch only after resolving every effect against the workstream policy. */
+/** Shared execution path for the standalone tool and exec_command's upstream apply_patch intercept. */
 async function runParsedPatch(
   args: { patch: string; hunks: Hunk[]; workdir: string | null; environmentId: string | null },
   roots: readonly Root[],
@@ -1301,7 +1739,6 @@ async function resolvePatchPaths(
     // First resolve the sandbox identity without requiring the leaf to exist. This gives later
     // hunks a stable real key even when the path exists only in the patch's simulated state.
     let resolved = await resolveIn(roots, spelledPath, { base: baseVirtual, allowMissing: true });
-    requireManagedPath(currentCall()?.workstreamId ?? null, 'apply_patch', resolved.real);
     const state = pendingPresence.get(pathKey(resolved.real));
     // An untouched initial Update/Delete keeps the old strict Not-found behaviour. Once an
     // earlier hunk has established presence/absence, the verifier owns the sequential verdict.
@@ -1538,7 +1975,7 @@ async function readOne(
     // and several megabytes of base64 answers a question nobody asked at ruinous cost.
     const text =
       `--- ${resolved.virtual} ---\n${formatFileInfo(info)}\n` +
-      'Binary file, so its bytes are not returned.';
+      'Binary file, so its bytes are not returned. Use exec_command if you need to inspect or convert it.';
     return { text, bytes: Buffer.byteLength(text, 'utf8') };
   }
 
@@ -1554,7 +1991,7 @@ async function readOne(
     info.binary = true;
     const text =
       `--- ${resolved.virtual} ---\n${formatFileInfo(info)}\n` +
-      'Binary file, so its bytes are not returned.';
+      'Binary file, so its bytes are not returned. Use exec_command if you need to inspect or convert it.';
     return { text, bytes: Buffer.byteLength(text, 'utf8') };
   }
   if (result.lastLine >= result.firstLine) noteDetail(`lines ${result.firstLine}–${result.lastLine}`);

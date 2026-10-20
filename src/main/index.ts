@@ -1,7 +1,6 @@
 /**
  * Main process entry: window, tray, and the security posture for the renderer.
  */
-import { initExecutionConfig } from './managed-execution.js';
 
 import path from 'node:path';
 import { app, BrowserWindow, Menu, Tray, nativeImage, nativeTheme, screen, session, shell } from 'electron';
@@ -226,7 +225,6 @@ void app.whenReady().then(async () => {
   // primary that was told to quit before ready, must never touch the primary's shared userData.
   if (!shouldBeginAppBootstrap(hasSingleInstanceLock, quitting)) return;
   const userData = app.getPath('userData');
-  initExecutionConfig(userData);
   initConfigPath(userData);
   initSecretsPath(userData);
   initSessionStore(userData);

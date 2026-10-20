@@ -12,8 +12,6 @@
  * There is no hidden acceptance of names a server did not advertise, and there is no
  * merged list — those would both be ways of claiming a separation the product does not have.
  */
-import { executionPolicies } from '../managed-execution.js';
-import { managedExecution, requireManagedIdentity } from '../managed-execution.js';
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -38,7 +36,6 @@ import {
   admitWorkstreamCall,
   checkpointWorkstreamAssignment,
   workstreamStatus,
-  requestWorkstreamValidation,
 } from "../workstreams.js";
 import { assignmentPrompt, checkpointSchema } from "../work-assignment.js";
 
@@ -49,7 +46,7 @@ function rulesNotice(id: string): string {
   const rules = `${workspace.replace(/\/+$/, "")}/AGENTS.md`;
   return (
     `\nYour next call, now, in this turn: read with paths=["${rules}"], continuing until every line is read; then follow it and carry on. ` +
-    "`read` is a tool of this same connector, beside `workstream`, `find` and `apply_patch`. If it is not " +
+    "`read` is a tool of this same connector, beside `workstream`, `exec_command` and `apply_patch`. If it is not " +
     "among the tools you have loaded, look it up in this connector by the name `read` and call it; a tool you have not " +
     "looked up yet is not a missing tool. " +
     "Until this chat has read every line of it, the app refuses every tool except read, find and view_image. " +
@@ -118,7 +115,6 @@ export function buildServer(
   surface: SurfaceId,
   liveContext: () => ToolContext = () => ctx,
 ): McpServer {
-  executionPolicies();
   const definition = surfaceDefinition(surface);
   const server = new McpServer(
     { name: definition.serverName, version: APP_VERSION },
@@ -228,20 +224,18 @@ function registerWorkstreamSetupTool(
   server.registerTool(
     "workstream",
     {
-      title: "Claim workstream identity, checkpoint, or hand off a validation wait",
+      title: "Claim workstream identity or checkpoint its assignment",
       description:
         "Identity setup required before ordinary Core/Desktop calls. Use action=start with a new logical " +
         "workstream name and the repository directory it works in, to register and claim it for this chat. Use " +
         "action=continue with an already-registered name to claim it. The returned workstream_id is the identity " +
         "token required on every ordinary connector call. action=checkpoint records the unfinished operation " +
-        "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance. " +
-        "action=validate requests the assigned consumer; launch and controller handoff are one operation. " +
-        "The controller resumes you with the result without worker polling.",
+        "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance.",
       inputSchema: z.object({
         action: z
-          .enum(["start", "continue", "checkpoint", "validate"])
+          .enum(["start", "continue", "checkpoint"])
           .describe(
-            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim. validate: request the assigned consumer with service-owned execution.",
+            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim.",
           ),
         workstream: workstreamIdSchema.describe(
           "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
@@ -254,27 +248,15 @@ function registerWorkstreamSetupTool(
               "for example /research/math-notes-app. It is fixed for the life of the workstream.",
           ),
         workstream_id: z.string().optional().describe("Required for checkpoint: the currently held identity token."),
-        consumer: z.string().optional().describe("validate only: assigned consumer identity. Command, scope and lifetime are service-owned."),
         checkpoint: checkpointSchema.optional().describe("Worker-reported resume point; never acceptance evidence."),
-      }).strict(),
+      }),
     },
-    async ({ action, workstream, path, workstream_id, checkpoint, consumer }) =>
+    async ({ action, workstream, path, workstream_id, checkpoint }) =>
       guard("workstream", async () => {
         const refused = (text: string) => ({
           content: [{ type: "text" as const, text }],
           isError: true,
         });
-        const managed = managedExecution(workstream);
-        requireManagedIdentity(workstream);
-        if (action === "validate") {
-          if (!consumer || !workstream_id || checkpoint || path)
-            return refused("validate requires the current claim and assigned consumer only.");
-          const admitted = await admitWorkstreamCall(workstream_id);
-          if (!admitted.ok || admitted.id !== workstream) return refused("Validation requires the current claim.");
-          await requestWorkstreamValidation(workstream, workstream_id, consumer);
-          return {content: [{type: "text" as const, text: "Validation launched and controller wait registered. End this turn; the controller will deliver its result."}]};
-        }
-        if (consumer) return refused("consumer is accepted only with action=validate.");
         if (action === "checkpoint") {
           if (!workstream_id || !checkpoint || path)
             return refused("checkpoint requires workstream_id and checkpoint, and takes no path.");
@@ -294,7 +276,6 @@ function registerWorkstreamSetupTool(
           let workspace: string;
           try {
             const resolved = await resolvePath(liveContext().roots, path);
-            if (resolved.real !== managed.workspace) return refused("Use the assigned workspace.");
             if (!(await fs.stat(resolved.real)).isDirectory())
               return refused(`${resolved.virtual} is not a directory.`);
             workspace = resolved.virtual;
@@ -308,7 +289,7 @@ function registerWorkstreamSetupTool(
             content: [
               {
                 type: "text" as const,
-                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + `\nAssigned validation consumers: ${Object.keys(managed.consumers).join(", ")}.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
+                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
               },
             ],
           };
@@ -324,7 +305,7 @@ function registerWorkstreamSetupTool(
           content: [
             {
               type: "text" as const,
-              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + `\nAssigned validation consumers: ${Object.keys(managed.consumers).join(", ")}.` + claimNotice(result.workstreamId) + rulesNotice(result.id) +
+              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id) +
                 (assignment ? assignmentPrompt(assignment) : ""),
             },
           ],

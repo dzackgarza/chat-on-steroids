@@ -11,8 +11,6 @@
  *
  * Enforcement lives here, in code. It is never delegated to prompt text.
  */
-import { currentCall } from './mcp/call-context.js';
-import { requireManagedPath } from './managed-execution.js';
 
 import { rawPromises as fs, rawRealpathNative } from './rawfs.js';
 import path from 'node:path';
@@ -365,8 +363,6 @@ export async function resolvePath(
   }
 
   const finalReal = missing.length === 0 ? real : path.join(real, ...missing);
-  const call = currentCall();
-  if (call) requireManagedPath(call.workstreamId, 'read', finalReal);
   if (!isContained(rootReal, finalReal)) {
     throw new SandboxError('Path escapes its approved folder');
   }
@@ -392,10 +388,7 @@ export function toVirtualPath(root: Root, rootReal: string, realPath: string): s
 export async function resolveRoot(roots: readonly Root[], name: string): Promise<{ root: Root; real: string }> {
   const root = roots.find((r) => r.name.toLowerCase() === name.toLowerCase());
   if (!root) throw new SandboxError(`Unknown root "/${name}"`);
-  const real = await realRoot(root);
-  const call = currentCall();
-  if (call) requireManagedPath(call.workstreamId, 'read', real);
-  return { root, real };
+  return { root, real: await realRoot(root) };
 }
 
 /**

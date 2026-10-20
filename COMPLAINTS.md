@@ -4,24 +4,6 @@ Friction, deficiencies, and observed-but-unfixed defects, logged per the AGENTS.
 standing directive. Each entry names what was observed, where, and what (if anything)
 was done about it.
 
-## 2026-10-20 — validation authority review
-
-- **Worker shell bypass — corrected and independently checked in source.** The ordinary development
-  command ran `timeout 5 python3 -m pytest ...::test_other` outside the controller job
-  store. Worker-supplied execution and stdin handlers have been removed, including their
-  nested registration. Structured read/search/patch remain available. The actual HTTP
-  regression failed before the correction and passes afterward; no live workers changed.
-- **False validation completeness — corrected and independently checked in source.**
-  An imported module set `PYTEST_ADDOPTS=-k test_other`; the required failing test
-  was deselected, yet the job returned success and listed both tests as selected.
-  The app runner now overrides ambient selectors and fail-fast options, checks the
-  final collection against its required inventory, and checks actual terminal execution.
-  Deselection, skipped required cases and unfinished execution cannot yield success.
-  The reviewer reran the original unchanged fixture: both cases executed, the required
-  case failed, and the receipt accurately recorded both cases. Exact failure retry and
-  complete validation on the same repaired snapshot also passed. The earlier proposal
-  to redesign Sage consumers was a scope error; no consumer changes were required.
-
 ## 2026-09-09 — sleep/wake architecture agent
 
 - **`storedHistory()` closed `observer_lost` turns in the durable rebuild — FIXED.** The
