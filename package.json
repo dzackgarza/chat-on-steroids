@@ -13,7 +13,7 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify": "npm run verify:ci",
-    "verify:ci": "npm run rg && npm run verify:privacy && npm run typecheck",
+    "verify:ci": "npm run rg && npm run verify:privacy && npm run typecheck && npm run verify:assignments",
     "verify:live": "node scripts/live-chatgpt-workstream.mjs --live",
     "verify:privacy": "node scripts/verify-public-history.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
@@ -40,7 +40,8 @@
     "dist:dir:mac": "node scripts/package.mjs --platform darwin --arch x64,arm64 --dir",
     "dist:dir:linux:x64": "node scripts/package.mjs --platform linux --arch x64 --dir",
     "dist:dir:linux:arm64": "node scripts/package.mjs --platform linux --arch arm64 --dir",
-    "dist:dir:linux": "node scripts/package.mjs --platform linux --arch x64,arm64 --dir"
+    "dist:dir:linux": "node scripts/package.mjs --platform linux --arch x64,arm64 --dir",
+    "verify:assignments": "tsx scripts/verify-workstream-assignment.ts"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "0.32.0",

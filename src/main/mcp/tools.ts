@@ -33,7 +33,11 @@ import {
   workstreamWorkspace,
   workstreamIdSchema,
   type WorkstreamSetupResult,
+  admitWorkstreamCall,
+  checkpointWorkstreamAssignment,
+  workstreamStatus,
 } from "../workstreams.js";
+import { assignmentPrompt, checkpointSchema } from "../work-assignment.js";
 
 /** Tells a chat that claimed a workstream to read its rules first; rules-gate.ts enforces it. */
 function rulesNotice(id: string): string {
@@ -95,6 +99,8 @@ function workstreamRefusal(
         "WORKSTREAM_UNAVAILABLE: this workstream is being moved to a fresh chat right now, and that chat carries " +
         "the work on. Stop working on it in this chat and make no further tool calls for it here."
       );
+    case "WORKSTREAM_ASSIGNMENT_LOCKED":
+      return "The controller assignment is retained. Only the independent verifier can authorize its disposition and the controller can assign its successor. Do not select or start another unit.";
     case "WORKSTREAM_PAUSED":
       return (
         "WORKSTREAM_PAUSED: the owner has paused this workstream to free its resources. Stop working: " +
@@ -218,17 +224,18 @@ function registerWorkstreamSetupTool(
   server.registerTool(
     "workstream",
     {
-      title: "Register or claim workstream identity",
+      title: "Claim workstream identity or checkpoint its assignment",
       description:
         "Identity setup required before ordinary Core/Desktop calls. Use action=start with a new logical " +
         "workstream name and the repository directory it works in, to register and claim it for this chat. Use " +
         "action=continue with an already-registered name to claim it. The returned workstream_id is the identity " +
-        "token required on every ordinary connector call.",
+        "token required on every ordinary connector call. action=checkpoint records the unfinished operation " +
+        "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance.",
       inputSchema: z.object({
         action: z
-          .enum(["start", "continue"])
+          .enum(["start", "continue", "checkpoint"])
           .describe(
-            "start: register and claim a new named workstream. continue: claim an already-registered named workstream.",
+            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim.",
           ),
         workstream: workstreamIdSchema.describe(
           "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
@@ -240,14 +247,27 @@ function registerWorkstreamSetupTool(
             "start only, and required there: the absolute virtual path of the directory this workstream works in, " +
               "for example /research/math-notes-app. It is fixed for the life of the workstream.",
           ),
+        workstream_id: z.string().optional().describe("Required for checkpoint: the currently held identity token."),
+        checkpoint: checkpointSchema.optional().describe("Worker-reported resume point; never acceptance evidence."),
       }),
     },
-    async ({ action, workstream, path }) =>
+    async ({ action, workstream, path, workstream_id, checkpoint }) =>
       guard("workstream", async () => {
         const refused = (text: string) => ({
           content: [{ type: "text" as const, text }],
           isError: true,
         });
+        if (action === "checkpoint") {
+          if (!workstream_id || !checkpoint || path)
+            return refused("checkpoint requires workstream_id and checkpoint, and takes no path.");
+          const admitted = await admitWorkstreamCall(workstream_id);
+          if (!admitted.ok || admitted.id !== workstream)
+            return refused("Checkpoint requires the current claim for this workstream.");
+          await checkpointWorkstreamAssignment(admitted.id, checkpoint);
+          return { content: [{ type: "text" as const, text: "Resume point recorded. Assignment and acceptance are unchanged." }] };
+        }
+        if (checkpoint || workstream_id)
+          return refused("Checkpoint fields are accepted only with action=checkpoint.");
         if (action === "start") {
           if (!path)
             return refused(
@@ -280,11 +300,13 @@ function registerWorkstreamSetupTool(
           );
         const result = await continueWorkstream(workstream);
         if (!result.ok) return refused(workstreamRefusal(result));
+        const assignment = workstreamStatus().find((row) => row.id === result.id)?.assignment;
         return {
           content: [
             {
               type: "text" as const,
-              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
+              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id) +
+                (assignment ? assignmentPrompt(assignment) : ""),
             },
           ],
         };
