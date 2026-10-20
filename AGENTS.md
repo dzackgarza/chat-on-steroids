@@ -438,8 +438,10 @@ runtime overrides, stdin, or execution deadlines. No shell handlers are register
 nested code mode; the common gate also refuses their old names. Repository queries use fixed argv
 in a read-only container. Existing Codex terminal internals are not a worker capability.
 
-The candidate-import/pytest report-ownership defect remains open in COMPLAINTS.md. Snapshotting
-and mandatory dispatch alone do not establish independent selection or reporting.
+The runner overrides ambient pytest selection and fail-fast settings, checks final collection
+against the required inventory, and records actual completed cases. A narrowed or unfinished
+run is an execution error, never a successful full validation. This is workflow enforcement;
+Sage consumers and their mathematical assertions remain unchanged.
 
 **Acceptance.** Exercise real approved/outside paths on the target OS. Security claims are about
 what the filesystem actually permits or refuses, not an in-memory path fixture.

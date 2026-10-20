@@ -199,12 +199,22 @@ def execute(run):
                 if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16 * 1024 * 1024:
                     raise ValueError('Validation report must be a regular file under 16 MiB')
                 report = json.load(report_file)
-            if (not isinstance(report, dict) or set(report) != {'failedNodes', 'selected'} or
+            if (not isinstance(report, dict) or set(report) != {'failedNodes', 'selected', 'completed', 'error'} or
                     any(not isinstance(report[key], list) or
                         any(not isinstance(node, str) for node in report[key])
-                        for key in ('failedNodes', 'selected'))):
+                        for key in ('failedNodes', 'selected', 'completed')) or
+                    report['error'] is not None and not isinstance(report['error'], str)):
                 raise ValueError('Malformed pytest report')
             failed_nodes = report['failedNodes']
+            error = report['error']
+            if not report['selected'] or sorted(report['selected']) != sorted(report['completed']):
+                error = error or 'Required consumer execution incomplete'
+            if manifest['selected'] and sorted(report['selected']) != sorted(manifest['selected']):
+                error = error or 'Executed selection differs from assigned retry'
+            if not set(failed_nodes).issubset(report['selected']):
+                error = error or 'Failures do not belong to the executed selection'
+            if code == 0 and (error or failed_nodes):
+                code = 1
     except Exception as exception:
         error = f'{type(exception).__name__}: {exception}'
     write_json(run / 'result.json', dict(version=1, runId=run.name, exitCode=code,
@@ -229,28 +239,55 @@ def pytest_run(run):
         def __init__(self):
             self.failed = []
             self.selected = []
+            self.completed = []
+            self.required = []
+            self.error = None
 
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_collection_modifyitems(self, session, config, items):
             requested = set(manifest['selected'])
+            available = {item.nodeid for item in items}
+            missing = requested - available
+            if missing:
+                self.error = f'Recorded consumer IDs missing: {sorted(missing)}'
+            self.required = [item.nodeid for item in items if not requested or item.nodeid in requested]
             if requested:
-                available = {item.nodeid for item in items}
-                missing = requested - available
-                if missing:
-                    raise pytest.UsageError(f'Recorded consumer IDs missing: {sorted(missing)}')
                 dropped = [item for item in items if item.nodeid not in requested]
                 items[:] = [item for item in items if item.nodeid in requested]
                 config.hook.pytest_deselected(items=dropped)
-            self.selected = [item.nodeid for item in items]
+            yield
+
+        def pytest_collection_finish(self, session):
+            # session.items is final, after every collection-modification hook.
+            # A pre-hook list falsely counted a deselected case as executed.
+            self.selected = [item.nodeid for item in session.items]
+            if not self.selected or sorted(self.selected) != sorted(self.required):
+                self.error = 'Collection changed the required consumer selection'
+            if self.error:
+                raise pytest.UsageError(self.error)
 
         def pytest_runtest_logreport(self, report):
             if report.failed and report.nodeid not in self.failed:
                 self.failed.append(report.nodeid)
+            if report.skipped:
+                self.error = f'Required consumer skipped: {report.nodeid}'
+            if report.when == 'teardown':
+                self.completed.append(report.nodeid)
 
         def pytest_sessionfinish(self, session, exitstatus):
-            write_json(run / 'reports' / 'pytest.json', dict(failedNodes=self.failed, selected=self.selected))
+            if sorted(self.completed) != sorted(self.required):
+                self.error = self.error or 'Required consumer execution incomplete'
+            if self.error:
+                session.exitstatus = pytest.ExitCode.TESTS_FAILED
+            write_json(run / 'reports' / 'pytest.json', dict(failedNodes=self.failed,
+                       selected=self.selected, completed=self.completed, error=self.error))
 
     report = Report()
-    args = [*spec['files'], '--runxfail', '-vv', '--tb=long', '-p', 'no:cacheprovider']
+    # The operation's files and recorded retry are the only selectors. Imported
+    # setup modules and repository addopts cannot narrow scope or impose fail-fast.
+    os.environ.pop('PYTEST_ADDOPTS', None)
+    args = [*spec['files'], '-o', 'addopts=', '-k', '', '-m', '', '--maxfail=0',
+            '--runxfail', '-vv', '--tb=long', '-p', 'no:cacheprovider']
     for plugin in spec['plugins']:
         args += ['-p', plugin]
     raise SystemExit(pytest.main(args, plugins=[report]))

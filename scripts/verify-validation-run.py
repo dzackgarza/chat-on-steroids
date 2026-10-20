@@ -92,6 +92,18 @@ def test_consumer(case):
             while not (directory / 'result.json').exists() and time.monotonic() < deadline:
                 time.sleep(.05)
             return directory, json.loads((directory / 'result.json').read_text())
+        # Reproduce the review finding: an imported module adds a selector before
+        # pytest starts. The controller must still run the assigned failing case.
+        (source / 'pytest.ini').write_text('[pytest]\naddopts = -k case160 -x\n')
+        (source / 'selection.py').write_text('import os\nos.environ["PYTEST_ADDOPTS"] = "-k case160"\n')
+        configured = json.loads(spec.read_text())
+        configured['imports'] = ['selection']
+        configured['env'] = {'PYTHONPATH': '{project}'}
+        spec.write_text(json.dumps(configured))
+        narrowed, outcome = run_job()
+        assert outcome['exitCode'] == 1 and outcome['failedNodes'] == ['test_consumer.py::test_consumer[case16]'], (outcome, (narrowed / 'output.log').read_text())
+        configured['imports'] = []
+        spec.write_text(json.dumps(configured))
         first, failed = run_job()
         assert failed['exitCode'] == 1, (failed, (first / 'output.log').read_text())
         assert failed['failedNodes'] == ['test_consumer.py::test_consumer[case16]']
@@ -111,6 +123,21 @@ def test_consumer(case):
         stale = subprocess.run([sys.executable, str(runner), 'start', str(spec), str(root / 'jobs'),
                                 '--full-after', str(retry)], capture_output=True)
         assert stale.returncode != 0, 'A modified accepted snapshot was silently reused'
+
+        # A collection hook must not silently shrink a controller-owned full run.
+        (source / 'conftest.py').write_text('def pytest_collection_modifyitems(items):\n    items[:] = [item for item in items if "case160" in item.nodeid]\n')
+        narrowed, incomplete = run_job()
+        assert incomplete['exitCode'] != 0 and incomplete['error'], incomplete
+        report = json.loads((narrowed / 'reports/pytest.json').read_text())
+        assert report['selected'] == ['test_consumer.py::test_consumer[case160]'], report
+        assert report['completed'] == [], report
+        (source / 'conftest.py').unlink()
+        # A zero-status pytest exit is not completion of the remaining consumers.
+        (source / 'test_consumer.py').write_text('import pytest\ndef test_first():\n    pytest.exit("unfinished", returncode=0)\ndef test_second():\n    raise AssertionError("required second consumer")\n')
+        interrupted, incomplete = run_job()
+        assert incomplete['exitCode'] != 0 and incomplete['error'], incomplete
+        assert json.loads((interrupted / 'reports/pytest.json').read_text())['completed'] == []
+        print('Assigned selection overrides ambient selectors; hook deselection and incomplete execution cannot report success.')
 
         host_report = root / 'host-report.json'
         host_report.write_text(json.dumps(dict(failedNodes=['private-host-node'], selected=[])))

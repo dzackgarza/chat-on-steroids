@@ -11,15 +11,16 @@ was done about it.
   store. Worker-supplied execution and stdin handlers have been removed, including their
   nested registration. Structured read/search/patch remain available. The actual HTTP
   regression failed before the correction and passes afterward; no live workers changed.
-- **Candidate code owns pytest selection/reporting — OPEN.** A candidate module set
-  `PYTEST_ADDOPTS=-k test_other` during its configured import. The required failing test
-  was deselected, yet the job returned success and its report claimed both tests were
-  selected. `scripts/validation-run.py` still imports candidate code in the interpreter
-  that owns collection and report hooks. Environment cleanup cannot establish separation.
-  Actual Sage consumers import candidate modules and operate on live candidate objects;
-  preserving every assertion while separating those processes requires execution-plumbing
-  changes at that interface. Do not claim the validation ownership repair complete while
-  this defect remains.
+- **False validation completeness — corrected and independently checked in source.**
+  An imported module set `PYTEST_ADDOPTS=-k test_other`; the required failing test
+  was deselected, yet the job returned success and listed both tests as selected.
+  The app runner now overrides ambient selectors and fail-fast options, checks the
+  final collection against its required inventory, and checks actual terminal execution.
+  Deselection, skipped required cases and unfinished execution cannot yield success.
+  The reviewer reran the original unchanged fixture: both cases executed, the required
+  case failed, and the receipt accurately recorded both cases. Exact failure retry and
+  complete validation on the same repaired snapshot also passed. The earlier proposal
+  to redesign Sage consumers was a scope error; no consumer changes were required.
 
 ## 2026-09-09 — sleep/wake architecture agent
 
