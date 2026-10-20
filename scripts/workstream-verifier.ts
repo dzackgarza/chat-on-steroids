@@ -68,7 +68,9 @@ async function main(): Promise<void> {
            --candidate REPOSITORY --key PRIVATE_KEY --output ENVELOPE
            --outcome accepted|dependency [--blocked-on OBLIGATION]
 
-  CONTRACT_JSON contains argv (nonempty string array) and environment (string map).
+  CONTRACT_JSON contains argv (nonempty string array), environment (string map),
+  and inputs (array of {path, sha256} for the independently fixed checker and oracle files).
+  An inline self-contained checker may declare inputs=[].
   Its bytes must match the contract SHA-256 in the approved assignment.
   Output and key must be outside the candidate. Failed checks produce no signed verdict.
   Configure the daemon with COS_ASSIGNMENT_VERIFIER_PUBLIC_KEY containing the PEM public key.
@@ -107,7 +109,17 @@ async function main(): Promise<void> {
       const spec = z.object({
         argv: z.array(z.string()).min(1),
         environment: z.record(z.string(), z.string()),
+        inputs: z.array(z.object({
+          path: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        }).strict()),
       }).strict().parse(JSON.parse(raw.toString("utf8")));
+      const checkInputs = async () => {
+        for (const input of spec.inputs) {
+          if (sha256(await fs.readFile(path.resolve(candidate, input.path))) !== input.sha256)
+            throw new Error(`Independent verification input changed: ${input.path}`);
+        }
+      };
+      await checkInputs();
       const before = await snapshot(candidate);
       const logPath = `${output}.log`;
       const log = createWriteStream(logPath, { flags: "wx" });
@@ -121,6 +133,7 @@ async function main(): Promise<void> {
       log.end();
       await once(log, "finish");
       const after = await snapshot(candidate);
+      await checkInputs();
       if (JSON.stringify(before) !== JSON.stringify(after))
         throw new Error("Candidate changed during verification");
       if (exitCode !== 0 || signal !== null)

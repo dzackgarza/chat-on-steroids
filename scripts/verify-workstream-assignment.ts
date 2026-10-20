@@ -44,10 +44,14 @@ async function main(): Promise<void> {
   const initial = await snapshot();
   const contractFile = path.join(scratch, "contract.json");
   // An external process checks the actual fixture against its specified answer.
+  const oracleFile = path.join(scratch, "expected-answer");
+  await fs.writeFile(oracleFile, "42\n");
   const contractBytes = JSON.stringify({
     argv: [process.execPath, "-e",
-      "require('node:assert/strict').equal(require('node:fs').readFileSync('answer', 'utf8'), '42\\n')"],
+      "require('node:assert/strict').equal(require('node:fs').readFileSync('answer', 'utf8'), require('node:fs').readFileSync(process.argv[1], 'utf8'))",
+      oracleFile],
     environment: {},
+    inputs: [{ path: oracleFile, sha256: createHash("sha256").update("42\n").digest("hex") }],
   });
   await fs.writeFile(contractFile, contractBytes);
   const assignment = {
@@ -121,6 +125,9 @@ async function main(): Promise<void> {
   const receipt = JSON.parse(await fs.readFile(receiptFile, "utf8"));
   const log = await fs.readFile(receipt.decision.evidence.reference);
   assert.equal(receipt.decision.evidence.sha256, createHash("sha256").update(log).digest("hex"));
+  await fs.writeFile(oracleFile, "wrong\n");
+  await assert.rejects(verify(path.join(scratch, "altered-oracle.json")), /verification input changed/);
+  await fs.writeFile(oracleFile, "42\n");
 
   await checkpointWorkstreamAssignment(id, { ...checkpoint, source: { ...initial, tree: "a".repeat(64) } });
   await assert.rejects(decideWorkstreamAssignment(id, receipt), /snapshot/);
@@ -141,6 +148,7 @@ async function main(): Promise<void> {
   const mutationContract = JSON.stringify({
     argv: [process.execPath, "-e", "require('fs').writeFileSync('answer', 'changed during check\\n')"],
     environment: {},
+    inputs: [],
   });
   await fs.writeFile(contractFile, mutationContract);
   await fs.writeFile(assignmentFile, JSON.stringify({
@@ -157,6 +165,7 @@ async function main(): Promise<void> {
     argv: [process.execPath, "-e",
       "require('node:assert/strict').equal(require('node:fs').existsSync('required-input'), false)"],
     environment: {},
+    inputs: [],
   });
   await fs.writeFile(contractFile, dependencyContract);
   const dependencyAssignment = {
