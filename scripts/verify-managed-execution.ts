@@ -18,15 +18,32 @@ async function main() {
   await exec('git', ['init', workspace]);
   const docker = (await exec('/bin/sh', ['-c', 'command -v docker'])).stdout.trim();
   const image = (await exec('/usr/bin/sg', ['docker', '-c', `${docker} image inspect cos-validation-development:local --format "{{.Id}}"`])).stdout.trim();
-  const config = path.join(root, 'policy.json');
-  await fs.writeFile(config, JSON.stringify({workstream: 'proof', workspace,
+  const state = path.join(root, 'state');
+  await fs.mkdir(state);
+  const otherWorkspace = path.join(root, 'other-workspace');
+  await fs.mkdir(path.join(otherWorkspace, 'src'), {recursive: true});
+  await fs.writeFile(path.join(otherWorkspace, 'AGENTS.md'), 'Use the second isolated fixture.\n');
+  await fs.writeFile(path.join(otherWorkspace, 'src/marker'), 'second-workstream');
+  await exec('git', ['init', otherWorkspace]);
+  await exec('git', ['-C', otherWorkspace, 'add', '.']);
+  await exec('git', ['-C', otherWorkspace, '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'Second workstream fixture']);
+  const config = path.join(state, 'execution.json');
+  await fs.writeFile(config, JSON.stringify([{workstream: 'proof', workspace,
     writablePaths: [path.join(workspace, 'src')], readPaths: [],
     developmentImage: image, docker, dockerGroup: 'docker',
     jobsRoot: path.join(root, 'jobs'), python,
     spec: {sources: {project: workspace}, cwd: '{project}', argv: [python], env: {PYTHONPATH: '{project}/src', PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'}, transport: [],
-      mode: 'pytest', imports: [], plugins: []}, consumers: {fixture: ['test_consumer.py']}}));
-  process.env.COS_MANAGED_EXECUTION_CONFIG = config;
+      mode: 'pytest', imports: [], plugins: []}, consumers: {fixture: ['test_consumer.py']}}]));
+  const policies = JSON.parse(await fs.readFile(config, 'utf8'));
+  policies.push({...policies[0], workstream: 'proof-two', workspace: otherWorkspace,
+    writablePaths: [path.join(otherWorkspace, 'src')], jobsRoot: path.join(root, 'jobs-two'),
+    spec: {...policies[0].spec, sources: {project: otherWorkspace}}});
+  await fs.writeFile(config, JSON.stringify(policies));
+  delete process.env.COS_EXECUTION_CONFIG;
+  process.env.COS_RECOVERY_CONVERSATION_KEY = 'old-recovery-chat';
+  process.env.COS_RECOVERY_WORKSTREAM_LOCK = 'old-recovery-lock';
   const managed = await import(modulePath);
+  managed.initExecutionConfig(state);
   const command = managed.developmentCommand('proof', workspace,
     'python3 -c "import pathlib,importlib.util; assert importlib.util.find_spec(\'sage\') is None; assert not pathlib.Path(\'/run/docker.sock\').exists(); pathlib.Path(\'src/edited\').write_text(\'42\')" && printf boundary-ok');
   const result = await exec(command[0]!, command.slice(1));
@@ -44,12 +61,11 @@ async function main() {
   const {initConfigPath, loadConfig, getConfig, effectiveCapabilities} = await import('../src/main/config.js');
   const {initDurableStore} = await import('../src/main/durable.js');
   const {initSessionStore} = await import('../src/main/session/store.js');
-  const state = path.join(root, 'state');
   initConfigPath(state); initDurableStore(state); initSessionStore(state);
   await loadConfig();
   const {startMcpServer} = await import('../src/main/mcp/server.js');
   const streams = await import('../src/main/workstreams.js');
-  const endpoint = await startMcpServer(() => ({roots: [{name: 'work', path: workspace}],
+  const endpoint = await startMcpServer(() => ({roots: [{name: 'work', path: workspace}, {name: 'second', path: otherWorkspace}],
     caps: effectiveCapabilities(getConfig()), readOnly: false, agentTools: false}));
   let request = 0;
   async function call(name: string, args: Record<string, unknown>) {
@@ -62,6 +78,8 @@ async function main() {
     return payload.result ?? payload.error;
   }
   try {
+    const recovery = await call('exec_command', {workstream_id: 'old-recovery-lock', cmd: 'printf bypass', workdir: '/work'});
+    assert(recovery.isError, 'Recovery credentials bypassed required workstream admission');
     const setup = await call('workstream', {action: 'start', workstream: 'proof', path: '/work'});
     const claim = JSON.stringify(setup).match(/wl_[A-Za-z0-9_-]+/)?.[0];
     assert(claim, JSON.stringify(setup));
@@ -117,10 +135,26 @@ async function main() {
     }
     await streams.restoreWorkstreams();
     assert.equal(streams.workstreamStatus()[0]!.validationWait?.runId, first.runId);
+    await streams.pauseWorkstream('proof');
+    const resultFile = path.join(first.directory, 'result.json');
+    const resultDeadline = Date.now() + 20000;
+    while (!await fs.stat(resultFile).then(() => true, () => false)) {
+      assert(Date.now() < resultDeadline, 'Fixture calculation did not finish');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.deepEqual(await streams.nextWorkstreamActions(Date.now(), true), [], 'Validation undid an owner pause');
+    await streams.resumeWorkstream('proof');
+    const originalResult = await fs.readFile(resultFile, 'utf8');
+    await fs.writeFile(resultFile, JSON.stringify({...JSON.parse(originalResult), runId: 'foreign-run'}));
+    assert.deepEqual(await streams.nextWorkstreamActions(Date.now(), true), [], 'Mismatched result resumed this worker');
+    assert.match(streams.workstreamStatus()[0]!.error!, /identity mismatch/);
+    await fs.writeFile(resultFile, originalResult);
     const failed = await finish();
     assert.match(streams.workstreamPrompt(failed, 'Core'), /Corrected dispatch/);
     assert.deepEqual(failed.validationResult?.failedNodes, ['test_consumer.py::test_case[16]']);
     assert.match(failed.validationOutput!, /FAILED/);
+    const obsolete = await call('workstream', {action: 'wait', workstream: 'proof', workstream_id: claim, validation_directory: first.directory});
+    assert(obsolete.isError || obsolete.code, 'Caller-supplied validation receipt was accepted');
     const repeated = await validate();
     assert(repeated.isError, 'Unrepaired failure launched another run');
     assert.match(JSON.stringify(repeated), /Repair the recorded failure/);
@@ -140,6 +174,16 @@ async function main() {
     assert.deepEqual(fullManifest.selected, []);
     assert.deepEqual(fullManifest.inputs, retryManifest.inputs);
     assert.equal(fullManifest.previous, retryWait.directory);
+    const second = await call('workstream', {action: 'start', workstream: 'proof-two', path: '/second'});
+    const secondClaim = JSON.stringify(second).match(/wl_[A-Za-z0-9_-]+/)?.[0];
+    assert(secondClaim, JSON.stringify(second));
+    const secondRead = await call('read', {workstream_id: secondClaim, paths: ['/second/AGENTS.md']});
+    assert(!secondRead.isError, JSON.stringify(secondRead));
+    const ownSource = await call('exec_command', {workstream_id: secondClaim, workdir: '/second', cmd: 'cat src/marker'});
+    assert.match(JSON.stringify(ownSource), /second-workstream/);
+    const foreign = await call('exec_command', {workstream_id: secondClaim, workdir: '/work', cmd: 'cat src/value.py'});
+    assert(foreign.isError, 'Another configured workstream obtained this source authority');
+    console.log('Normal app endpoint: multiple workstreams remain confined to their assigned policies.');
     console.log('Actual MCP validation: launch owns wait; duplicate retained; exact failure retry automatically followed by full consumer on identical snapshot.');
     console.log('Actual MCP HTTP: direct and nested commands confined; frozen patch and alternate identity refused.');
   } finally { await endpoint.stop({forceAfterMs: 1000}); }

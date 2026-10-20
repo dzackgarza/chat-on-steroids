@@ -1,4 +1,4 @@
-/** A dedicated managed endpoint has one principal and no host command capability. */
+/** Every app endpoint uses operator-owned workstream policies; there is no host-command mode. */
 import { readFileSync, realpathSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -18,62 +18,85 @@ const configSchema = z.object({
   consumers: z.record(z.string(), z.array(z.string()).min(1)),
 }).strict();
 export type ManagedExecution = z.infer<typeof configSchema>;
-let loaded = false;
-let policy: ManagedExecution | null = null;
+let policies: Map<string, ManagedExecution> | null = null;
+let configFile: string | null = null;
+
+/** Both normal entrypoints resolve the same required file before starting services. */
+export function initExecutionConfig(userData: string): void {
+  configFile = process.env.COS_EXECUTION_CONFIG || path.join(userData, 'execution.json');
+  const configs = executionPolicies();
+  mkdirSync(userData, {recursive: true});
+  const state = realpathSync(userData);
+  if (configs.some(config => [config.workspace, ...config.readPaths].some(root => contains(root, state))))
+    throw new Error('Execution configuration exposes app state to a worker');
+}
+
 export function contains(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-/** Configuration is operator-owned and immutable for this endpoint's lifetime. */
-export function managedExecution(): ManagedExecution | null {
-  if (loaded) return policy;
-  const file = process.env.COS_MANAGED_EXECUTION_CONFIG;
-  if (!file) { loaded = true; return null; }
-  if (process.platform !== 'linux') throw new Error('Managed execution requires the Linux container service');
-  const config = configSchema.parse(JSON.parse(readFileSync(file, 'utf8')));
-  config.workspace = realpathSync(config.workspace);
-  config.writablePaths = config.writablePaths.map(entry => realpathSync(entry));
-  config.readPaths = config.readPaths.map(entry => realpathSync(entry));
-  if (config.writablePaths.some(entry => !contains(config.workspace, entry) || entry === config.workspace))
-    throw new Error('Writable development paths must be explicit children of the workspace');
-  mkdirSync(config.jobsRoot, {recursive: true});
-  config.jobsRoot = realpathSync(config.jobsRoot);
-  const exposed = [config.workspace, ...config.readPaths];
-  if (exposed.some(root => contains(root, realpathSync(file)) || contains(root, config.jobsRoot)))
-    throw new Error('Execution policy and validation store must be outside worker-visible trees');
-  policy = config;
-  loaded = true;
+/** Missing or invalid configuration is an error, never permission to use host execution. */
+export function executionPolicies(): ManagedExecution[] {
+  if (policies) return [...policies.values()];
+  const file = configFile ?? process.env.COS_EXECUTION_CONFIG;
+  if (!file) throw new Error('Execution configuration is required before starting the app');
+  if (process.platform !== 'linux') throw new Error('Execution configuration requires the Linux container service');
+  let configs: ManagedExecution[];
+  try {
+    configs = z.array(configSchema).min(1).parse(JSON.parse(readFileSync(file, 'utf8')));
+  } catch (error) {
+    throw new Error(`Execution configuration could not be loaded: ${(error as Error).message}`);
+  }
+  const loaded = new Map<string, ManagedExecution>();
+  for (const config of configs) {
+    if (loaded.has(config.workstream)) throw new Error('Execution configuration has duplicate workstreams');
+    config.workspace = realpathSync(config.workspace);
+    config.writablePaths = config.writablePaths.map(entry => realpathSync(entry));
+    config.readPaths = config.readPaths.map(entry => realpathSync(entry));
+    if (config.writablePaths.some(entry => !contains(config.workspace, entry) || entry === config.workspace))
+      throw new Error('Writable development paths must be explicit children of the workspace');
+    mkdirSync(config.jobsRoot, {recursive: true});
+    config.jobsRoot = realpathSync(config.jobsRoot);
+    loaded.set(config.workstream, config);
+  }
+  const privatePaths = [realpathSync(file), ...configs.map(config => config.jobsRoot)];
+  const exposed = configs.flatMap(config => [config.workspace, ...config.readPaths]);
+  if (exposed.some(root => privatePaths.some(target => contains(root, target))))
+    throw new Error('Execution configuration and validation stores must be outside every worker-visible tree');
+  if (new Set(configs.map(config => config.jobsRoot)).size !== configs.length)
+    throw new Error('Each workstream requires its own validation store');
+  policies = loaded;
+  return configs;
+}
+
+export function managedExecution(id: string | null): ManagedExecution {
+  executionPolicies();
+  const config = id ? policies!.get(id) : null;
+  if (!config) throw new Error('No execution policy assigned to this workstream');
   return config;
 }
 
 export function requireManagedIdentity(id: string | null): void {
-  const config = managedExecution();
-  if (config && id !== config.workstream) throw new Error('This managed endpoint serves only its assigned workstream');
+  managedExecution(id);
 }
 
 export function managedToolRefusal(id: string | null, tool: string): string | null {
-  const config = managedExecution();
-  if (!config) return null;
-  if (id !== config.workstream) return 'MANAGED_IDENTITY_REQUIRED: use the assigned workstream on this endpoint.';
+  managedExecution(id);
   if (!['read', 'find', 'view_image', 'apply_patch', 'exec_command', 'write_stdin', 'exec', 'list_roots'].includes(tool))
     return 'MANAGED_OPERATION_UNAVAILABLE: this endpoint owns development and structured validation only.';
   return null;
 }
 
 export function requireManagedPath(id: string | null, tool: string, target: string): void {
-  const config = managedExecution();
-  if (!config) return;
-  requireManagedIdentity(id);
+  const config = managedExecution(id);
   const roots = tool === 'apply_patch' ? config.writablePaths : [config.workspace, ...config.readPaths];
   if (!roots.some(root => contains(root, target))) throw new Error('Path is outside this managed operation\'s permitted source trees');
 }
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 export function developmentCommand(id: string | null, cwd: string, command: string): string[] {
-  const config = managedExecution();
-  if (!config) throw new Error('Development container requested without a managed policy');
-  requireManagedIdentity(id);
+  const config = managedExecution(id);
   if (!contains(config.workspace, cwd)) throw new Error('Development command cwd must be in the assigned workspace');
   const args = [config.docker, 'run', '--rm', '-i', '--network', 'none', '--read-only',
     '--cap-drop', 'ALL', '--pids-limit', '256',

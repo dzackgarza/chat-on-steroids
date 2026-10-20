@@ -45,11 +45,10 @@ export async function validationResult(wait: ValidationWait) {
   return result;
 }
 
-/** Native POSIX runner resources; Windows can still hand off externally produced receipts. */
-export function validationLauncher(): string | null {
-  if (process.platform === 'win32') return null;
-  const packaged = process.resourcesPath ? path.join(process.resourcesPath, 'validation', 'sage-validation.py') : null;
-  const source = path.resolve(__dirname, '../../scripts/sage-validation.py');
+/** Controller-owned runner resource. */
+export function validationRunner(): string {
+  const packaged = process.resourcesPath ? path.join(process.resourcesPath, 'validation', 'validation-run.py') : null;
+  const source = path.resolve(__dirname, '../../scripts/validation-run.py');
   if (packaged && existsSync(packaged)) return packaged;
   if (existsSync(source)) return source;
   throw new Error('Validation launcher resource is missing');

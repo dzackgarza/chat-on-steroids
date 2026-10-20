@@ -12,6 +12,7 @@
  * There is no hidden acceptance of names a server did not advertise, and there is no
  * merged list — those would both be ways of claiming a separation the product does not have.
  */
+import { executionPolicies } from '../managed-execution.js';
 import { managedExecution, requireManagedIdentity } from '../managed-execution.js';
 
 import { McpServer } from "@modelcontextprotocol/server";
@@ -37,7 +38,6 @@ import {
   admitWorkstreamCall,
   checkpointWorkstreamAssignment,
   workstreamStatus,
-  waitForWorkstreamValidation,
   requestWorkstreamValidation,
 } from "../workstreams.js";
 import { assignmentPrompt, checkpointSchema } from "../work-assignment.js";
@@ -118,6 +118,7 @@ export function buildServer(
   surface: SurfaceId,
   liveContext: () => ToolContext = () => ctx,
 ): McpServer {
+  executionPolicies();
   const definition = surfaceDefinition(surface);
   const server = new McpServer(
     { name: definition.serverName, version: APP_VERSION },
@@ -234,13 +235,13 @@ function registerWorkstreamSetupTool(
         "action=continue with an already-registered name to claim it. The returned workstream_id is the identity " +
         "token required on every ordinary connector call. action=checkpoint records the unfinished operation " +
         "and validation pointer for the current assignment; it cannot change the obligation or claim acceptance. " +
-        "action=wait hands a durable validation-run.py job to the controller; end your turn after it succeeds. " +
-        "The controller resumes you with its result without worker polling. On a managed endpoint use action=validate with the assigned consumer; launch and handoff are one operation.",
+        "action=validate requests the assigned consumer; launch and controller handoff are one operation. " +
+        "The controller resumes you with the result without worker polling.",
       inputSchema: z.object({
         action: z
-          .enum(["start", "continue", "checkpoint", "wait", "validate"])
+          .enum(["start", "continue", "checkpoint", "validate"])
           .describe(
-            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim. wait: hand off a durable validation job. validate: request the assigned consumer with service-owned execution.",
+            "start: register and claim. continue: claim an existing workstream. checkpoint: save a resume point under the current claim. validate: request the assigned consumer with service-owned execution.",
           ),
         workstream: workstreamIdSchema.describe(
           "Logical workstream name identifying the repository/task being claimed, for example research or orchestrator.",
@@ -253,21 +254,20 @@ function registerWorkstreamSetupTool(
               "for example /research/math-notes-app. It is fixed for the life of the workstream.",
           ),
         workstream_id: z.string().optional().describe("Required for checkpoint: the currently held identity token."),
-        validation_directory: z.string().optional().describe("wait only: approved path of the job directory printed by scripts/validation-run.py start."),
         consumer: z.string().optional().describe("validate only: assigned consumer identity. Command, scope and lifetime are service-owned."),
         checkpoint: checkpointSchema.optional().describe("Worker-reported resume point; never acceptance evidence."),
       }).strict(),
     },
-    async ({ action, workstream, path, workstream_id, checkpoint, validation_directory, consumer }) =>
+    async ({ action, workstream, path, workstream_id, checkpoint, consumer }) =>
       guard("workstream", async () => {
         const refused = (text: string) => ({
           content: [{ type: "text" as const, text }],
           isError: true,
         });
-        const managed = managedExecution();
+        const managed = managedExecution(workstream);
         requireManagedIdentity(workstream);
         if (action === "validate") {
-          if (!consumer || !workstream_id || checkpoint || path || validation_directory)
+          if (!consumer || !workstream_id || checkpoint || path)
             return refused("validate requires the current claim and assigned consumer only.");
           const admitted = await admitWorkstreamCall(workstream_id);
           if (!admitted.ok || admitted.id !== workstream) return refused("Validation requires the current claim.");
@@ -275,19 +275,6 @@ function registerWorkstreamSetupTool(
           return {content: [{type: "text" as const, text: "Validation launched and controller wait registered. End this turn; the controller will deliver its result."}]};
         }
         if (consumer) return refused("consumer is accepted only with action=validate.");
-        if (action === "wait") {
-          if (managed) return refused("Use action=validate; the controller selects and registers the job.");
-          if (!workstream_id || !validation_directory || checkpoint || path)
-            return refused("wait requires workstream_id and validation_directory only.");
-          const admitted = await admitWorkstreamCall(workstream_id);
-          if (!admitted.ok || admitted.id !== workstream)
-            return refused("Wait requires the current claim for this workstream.");
-          const resolved = await resolvePath(liveContext().roots, validation_directory);
-          await waitForWorkstreamValidation(admitted.id, workstream_id, resolved.real);
-          return { content: [{ type: "text" as const, text:
-            "Validation wait handed to the controller. End this turn. It will resume you with the durable result; do not poll or relaunch the calculation." }] };
-        }
-        if (validation_directory) return refused("validation_directory is accepted only with action=wait.");
         if (action === "checkpoint") {
           if (!workstream_id || !checkpoint || path)
             return refused("checkpoint requires workstream_id and checkpoint, and takes no path.");
@@ -307,7 +294,7 @@ function registerWorkstreamSetupTool(
           let workspace: string;
           try {
             const resolved = await resolvePath(liveContext().roots, path);
-            if (managed && resolved.real !== managed.workspace) return refused("Use the assigned workspace.");
+            if (resolved.real !== managed.workspace) return refused("Use the assigned workspace.");
             if (!(await fs.stat(resolved.real)).isDirectory())
               return refused(`${resolved.virtual} is not a directory.`);
             workspace = resolved.virtual;
@@ -321,7 +308,7 @@ function registerWorkstreamSetupTool(
             content: [
               {
                 type: "text" as const,
-                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
+                text: `Registered and claimed workstream "${result.id}" on ${workspace} for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + `\nAssigned validation consumers: ${Object.keys(managed.consumers).join(", ")}.` + claimNotice(result.workstreamId) + rulesNotice(result.id),
               },
             ],
           };
@@ -337,7 +324,7 @@ function registerWorkstreamSetupTool(
           content: [
             {
               type: "text" as const,
-              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + claimNotice(result.workstreamId) + rulesNotice(result.id) +
+              text: `Claimed existing workstream "${result.id}" for this chat.\nUse workstream_id="${result.workstreamId}" on every ordinary Core/Desktop call while working under this identity.` + `\nAssigned validation consumers: ${Object.keys(managed.consumers).join(", ")}.` + claimNotice(result.workstreamId) + rulesNotice(result.id) +
                 (assignment ? assignmentPrompt(assignment) : ""),
             },
           ],

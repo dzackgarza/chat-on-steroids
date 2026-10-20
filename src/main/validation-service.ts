@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { managedExecution, requireManagedIdentity } from './managed-execution.js';
-import { validationLauncher, validationResult, validationWait } from './validation-wait.js';
+import { validationRunner, validationResult, validationWait } from './validation-wait.js';
 
 const execute = promisify(execFile);
 async function unchanged(python: string, runner: string, prior: string): Promise<boolean> {
@@ -16,14 +16,11 @@ async function unchanged(python: string, runner: string, prior: string): Promise
 
 export async function prepareValidation(id: string, consumer: string, requestId: string) {
   requireManagedIdentity(id);
-  const config = managedExecution();
-  if (!config) throw new Error('Structured validation requires an operator-configured managed endpoint');
+  const config = managedExecution(id);
   if (!Object.hasOwn(config.consumers, consumer)) throw new Error('Unknown assigned consumer');
   const spec = {...config.spec, files: config.consumers[consumer]};
   await fs.mkdir(config.jobsRoot, {recursive: true});
-  const launcher = validationLauncher();
-  if (!launcher) throw new Error('Validation service requires POSIX execution');
-  const runner = path.join(path.dirname(launcher), 'validation-run.py');
+  const runner = validationRunner();
   let prior: string | null = null;
   try { prior = JSON.parse(await fs.readFile(path.join(config.jobsRoot, 'active.json'), 'utf8')).directory; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }

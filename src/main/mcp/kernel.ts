@@ -18,7 +18,7 @@
  * without readOnlyHint as a write action and asks the user to confirm each call, so every
  * genuinely read-only tool is marked as such.
  */
-import { managedExecution, managedToolRefusal } from '../managed-execution.js';
+import { managedToolRefusal } from '../managed-execution.js';
 
 import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
@@ -851,31 +851,6 @@ export interface SurfaceRegistrar {
 // filesystem/execution tools directly, bypassing workstream admission. Remove this block
 // and its systemd drop-in once the `workstream` setup tool is confirmed live.
 
-const recoveryConversationKey =
-  process.env.COS_RECOVERY_CONVERSATION_KEY?.trim() ?? "";
-
-const recoveryWorkstreamLock =
-  process.env.COS_RECOVERY_WORKSTREAM_LOCK?.trim() ?? "";
-
-const RECOVERY_TOOL_NAMES = new Set([
-  "read",
-  "exec_command",
-  "apply_patch",
-  "write_stdin",
-]);
-
-function isEmergencyRecoveryCall(
-  toolName: string,
-  workstreamId: string | undefined,
-): boolean {
-  if (!recoveryConversationKey || !recoveryWorkstreamLock) return false;
-  // The recovery sentinel rides the ordinary workstream_id slot on this exact chat. It is
-  // the value of the old `workstream_lock` recovery credential, now carried in the single
-  // identity field the ordinary-tool schema exposes.
-  if (workstreamId !== recoveryWorkstreamLock) return false;
-  return RECOVERY_TOOL_NAMES.has(toolName);
-}
-
 /**
  * The per-tool gates every admitted call passes before its handler runs.
  *
@@ -1008,20 +983,6 @@ export function createRegistrar(
         mcpCtx?: McpCallContext,
       ) => {
         const { workstream_id, ...args } = input;
-        if (!managedExecution() && isEmergencyRecoveryCall(name, workstream_id as string)) {
-          logWarn(`EMERGENCY_RECOVERY_BYPASS tool=${name} surface=${surface}`);
-          return dispatch(
-            name,
-            args,
-            mcpCtx?.sessionId ?? null,
-            requestIdOf(mcpCtx),
-            surface,
-            null,
-            null,
-            null,
-            () => handler(args as never),
-          );
-        }
         const admitted = await admitWorkstreamCall(workstream_id as string);
         if (!admitted.ok) {
           if (admitted.code === "WORKSTREAM_BUSY")

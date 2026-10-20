@@ -4,6 +4,7 @@
  * Runs the core MCP server and Cloudflare tunnel without any Electron UI, display server,
  * or browser dependencies.
  */
+import { initExecutionConfig } from './managed-execution.js';
 
 import os from 'node:os';
 import path from 'node:path';
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   console.log(`Starting Chat On Steroids v${APP_VERSION} (Headless Daemon)...`);
 
   const userDataDir = process.env.COS_DATA_DIR || path.join(os.homedir(), '.config', 'chat-on-steroids');
+  initExecutionConfig(userDataDir);
   await fs.mkdir(userDataDir, { recursive: true });
 
   initConfigPath(userDataDir);

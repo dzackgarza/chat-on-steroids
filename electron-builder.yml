@@ -28,7 +28,6 @@ extraResources:
     to: validation
     filter:
     - validation-run.py
-    - sage-validation.py
   - from: LICENSE
     to: LICENSE
   - from: extension

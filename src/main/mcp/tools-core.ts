@@ -13,7 +13,7 @@
  * this special case…" belongs in a skill over these primitives, not in a schema every
  * conversation pays for.
  */
-import { managedExecution, developmentCommand, requireManagedPath } from '../managed-execution.js';
+import { developmentCommand, requireManagedPath } from '../managed-execution.js';
 
 import { rawPromises as fs } from '../rawfs.js';
 import nodeFs from 'node:fs';
@@ -44,7 +44,6 @@ import {
   type PatchPathResolver
 } from '../codex/apply-patch/index.js';
 import { DEFAULT_APPLY_PATCH_FILE_UPDATE_MODE } from '../codex/apply-patch/mode.js';
-import { maybeParseApplyPatchForExec } from '../codex/apply-patch/invocation.js';
 import { composeCommandBatch, parseCommandBatchSections } from '../codex/command-batch.js';
 import { formatExecOutputForModel, newStreamOutput } from '../codex/exec-output.js';
 import { DEFAULT_TRUNCATION_POLICY, EXEC_OUTPUT_CEILING_POLICY, unifiedExecManager } from '../codex/manager.js';
@@ -57,15 +56,14 @@ import {
   UnifiedExecError,
   applyUnifiedExecEnv,
   execCommandResponseText,
-  execCommandStructuredOutput,
-  type ExecCommandToolOutput
+  execCommandStructuredOutput
 } from '../codex/unified-exec.js';
 import {
   DEFAULT_EXEC_YIELD_TIME_MS,
   DEFAULT_TTY,
   DEFAULT_WRITE_STDIN_YIELD_TIME_MS
 } from '../codex/unified-exec-constants.js';
-import { defaultUserShell, deriveExecArgs, getShellByModelProvidedPath, shlexJoin } from '../codex/shell.js';
+import { getShellByModelProvidedPath, shlexJoin } from '../codex/shell.js';
 import {
   APPLY_PATCH_ARGUMENT_DESCRIPTION,
   APPLY_PATCH_DESCRIPTION,
@@ -87,7 +85,6 @@ import {
 import { lineDelta } from '../diffstat.js';
 import {
   benignExitNote,
-  bindBundledRipgrep,
   execRecoveryHints,
   nonZeroExitIsBenign,
   normalizeShellCommand,
@@ -95,7 +92,6 @@ import {
   withExecNotes
 } from '../exec-hints.js';
 import { childEnv } from '../exec.js';
-import { locateRipgrep } from '../ripgrep.js';
 import { ensureDevToolchain } from '../toolchain.js';
 import {
   agentForCaller,
@@ -664,33 +660,13 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               );
             }
           }
-          const managed = managedExecution();
-          if (managed && input.shell && input.shell !== '/bin/sh') return fail('Managed development uses /bin/sh.');
-          const shell = managed ? getShellByModelProvidedPath('/bin/sh', dir.real) : input.shell === undefined ? defaultUserShell() : getShellByModelProvidedPath(input.shell, dir.real);
+          if (input.shell && input.shell !== '/bin/sh') return fail('Development commands use /bin/sh inside the assigned container.');
+          const shell = getShellByModelProvidedPath('/bin/sh', dir.real);
           if (!shell) {
             return fail(
-              `SHELL_NOT_FOUND: the explicitly requested shell ${JSON.stringify(input.shell)} could not be resolved. ` +
-                'No command was run. Omit shell to use the configured default, or provide an existing recognised shell binary.'
+              'SHELL_NOT_FOUND: the required /bin/sh launcher is unavailable. No command was run.'
             );
           }
-          // Does only what the shell itself would have done — today, expanding a bare filename
-          // glob PowerShell hands to a native program uninterpreted. Anything it does not
-          // understand reaches the shell exactly as the model wrote it. A listing is read
-          // lazily from the resolved workdir or one validated relative child directory, so a
-          // command with no eligible glob in it never touches the disk here.
-          // Normalize first, bind second, and the order is load-bearing. The normalizer
-          // recognises ripgrep by its leading program token; binding rewrites that token into
-          // `& '<path>\rg.exe'`, which the normalizer does not read as ripgrep at all. Running
-          // the bind first therefore silently switched off glob and brace expansion for every
-          // ordinary `rg` call — the single failure this file exists to prevent — while looking
-          // entirely correct. Binding only ever replaces the program token, so it composes
-          // cleanly on top of an already-expanded argument list.
-          // Repair before normalising, because everything downstream reads this line by its
-          // quotes. A command carrying a bash-style backslash-quote has no coherent quoting
-          // to read: the normalizer would tokenize past the end of an argument the shell was
-          // going to reject outright. Repairing first means the rest of the pipeline sees a
-          // line PowerShell can actually parse, and a line it cannot repair is left exactly
-          // as written for the shell to refuse and the hint to explain.
           const commandNotes: string[] = [];
           const boundCommands = rawCommands.map((rawCommand, index) => {
             const repaired = repairPowerShellQuoting(rawCommand, shell.shellType);
@@ -699,30 +675,13 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
             );
             const prefix = (note: string): string => (isBatch ? `Command ${index + 1}: ${note}` : note);
             commandNotes.push(...repaired.notes.map(prefix), ...normalized.notes.map(prefix));
-            if (managed) return normalized.cmd;
-            return bindBundledRipgrep(
-              normalized.cmd,
-              shell.shellType,
-              shell.shellType === 'cmd' ? null : locateRipgrep()
-            );
+            return normalized.cmd;
           });
-          // Shell functions/aliases can resolve before applications on PATH. The app deliberately
-          // ships ripgrep, parses rg's flags against that exact version, and puts it first on child
-          // PATH, so a shadowing `rg` is not a harmless customization: it breaks the normalizer's
-          // assumptions and makes exit-code attribution unknowable. Bind ordinary bare rg/ripgrep
-          // invocations to the shipped executable on PowerShell and POSIX shells.
           const boundCommand = isBatch ? composeCommandBatch(boundCommands, shell.shellType) : boundCommands[0]!;
           const commandDetail = isBatch
             ? `[batch ${rawCommands.length}] ${rawCommands.join(' ; ')}`
             : rawCommands[0]!;
-          // PowerShell profiles are user-custom startup programs. Loading them for every
-          // connector command adds arbitrary output/aliases and can spend seconds on network
-          // profile work before the requested command even begins. Keep explicit login=true,
-          // but make the deterministic/no-profile path the Windows default.
-          const useLoginShell = input.login ?? process.platform !== 'win32';
-          const command = managed
-            ? developmentCommand(currentCall()?.workstreamId ?? null, dir.real, boundCommand)
-            : deriveExecArgs(shell, boundCommand, useLoginShell);
+          const command = developmentCommand(currentCall()?.workstreamId ?? null, dir.real, boundCommand);
           const processId = unifiedExecManager.allocateProcessId();
           // Process ids are deliberately small/reusable, while chat ownership lives in a
           // separate registry from the Codex process manager. An exited session may be
@@ -734,50 +693,6 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
           // owner. No caller should own a brand-new id until this call actually returns it.
           forgetExecOwner(processId);
           try {
-            // Current Codex intercepts an explicit `apply_patch` shell invocation before spawning
-            // the shell process. The parser is the port of apply-patch/src/invocation.rs and uses
-            // the same tree-sitter-bash grammar/query as upstream.
-            if (!isBatch && !managed) {
-              const interceptedPatch = maybeParseApplyPatchForExec(command, dir.real);
-              if (interceptedPatch.kind === 'correctness_error') {
-                unifiedExecManager.releaseProcessId(processId);
-                return fail(`apply_patch verification failed: ${interceptedPatch.error.message}`);
-              }
-              if (interceptedPatch.kind === 'body') {
-                const reuseRefusal = await reuseGateRefusal(interceptedPatch.args.hunks, undefined, dir.real);
-                if (reuseRefusal) {
-                  unifiedExecManager.releaseProcessId(processId);
-                  return fail(`${reuseRefusal} A shell apply_patch cannot carry the record: use the apply_patch tool.`);
-                }
-                try {
-                  const patchRun = await runParsedPatch(interceptedPatch.args, ctx.roots, dir);
-                  if (patchRun.result.isError || patchRun.content === null) return patchRun.result;
-
-                  // `exec_command.rs` converts a successful intercepted patch into an
-                  // ExecCommandToolOutput with zero wall time and no process/exit/chunk metadata.
-                  const output: ExecCommandToolOutput = {
-                    chunkId: '',
-                    wallTimeMs: 0,
-                    rawOutput: Buffer.from(patchRun.content, 'utf8'),
-                    truncationPolicy: EXEC_OUTPUT_CEILING_POLICY,
-                    maxOutputTokens: input.max_output_tokens,
-                    processId: null,
-                    exitCode: null,
-                    originalTokenCount: null,
-                    outputOmittedBytes: null
-                  };
-                  noteExec({ running: false, exitCode: null, timedOut: false, durationMs: 0 });
-                  noteDetail(commandDetail.replace(/\s+/g, ' ').slice(0, 120));
-                  return {
-                    content: [{ type: 'text' as const, text: execCommandResponseText(output) }],
-                    structuredContent: execCommandStructuredOutput(output)
-                  };
-                } finally {
-                  unifiedExecManager.releaseProcessId(processId);
-                }
-              }
-            }
-
             const output = await unifiedExecManager.execCommand({
               command,
               shellType: shell.shellType,
@@ -1511,7 +1426,7 @@ async function rollbackFailedPatch(
   return { complete: false, note: `WARNING: failed patch rollback was incomplete: ${problems.join('; ')}` };
 }
 
-/** Shared execution path for the standalone tool and exec_command's upstream apply_patch intercept. */
+/** Apply a patch only after resolving every effect against the workstream policy. */
 async function runParsedPatch(
   args: { patch: string; hunks: Hunk[]; workdir: string | null; environmentId: string | null },
   roots: readonly Root[],

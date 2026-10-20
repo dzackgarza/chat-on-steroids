@@ -1,6 +1,5 @@
 /** Exclusive workstream leases and their bounded recovery policy. The bridge owns delivery. */
 import { launchValidation, prepareValidation, validationOutput } from './validation-service.js';
-import { managedExecution } from './managed-execution.js';
 import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -18,7 +17,7 @@ import {
   verifyAssignmentDecision, workAssignmentSchema,
 } from "./work-assignment.js";
 
-import { validationLauncher, validationWait, validationResult, validationWaitSchema, validationResultSchema } from "./validation-wait.js";
+import { validationResult, validationWaitSchema, validationResultSchema } from "./validation-wait.js";
 
 /** ChatGPT's client-only routes (`WEB:<uuid>`, `local-chatgpt:<uuid>`), later rewritten to a server id. */
 export function provisionalRoute(conversationId: string): boolean {
@@ -835,23 +834,6 @@ export async function requestWorkstreamValidation(id: string, claim: string, con
   });
 }
 
-/** A caller hands off only its wait, never its process or acceptance decision. */
-export async function waitForWorkstreamValidation(id: string, claim: string, directory: string): Promise<void> {
-  const wait = await validationWait(directory);
-  await exclusive(async () => {
-    ready();
-    const row = rows.get(id);
-    if (!row || row.lock !== claim || row.phase !== "active" || id === ORCHESTRATOR_WORKSTREAM_ID)
-      throw new Error("Validation wait requires the active worker claim");
-    if (row.validationWait) throw new Error("Workstream already handed off a validation wait");
-    row.validationWait = wait;
-    row.validationResult = null;
-    row.commandId = null;
-    row.actionId = null;
-    await save();
-  });
-}
-
 export async function configureWorkstream(
   id: string,
   context: string,
@@ -1021,9 +1003,7 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
         ? `\nACTIVITY CHECK: An earlier controller flagged a long action: ${row.error.slice("five_minute_action_overrun:".length)}. Duration alone does not establish failure. Inspect the actual process and output against the current task. A progressing build continues in the background while you do useful adjacent work, or the orchestrator pauses this workstream and owns the wait. If it has exited, consume its result; if it is genuinely stalled, diagnose the cause before restarting.\n`
         : "\nACTIVITY CHECK: No recent activity was recorded. This does not establish whether the work is stalled. Inspect the current task, actual tool results and any background process. Continue a progressing required build without restarting it; consume a completed result; otherwise address the concrete obstruction or resume the unfinished task.\n"
       : "";
-  const managed = managedExecution();
-  const launcher = managed ? null : validationLauncher();
-  const execution = managed ? `\nRequest validation using workstream action=validate and an assigned consumer: ${Object.keys(managed.consumers).join(", ")}. The controller selects the command, snapshots inputs, and registers the wait in that operation. It resumes you with the result. Development commands cannot access the validation runtime.\n` : launcher ? `\nFor Sage validation, run python3 ${JSON.stringify(launcher)} --help and use that launcher with the assigned source roots. It owns snapshots, exact failed-consumer retries, detached output and exit status. Pass its job directory to workstream action=wait only when no independent source work remains.\n` : "";
+  const execution = `\nRequest validation using workstream action=validate and an assigned consumer: use the consumer identity supplied when claiming this workstream. The controller selects the command, snapshots inputs, and registers the wait in that operation. It resumes you with the result. Development commands cannot access the validation runtime.\n`;
   const claim =
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`

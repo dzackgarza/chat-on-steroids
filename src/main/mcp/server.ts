@@ -16,6 +16,7 @@
  * comes back as JSON without looking at the status code, so this server answers the
  * protected-resource metadata request properly and never emits a non-JSON body.
  */
+import { executionPolicies } from '../managed-execution.js';
 
 import assert from "node:assert/strict";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -321,6 +322,7 @@ export function forgetExposedSurface(): void {
 export async function startMcpServer(
   getContext: () => ToolContext,
 ): Promise<McpEndpoint> {
+  executionPolicies();
   await restoreConversationKeys();
   await restoreWorkstreams();
   // A per-session token in the path is what authorises callers. It is regenerated on
