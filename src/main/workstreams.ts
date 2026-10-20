@@ -44,7 +44,7 @@ const rowSchema = z
     id: workstreamIdSchema,
     context: z.string().max(40_000),
     assignment: workAssignmentSchema.nullable().default(null),
-    validationRequest: z.object({id: z.string(), consumer: z.string()}).nullable().default(null),
+    validationRequest: z.object({id: z.string(), consumer: z.string(), launchError: z.string().nullable()}).nullable().default(null),
     validationOutput: z.string().nullable().default(null),
     validationWait: validationWaitSchema.nullable().default(null),
     validationResult: validationResultSchema.nullable().default(null),
@@ -814,9 +814,18 @@ export async function requestWorkstreamValidation(id: string, claim: string, con
     const row = rows.get(id);
     if (!row || row.lock !== claim || row.phase !== "active") throw new Error("Validation requires the active worker claim");
     if (row.validationRequest && row.validationRequest.consumer !== consumer) throw new Error("Validation already requested");
-    if (row.validationWait) return;
-    const request = row.validationRequest ?? {id: randomBytes(16).toString("hex"), consumer};
+    if (row.validationWait) {
+      // An explicit retry can release a failed automatic full-validation launch.
+      if (row.validationRequest?.launchError) {
+        row.validationRequest.launchError = null;
+        row.error = null;
+        await save();
+      }
+      return;
+    }
+    const request = row.validationRequest ?? {id: randomBytes(16).toString("hex"), consumer, launchError: null};
     await prepareValidation(id, consumer, request.id);
+    request.launchError = null;
     row.validationRequest = request;
     row.error = null;
     row.commandId = null;
@@ -826,7 +835,8 @@ export async function requestWorkstreamValidation(id: string, claim: string, con
     await save();
     try { row.validationWait = await launchValidation(id, consumer, request.id); }
     catch (error) {
-      row.error = `validation_launch: ${(error as Error).message}`;
+      request.launchError = (error as Error).message;
+      row.error = `validation_launch: ${request.launchError}`;
       await save();
       throw error;
     }
@@ -1022,10 +1032,16 @@ export async function nextWorkstreamActions(
     retireEndedWorkerRows();
     for (const row of rows.values()) {
       if (row.assignment?.verdict) continue;
+      // Chat activity and recovery may clear their own diagnostics, never this launch hold.
+      if (row.validationRequest?.launchError) continue;
       if (row.validationRequest && !row.validationWait) {
-        if (row.phase === "paused" || row.error?.startsWith("validation_launch:")) continue;
+        if (row.phase === "paused") continue;
         try { row.validationWait = await launchValidation(row.id, row.validationRequest.consumer, row.validationRequest.id); }
-        catch (error) { row.error = `validation_launch: ${(error as Error).message}`; continue; }
+        catch (error) {
+          row.validationRequest.launchError = (error as Error).message;
+          row.error = `validation_launch: ${row.validationRequest.launchError}`;
+          continue;
+        }
       }
       if (row.validationWait) {
         // Owner pauses remain pauses. A completed process must not undo them.
@@ -1036,7 +1052,12 @@ export async function nextWorkstreamActions(
           if (row.validationRequest && result.exitCode === 0 && result.inputsUnchanged) {
             const manifest = JSON.parse(await fs.readFile(path.join(row.validationWait.directory, 'manifest.json'), "utf8"));
             if (manifest.selected.length) {
-              row.validationWait = await launchValidation(row.id, row.validationRequest.consumer, `${row.validationRequest.id}:full`);
+              try {
+                row.validationWait = await launchValidation(row.id, row.validationRequest.consumer, `${row.validationRequest.id}:full`);
+              } catch (error) {
+                row.validationRequest.launchError = (error as Error).message;
+                row.error = `validation_launch: ${row.validationRequest.launchError}`;
+              }
               continue;
             }
           }

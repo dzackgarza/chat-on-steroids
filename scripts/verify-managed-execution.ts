@@ -58,7 +58,7 @@ async function main() {
   assert.throws(() => managed.developmentCommand('other-stream', workspace, 'true'));
   await fs.writeFile(path.join(workspace, 'AGENTS.md'), 'Use this isolated fixture.\n');
   await fs.writeFile(path.join(workspace, 'src/value.py'), 'value = 0\n');
-  await fs.writeFile(path.join(workspace, 'test_consumer.py'), 'import pytest\nfrom value import value\n@pytest.mark.parametrize("case", [16, 160])\ndef test_case(case):\n    assert case != 16 or value == 42\n');
+  await fs.writeFile(path.join(workspace, 'test_consumer.py'), 'import pytest, time\nfrom pathlib import Path\nfrom value import value\nif value == 0:\n    reports = Path(__file__).parents[2] / "reports"\n    (reports / "ready").write_text("running")\n    while not (reports / "release").exists():\n        time.sleep(.05)\n@pytest.mark.parametrize("case", [16, 160])\ndef test_case(case):\n    assert case != 16 or value == 42\n');
   await fs.writeFile(path.join(workspace, '.gitattributes'), '*.py diff=boundary\n');
   await fs.writeFile(path.join(workspace, 'src/converter.sh'),
     `#!/bin/sh\nif test -e '${hostOnly}'; then printf escaped > '${escapedWrite}'; fi\ncat "$1"\n`);
@@ -80,6 +80,13 @@ async function main() {
   const streams = await import('../src/main/workstreams.js');
   const endpoint = await startMcpServer(() => ({roots: [{name: 'work', path: workspace}, {name: 'second', path: otherWorkspace}],
     caps: effectiveCapabilities(getConfig()), readOnly: false, agentTools: false}));
+  async function waitForFile(file: string) {
+    const deadline = Date.now() + 20000;
+    while (!await fs.stat(file).then(() => true, () => false)) {
+      assert(Date.now() < deadline, `Fixture did not produce ${file}`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
   let request = 0;
   async function call(name: string, args: Record<string, unknown>) {
     const response = await fetch(endpoint.url, {method: 'POST', headers: {
@@ -94,9 +101,10 @@ async function main() {
     const recovery = await call('exec_command', {workstream_id: 'old-recovery-lock', cmd: 'printf bypass', workdir: '/work'});
     assert(recovery.isError, 'Recovery credentials bypassed required workstream admission');
     const setup = await call('workstream', {action: 'start', workstream: 'proof', path: '/work'});
-    const claim = JSON.stringify(setup).match(/wl_[A-Za-z0-9_-]+/)?.[0];
+    let claim = JSON.stringify(setup).match(/wl_[A-Za-z0-9_-]+/)?.[0];
     assert(claim, JSON.stringify(setup));
     await streams.bindWorkstreamConversation(claim, 'proof-chat');
+    await streams.setWorkstreamAutoAdvance('proof', true);
     const policyRead = await call('read', {workstream_id: claim, paths: [config]});
     assert(policyRead.isError || JSON.stringify(policyRead).includes('not inside an approved folder'), JSON.stringify(policyRead));
     const read = await call('read', {workstream_id: claim, paths: ['/work/AGENTS.md']});
@@ -125,14 +133,31 @@ async function main() {
       assert(unavailable.isError, JSON.stringify(unavailable));
     } finally { await fs.rename(workspace + '-saved', workspace); }
     const failedLaunchFiles = await fs.readdir(path.join(root, 'jobs'));
+    const afterFailureRead = await call('read', {workstream_id: claim, paths: ['/work/AGENTS.md']});
+    assert(!afterFailureRead.isError, JSON.stringify(afterFailureRead));
     await streams.nextWorkstreamActions(Date.now(), true);
     await streams.nextWorkstreamActions(Date.now(), true);
     assert.deepEqual(await fs.readdir(path.join(root, 'jobs')), failedLaunchFiles, 'Scheduler repeated a failed launch');
-    assert.match(streams.workstreamStatus()[0]!.error!, /validation_launch/);
+    assert(streams.workstreamStatus()[0]!.validationRequest?.launchError, 'Launch failure was erased by a read');
+    const reclaimed = await streams.continueWorkstream('proof', Date.now() + 24 * 60 * 60 * 1000);
+    assert(reclaimed.ok, JSON.stringify(reclaimed));
+    claim = reclaimed.workstreamId;
+    await streams.bindWorkstreamConversation(claim, 'proof-chat');
+    initDurableStore(path.join(root, 'empty-state'));
+    await streams.restoreWorkstreams();
+    assert.equal(streams.workstreamStatus().length, 0);
+    initDurableStore(state);
+    await streams.restoreWorkstreams();
+    await streams.nextWorkstreamActions(Date.now(), true);
+    assert.deepEqual(await fs.readdir(path.join(root, 'jobs')), failedLaunchFiles, 'Reclaim/restart repeated a failed launch');
     const launched = await validate();
     assert(!launched.isError, JSON.stringify(launched));
     const first = streams.workstreamStatus()[0]!.validationWait!;
     assert(first, 'Launch did not register wait');
+    await waitForFile(path.join(first.directory, 'reports', 'ready'));
+    assert(await streams.scheduleWorkstreamAfterTurn('proof-chat', 'validation-pending-turn', 'completed', Date.now()));
+    assert.deepEqual(await streams.nextWorkstreamActions(Date.now(), true), [], 'Running validation generated a polling turn');
+    assert.deepEqual(await streams.nextWorkstreamActions(Date.now() + 24 * 60 * 60 * 1000, true), [], 'Elapsed time interrupted validation waiting');
     assert(await streams.configureWorkstream('proof', 'Corrected dispatch while validation retains its process.'));
     const duplicate = await validate();
     assert(!duplicate.isError, JSON.stringify(duplicate));
@@ -147,15 +172,16 @@ async function main() {
       }
       throw new Error('Fixture result was not delivered');
     }
+    initDurableStore(path.join(root, 'empty-state'));
+    await streams.restoreWorkstreams();
+    assert.equal(streams.workstreamStatus().length, 0);
+    initDurableStore(state);
     await streams.restoreWorkstreams();
     assert.equal(streams.workstreamStatus()[0]!.validationWait?.runId, first.runId);
     await streams.pauseWorkstream('proof');
     const resultFile = path.join(first.directory, 'result.json');
-    const resultDeadline = Date.now() + 20000;
-    while (!await fs.stat(resultFile).then(() => true, () => false)) {
-      assert(Date.now() < resultDeadline, 'Fixture calculation did not finish');
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await fs.writeFile(path.join(first.directory, 'reports', 'release'), 'finish');
+    await waitForFile(resultFile);
     assert.deepEqual(await streams.nextWorkstreamActions(Date.now(), true), [], 'Validation undid an owner pause');
     await streams.resumeWorkstream('proof');
     const originalResult = await fs.readFile(resultFile, 'utf8');
@@ -174,6 +200,7 @@ async function main() {
     assert(repeated.isError, 'Unrepaired failure launched another run');
     assert.match(JSON.stringify(repeated), /Repair the recorded failure/);
     assert(!streams.workstreamStatus()[0]?.validationRequest);
+    assert(!streams.workstreamPrompt(streams.workstreamStatus()[0]!, 'Core').includes('Validation finished:'), 'Result was offered again after worker resumed');
     const repair = await call('exec_command', {workstream_id: claim, workdir: '/work', cmd: "printf 'value = 42\\n' > src/value.py"});
     assert(!repair.isError, JSON.stringify(repair));
     const retry = await validate();
@@ -183,6 +210,18 @@ async function main() {
     assert.deepEqual(retryManifest.selected, ['test_consumer.py::test_case[16]']);
     // The full pass must use the repaired snapshot even if development proceeds meanwhile.
     await fs.writeFile(path.join(workspace, 'src/value.py'), 'value = 99\n');
+    await waitForFile(path.join(retryWait.directory, 'result.json'));
+    const inputs = path.join(retryWait.directory, 'inputs');
+    await fs.rename(inputs, inputs + '-held');
+    try {
+      assert.deepEqual(await streams.nextWorkstreamActions(Date.now(), true), []);
+      assert(streams.workstreamStatus()[0]!.validationRequest?.launchError, 'Failed automatic full launch did not retain its error');
+    } finally { await fs.rename(inputs + '-held', inputs); }
+    const afterFullFailure = await fs.readdir(path.join(root, 'jobs'));
+    await call('read', {workstream_id: claim, paths: ['/work/AGENTS.md']});
+    await streams.nextWorkstreamActions(Date.now(), true);
+    assert.deepEqual(await fs.readdir(path.join(root, 'jobs')), afterFullFailure, 'Full launch retried without an explicit request');
+    assert(!(await validate()).isError, 'Explicit full-launch retry was refused');
     const passed = await finish();
     assert.equal(passed.validationResult?.exitCode, 0, JSON.stringify(passed));
     const fullManifest = JSON.parse(await fs.readFile(path.join(passed.validationResult!.directory, 'manifest.json'), 'utf8'));
