@@ -929,11 +929,15 @@ export async function recoverWorkstreamNow(
   });
 }
 
-// A fresh chat has read nothing; a bound chat has the repository contract in its own context
-// already. Telling a bound chat to read AGENTS.md again made research reread a 3500-line file
-// on every restart (2026-10-10: 16 of 24 calls in 25 minutes were rereads).
+// A fresh chat has no conversational memory, but a replacement workstream already has a durable
+// brief/handoff. Forcing every replacement to reread AGENTS.md + TODO from the top recreated the
+// exact setup loop the controller is supposed to prevent: a worker could spend successive fresh
+// turns rebuilding state instead of resuming implementation. The durable workstream context names
+// the inherited unit and any repository-specific continuity surface; start there and read only the
+// repository sections needed for the concrete edit. A genuinely new workstream's context remains
+// responsible for asking for full orientation when that is actually necessary.
 export const FRESH_CHAT_ORIENTATION =
-  "Read AGENTS.md and the repository TODOs. Read the vault plans when needed. Identify the next unblocked DAG work and start it immediately. ";
+  "Resume from this workstream's durable context/handoff first. Do not restart project setup or reread whole AGENTS/TODO files merely because this is a replacement chat; read only the specific repository sections needed for the inherited concrete edit. If the durable context explicitly says this is genuinely new work with no inherited unit, orient from the repository then. Start substantive implementation immediately. ";
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
