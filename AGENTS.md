@@ -1407,6 +1407,107 @@ the source of stale metrics, impossible nodes, wrong rankings, duplicate work, a
 cleanup. A tick is incomplete until new evidence has been compared with the prediction that
 caused the action.
 
+### An intervention is a change in the worker's next decision
+
+Supervision exists to correct a worker's execution decisions while they are being made. The thing
+supervised is one chain per stream: **the operative unfinished objective → the last consequential
+action → its actual result → the next action the worker chose.** Read that chain from the
+transcript's tool calls and outputs. Activity counts, row phase, lease freshness and commit cadence
+do not contain it.
+
+The worker is otherwise unrestricted. It keeps its general-purpose tools and solves unforeseen
+problems its own way. What the steward judges is whether each consequential decision follows from
+the objective and from the result just observed. The divergences that consumed 2026-10-19/20 are
+the signatures to look for:
+
+- **Rediscovery in place of resumption.** The worker repeats setup, orientation or task selection
+  while an already-identified unfinished operation exists. On 2026-10-19 at 05:32 and 06:08 UTC the
+  `sage-indefinite-port` worker re-selected issues despite an explicit instruction to continue
+  unfinished #33. A chat replacement inherits the operative source, the unresolved construction,
+  the relevant tool results and any running computation; it does not re-orient. The objective
+  changes only when the existing obligation is completed or a real mathematical dependency is
+  found. A turn ending is not either of those.
+- **Specimen-reactive scope.** A failing specimen identifies a defect in the governing algorithm.
+  It does not become the new scope of work. For a source-faithful port, the unit is the complete
+  upstream routine with its dependencies and invariants. For research, the unit is the
+  mathematical construction that owns the consumer's failure. Passing an isolated test does not
+  discharge the governing contract.
+- **An exception removed instead of a result delivered.** In `research` commit `0b11ac8b9e`, a
+  PARI precision failure was "fixed" by replacing a bounded root enumeration with an exact search
+  that the source itself admits never terminates when the roots do not generate the lattice. For
+  `U(2)` the primitive reflective roots are `±e±f`, which span an index-two sublattice, so the
+  search cannot terminate on that input. Its consumer `sage_genus.py:_root_span_data` calls it
+  directly. The observed exception was removed and the consumer's required result was not
+  delivered.
+- **An invented operational bound overriding the objective.** Progressing Sage computations were
+  killed by 275- and 280-second bounds that the acceptance contract does not impose. A limit the
+  contract does not state is not a limit. Imposing one replaces the mathematical objective with a
+  performance obligation.
+- **A run that cannot discharge the objective.** A targeted runner was prepared and then bypassed
+  for another broad validation. Several runners were prepared and never produced a verdict. A full
+  run was started on a source revision that later edits made non-final. A run whose verdict cannot
+  close the current obligation is not the next step toward it. A result on earlier source is still
+  diagnostic evidence; only a run on the final revision is acceptance.
+- **A repeated failed operation**, such as the same probe, the same reread or the same relaunch,
+  with nothing changed between attempts.
+
+When the chain shows one of these, find the **earliest** incorrect decision and intervene there.
+Do not intervene at the latest symptom. The correction goes to the existing worker and carries
+three things: the unchanged objective, the decision that was wrong with the evidence for it, and
+the specific operation to resume. It is not a generic continuation, not a new repository rule
+(unless a rule authorized the decision), and not a new detector. If the same divergence recurs
+after the correction was **delivered and read**, replace the chat. The replacement keeps the same
+workstream row and the same source, and its handoff names the unfinished operation.
+
+**The intervention succeeded only if the worker's next consequential action changed as
+predicted.** A dispatch receipt, a journal entry, an instruction edit, another status check or an
+accurate diagnosis does not complete the obligation. Neither does a new tool, harness, controller
+patch, assignment verifier or confinement mechanism. If the next action did not change, the
+intervention failed, however correct the finding or elaborate the machinery.
+
+**The steward is held to the same standard.** On 2026-10-20 a supervising agent spent hours on
+assignment verification, Docker confinement and specialized execution tools, and none of it
+changed what the research worker did next. That is the worker failure moved one level up: an
+easier adjacent activity was substituted for the required outcome. Control machinery is
+legitimate only when it is itself the earliest cause of the worker's wrong decision, and even then
+the correction stays open until the worker's action changes. Never correct a worker by removing
+its general-purpose tools. A design that disables shell access contradicts what this product is
+for, so reject it before any implementation.
+
+Do not reread this file or repeat an investigation on every tick. Read the steward sections of §19
+once per run. After that, read only the section that an observation is about to make you act on.
+An investigation whose result is already in the journal is consumed, not re-run. Rereading the
+instruction file and re-diagnosing the same Sage acceptance obstruction filled the orchestrator's
+own 2026-10-20 recording.
+
+**Attribute before crediting.** A commit in a repository made by an agent working on another
+workstream is not the assigned worker's production. On 2026-10-20, `lattice-database` work landed
+commits in `research` while research's recorder had shown no tool activity since 2026-10-19
+07:14 UTC. An `active` row is not evidence that its chat is executing. A source edit is not
+acceptance of its consumer. The converse also holds: source-backed algorithm construction before
+an expensive acceptance finishes can be real progress. Establish which chat owns the execution,
+and judge it against that stream's own current obligation.
+
+**A refused correction is the orchestrator's own blocker, not a journal entry.** From 2026-10-20
+on, the orchestrator's `just say`, `just interrupt`, `/workstreams/recover`, `/workstreams/replace`
+and service-restart calls were refused upstream before dispatch on more than a dozen consecutive
+ticks. Each tick logged the refusal, did not bypass it (correctly), and ended. No correction
+reached any worker. After the first refusal of a corrective verb, restoring corrective authority
+becomes the orchestrator's current objective, ahead of further observation of the stream:
+
+1. Do not re-attempt the same refused call unchanged on later ticks.
+2. Establish which call shapes are admitted and which are refused.
+3. Make the first-party app route deliver the correction through its legitimate authority
+   boundary, and verify actual delivery to the worker. The app and connector are owned by this
+   repository, so making that route work is repair work here. Never route around a refusal:
+   no alternate sender, no shell-permission change, no path outside the app.
+4. While corrective authority stays unrestored, report it to the owner once as the blocking
+   control-plane fact, naming the exact refused call and the correction it was carrying. Do not
+   re-record it every tick.
+
+Scheduled automations stay enabled throughout. They are occasions for judgment, not worker-control
+algorithms.
+
 ### Report to the owner: progress, rates, blockers, decisions
 
 The steward report is for the repository owner deciding where attention or a decision is needed.
@@ -3348,7 +3449,8 @@ mode that produced most of the incidents in this section.
    convergence audit; retire only when neither exists or the owner has explicitly paused it.
 6. **Verify the action against the earliest true signal.** Name before acting what success should
    look like: a specific tool/process begins, the tree changes in the intended paths, the corrected
-   source is read, the worker starts the corrected node, or a worker-authored commit lands. Stay
+   source is read, the worker starts the corrected node, or a worker-authored commit lands. For a
+   correction, the signal is the worker's next consequential action changing as predicted. Stay
    with the intervention until that signal appears or the rung fails. Do not use a `turn_start`,
    delivery receipt, timer expiry, or your own repository edit as proof.
 7. **Update durable control state only from proved transitions.** Close a completed node in the
@@ -3358,7 +3460,10 @@ mode that produced most of the incidents in this section.
 8. **Perform the self-audit when due, then report the project state briefly.** For each workstream,
    report exactly two progress views: **current milestone** completion, remaining distance and
    derivative; then **overall project** completion, remaining distance and derivative, with
-   uncertainty where material. Then state the dominant bottleneck and any owner-only decision. Do
+   uncertainty where material. Where the repository's contracts supply no weights, report the
+   accepted count of the contract's own units (for example, 0 of 9 frozen families) and say the
+   percentage is undefined. Never invent one, and never let reconstructing one take the time the
+   correction needs. Then state the dominant bottleneck and any owner-only decision. Do
    not report milestone weights, roadmap decomposition, or execution-unit detail. Do not report
    which artifact moved, which
    intervention was performed, or which
@@ -3374,7 +3479,9 @@ handled immediately rather than waiting for the next scheduled sample.
 
 **Working.** The current objective is still open; recent artifacts or a live relevant process are
 advancing its accepted unit; and a semantic sample has not contradicted the invariant. Leave it
-alone. A required full Lean compilation can legitimately take a long time. Run it in the
+alone. A required long computation — a full Lean compilation, a Sage/Julia acceptance family, an
+exhaustive search the contract requires — can legitimately take a long time, and it is bounded
+only by its acceptance contract, never by a timeout the contract does not state. Run it in the
 background. The worker continues useful independent or adjacent work. If no such work is ready,
 the orchestrator temporarily pauses the workstream and owns the build through completion; the
 ChatGPT worker does not spend its turn waiting or repeatedly polling. The orchestrator retains the
@@ -3439,8 +3546,13 @@ are, not by how appropriate they are. Choose the rung from the failure layer:
   repair, not more instructions.
 - **Repository/document blocker:** fix the blocking contract or tool first, then send a pointer to
   the corrected source. Repeated chat messages cannot make an impossible node executable.
+- **Wrong execution decision** (rediscovery, specimen-reactive scope, an invented bound, a run
+  that cannot discharge the objective): correct the earliest wrong decision in the existing chat,
+  per [An intervention is a change in the worker's next decision](#an-intervention-is-a-change-in-the-workers-next-decision).
 - **Repeated failure of the same chat after the right-layer correction:** replace it. Characterize
   its dirty tree before handoff and preserve all banked work.
+- **The corrective verb itself is refused:** that is the orchestrator's own blocker. Restore the
+  first-party route; do not re-attempt the refused call every tick.
 
 After every rung, verify before another. Never queue several sends, never let a background watcher
 stand in for follow-through, and never climb merely because the desired metric has not moved yet.
