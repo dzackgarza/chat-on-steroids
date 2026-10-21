@@ -73,6 +73,14 @@ const rowSchema = z
     /** Chats whose recorded claim line named this row, under its current lock or a retired
      * one. Exact evidence of which workstream a chat holds, kept across reclaims. */
     claimedBy: z.array(z.string()).default([]),
+    /**
+     * The conversation that demonstrably received the current `context`: the bind ACK of the
+     * opening message that carried it, or the first call a carrying send started. `context` is
+     * the steward's steering channel, so it reaches each conversation once per revision.
+     * Re-sending it after every turn re-injected obsolete PIDs and source revisions as current
+     * instructions (2026-10-20); never sending it to a bound chat drops the steward's redirect.
+     */
+    contextReceivedBy: z.string().nullable().default(null),
   })
   .strict();
 export type Workstream = z.infer<typeof rowSchema>;
@@ -379,6 +387,7 @@ export async function startWorkstream(
       retiredKeys: [],
       retiredConversations: [],
       claimedBy: [],
+      contextReceivedBy: null,
     });
     await save();
     return { ok: true, id: logicalWorkstream, workstreamId };
@@ -447,6 +456,7 @@ export async function continueWorkstream(
       retiredKeys,
       retiredConversations: [...prior.retiredConversations],
       claimedBy: [...prior.claimedBy],
+      contextReceivedBy: prior.contextReceivedBy,
     });
     await save();
     return {
@@ -497,6 +507,7 @@ export async function reserveWorkstream(
       retiredKeys: [...(prior?.retiredKeys ?? [])],
       retiredConversations: [...(prior?.retiredConversations ?? [])],
       claimedBy: [...(prior?.claimedBy ?? [])],
+      contextReceivedBy: context === prior?.context ? prior.contextReceivedBy : null,
     });
     await save();
     return { ok: true, id: logicalWorkstream, workstreamId: lock };
@@ -558,6 +569,8 @@ export async function admitWorkstreamCall(
     // chat. Recovery/advance commands still have an action id and are cancelled normally.
     const pendingReplacementBind =
       row.phase === "active" && row.commandId !== null && row.actionId === null;
+    if (row.actionId !== null && row.conversationId !== null)
+      row.contextReceivedBy = row.conversationId;
     row.lastActivity = now;
     row.phase = "active";
     row.attempts = 0;
@@ -743,6 +756,7 @@ export async function configureWorkstream(
     const row = rows.get(id);
     if (!row) return false;
     row.context = z.string().max(40_000).parse(context);
+    row.contextReceivedBy = null;
     await save();
     return true;
   });
@@ -893,7 +907,7 @@ export const FRESH_CHAT_ORIENTATION =
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "Preserve other workers’ changes and resolve the current repository task under its own phase and acceptance requirements. Continue the inherited unfinished implementation rather than repeating orientation, status checks or source surveys. Long-running required validation must retain its process identity, source revision, output and exit result; do not duplicate, prematurely stop or repeatedly poll it merely for elapsed time. Continue independent substantive work while it runs, or hand off a genuinely blocking wait to the orchestrator. Judge progress from accepted behavior and source changes, never elapsed time, tool-call counts, commits or checkboxes.";
+  "Preserve other workers’ changes and resolve the current repository task under its own phase and acceptance requirements. Continue the inherited unfinished implementation rather than repeating orientation, status checks or source surveys. Check your edits with small targeted tests. Significant runs (full builds, acceptance families, whole suites) go to CI asynchronously against a named revision; keep implementing while they run and consume the verdict when it arrives. Never spend a turn waiting on or polling a run; a local run that would block you for more than five minutes means the setup needs a CI route or a targeted test, so fix that instead. Judge progress from accepted behavior and source changes, never elapsed time, tool-call counts, commits or checkboxes.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
@@ -901,17 +915,21 @@ export const STEWARD_CONTINUATION =
  * the workstream itself.
  */
 export function workstreamPrompt(row: Workstream, connector: string): string {
+  const handoff =
+    row.conversationId !== null && row.contextReceivedBy === row.conversationId
+      ? ""
+      : row.context;
   const recoveryNotice =
     row.error?.startsWith("five_minute_")
       ? row.error.startsWith("five_minute_action_overrun:")
-        ? `\nACTIVITY CHECK: An earlier controller flagged a long action: ${row.error.slice("five_minute_action_overrun:".length)}. Duration alone does not establish failure. Inspect the actual process and output against the current task. A progressing build continues in the background while you do useful adjacent work, or the orchestrator pauses this workstream and owns the wait. If it has exited, consume its result; if it is genuinely stalled, diagnose the cause before restarting.\n`
+        ? `\nACTIVITY CHECK: An earlier controller flagged a long action: ${row.error.slice("five_minute_action_overrun:".length)}. A local run that long means the setup is wrong: move that run to CI or replace it with a small targeted test, and keep implementing. If it has already exited, consume its result; do not relaunch it locally.\n`
         : "\nACTIVITY CHECK: No recent activity was recorded. This does not establish whether the work is stalled. Inspect the current task, actual tool results and any background process. Continue a progressing required build without restarting it; consume a completed result; otherwise address the concrete obstruction or resume the unfinished task.\n"
       : "";
   const claim =
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
       : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call. Do not reclaim it routinely. If an ordinary call returns WORKSTREAM_SETUP_REQUIRED, follow that refusal: call \`workstream\` with action="continue" and workstream="${row.id}", then retry using its returned workstream_id. WORKSTREAM_BUSY instead requires retrying with the existing workstream_id, not reclaiming.`;
-  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${row.context}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${handoff}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
 }
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
@@ -1274,6 +1292,8 @@ export async function bindWorkstreamReplacement(
     row.retiredConversations = row.retiredConversations.filter(
       (id) => id !== conversationId,
     );
+    // The opening message carried the context; its ACK is the receipt.
+    row.contextReceivedBy = conversationId;
     // Delivery of the bootstrap starts the bound chat's lease.
     if (row.phase === "opening") row.lastActivity = Date.now();
     // The command id is retained only as a late-ACK rendezvous between the model's setup call

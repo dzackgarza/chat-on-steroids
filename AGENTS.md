@@ -1439,10 +1439,16 @@ the signatures to look for:
   search cannot terminate on that input. Its consumer `sage_genus.py:_root_span_data` calls it
   directly. The observed exception was removed and the consumer's required result was not
   delivered.
-- **An invented operational bound overriding the objective.** Progressing Sage computations were
-  killed by 275- and 280-second bounds that the acceptance contract does not impose. A limit the
-  contract does not state is not a limit. Imposing one replaces the mathematical objective with a
-  performance obligation.
+- **A computational wait in place of work.** The Sage worker spent turns launching full
+  acceptance families on this host, wrapping them in 275- and 280-second bounds to fit one tool
+  call, polling them, and relaunching them. The size of the bound was not the defect. The defect
+  was that a giant run had become the worker's inner loop. Workers do work, and the inner loop is
+  small targeted tests that answer the question the current edit raises. Significant runs (full
+  families, full builds, whole suites) go to CI, run asynchronously, and are consumed when their
+  verdict arrives. They never run serially on this box blocking a worker. A worker-run job here
+  that takes more than five minutes means the setup is wrong. Repair the setup: give the run a CI
+  route and give the worker a targeted test surface. Do not wait it out, wrap it in a shorter
+  bound, or hand the wait to the orchestrator.
 - **A run that cannot discharge the objective.** A targeted runner was prepared and then bypassed
   for another broad validation. Several runners were prepared and never produced a verdict. A full
   run was started on a source revision that later edits made non-final. A run whose verdict cannot
@@ -3479,23 +3485,20 @@ handled immediately rather than waiting for the next scheduled sample.
 
 **Working.** The current objective is still open; recent artifacts or a live relevant process are
 advancing its accepted unit; and a semantic sample has not contradicted the invariant. Leave it
-alone. A required long computation — a full Lean compilation, a Sage/Julia acceptance family, an
-exhaustive search the contract requires — can legitimately take a long time, and it is bounded
-only by its acceptance contract, never by a timeout the contract does not state. Run it in the
-background. The worker continues useful independent or adjacent work. If no such work is ready,
-the orchestrator temporarily pauses the workstream and owns the build through completion; the
-ChatGPT worker does not spend its turn waiting or repeatedly polling. The orchestrator retains the
-process identity, log and exit result, inspects actual compiler activity, and resumes the worker
-with concrete work as soon as the result is available. Do not kill or restart a build merely for
-elapsed time or launch duplicates. Keep clear which source revision the build checks. A stale
-"build running" claim is not permission to avoid work: establish whether the process exists and
-advances, diagnose an actual stall, and consume its result promptly.
+alone. Working means doing work. The worker's own checks are small targeted tests that answer
+the question its current edit raises. Significant runs (a full Lean build, a Sage/Julia acceptance
+family, a whole suite) run asynchronously on CI against a named source revision, and the worker
+keeps implementing while they run. It consumes their verdict when it arrives and never waits or
+polls for it. A worker whose turn is a computational wait is not working, however legitimate the
+computation. A job on this box that blocks a worker for more than five minutes is a setup defect
+(see [the owner's 2026-10-21 rule](#the-managed-workstreams)). Repair it at its owner, for
+example with a missing CI route or a missing targeted test entrypoint, instead of waiting it out.
 
 **Wedged.** The objective is valid and executable, substantive work remains, but either there is no
 live relevant action and no advancing tree/commit/transcript evidence, or its actual activity shows
 a repeated failure to advance the assigned work. Elapsed time alone does not establish a wedge.
-A live background build is relevant work owned by the orchestrator while the worker does other
-substantive work or is temporarily paused. Repeatedly polling a dead process, restarting the same build without resolving its
+A chat or worker that has done nothing at all for five minutes, with no call in flight, is a real
+ChatGPT failure mode (a dead or unstarted turn): act on it. Repeatedly polling a dead process, restarting the same build without resolving its
 failure, or exploring adjacent tasks to avoid that failure requires intervention at the cause.
 First inspect the dirty tree: if it holds coherent finished work, the first instruction
 is to bank it. Then recover the chat at the layer actually broken. Do not call a stream wedged
@@ -3836,13 +3839,25 @@ are probes of the core, never products (sage `AGENTS.md`). research's top-priori
 
 **2026-10-09: the owner started `lean-cas-dsl`** (`/home/dzack/gitclones/lean-cas-dsl`, cloned from `dzackgarza/lean-cas-dsl`; its `AGENTS.md` "Current task: construct B0" governs). The active managed streams are `research` and `lean-cas-dsl` (or the temporary stream standing in for it under the serial rule below); every other row stays paused unless a later owner instruction explicitly resumes it.
 
-**2026-10-11, owner: workers work; the orchestrator owns build waits.** Required Lean builds run in
+**2026-10-21, owner: workers do work, not wait on long runs.** Actual work uses small targeted
+tests. Significant runs belong on CI, asynchronously, never serially on this box blocking work.
+An agent running a job longer than five minutes means the whole setup has a serious problem, and
+the steward repairs that setup (a CI route, a targeted test surface). It does not supervise the
+wait. Five minutes with no activity at all is a real ChatGPT failure and is acted on. Neither fact
+licenses removing workers' general tools or adding controller-side kill timers. This supersedes
+the 2026-10-11 build-wait arrangement below and the background-wait procedure in "Managed
+lean-cas-dsl validation runs".
+
+**2026-10-11, owner: workers work; the orchestrator owns build waits (superseded 2026-10-21).** Required Lean builds run in
 the background without an arbitrary duration cutoff. Workers continue useful adjacent work, or
 the orchestrator temporarily pauses their workstream, owns the build, and resumes them promptly
 with its result. This temporary build pause is not an owner stop requiring another permission to
 resume. Inspect actual activity to diagnose drift or wedges; proxy changes never trigger intervention.
 
 ### Managed lean-cas-dsl validation runs
+
+*Superseded 2026-10-21 by the owner rule in "The managed workstreams": significant runs go to CI
+asynchronously and workers keep working; retained as cold-resume history only.*
 
 Required Lean compilations and long-running acceptance-harness executions run
 once in the background with a durable output log, source revision and identifiable
