@@ -20,6 +20,13 @@ Because a truncated tail would drop §19 first, the one rule whose loss is irrev
 repeated here: **this tree is usually dirty and shared with the user and other agents —
 never `reset`, `checkout`, `clean`, reformat, or overwrite work you did not do.**
 
+The second rule whose violation destroys the product is repeated here for the same reason:
+**never neuter this app to restrict or control agent behaviour automatically.** It is an
+instrument that extends what agents can do, not a policy engine that decides for them. Any
+change that reduces what connected models can do, or makes the app act on agent behaviour
+without an owner or model judgment, needs an explicit owner instruction, whatever mechanism it
+uses. See §1, "Who sets the limits".
+
 ---
 
 ## 1. The app in sixty seconds
@@ -71,6 +78,38 @@ changes a permission. Never merge their lifecycles or their auth.
 The extension never executes a tool. It observes ChatGPT and reports evidence. **The app is
 the only authority on what a local tool actually did.** The renderer has no Node, no
 filesystem, no command, no network authority; it crosses preload through named IPC.
+
+### Who sets the limits
+
+"Permission layer" means the **owner's** limits: the capability toggles, approved roots,
+read-only mode and security boundaries the owner configures (§8, §21). It is not a place for
+agents to encode corrections of other agents. The app's purpose is to give ChatGPT
+general-purpose local capability: shell, files, patching, agents. A worker that makes bad
+decisions with that capability is corrected at the decision, by the steward (§19, "An
+intervention is a change in the worker's next decision"), and in its repository's work
+contract. It is never corrected by making the app refuse, gate, wrap, confine or kill.
+
+Every change to this app is tested against two questions, and the mechanism does not matter:
+
+1. **Does it reduce what a connected model can do?** That includes removing a capability,
+   narrowing it, confining it, hiding it, slowing it, adding friction or approval steps in front
+   of it, or altering what it reports.
+2. **Does it make the app act on agent behaviour without a judgment?** That means the app
+   refusing, blocking, pausing, killing, re-scoping or redirecting work because a rule,
+   detector, threshold or timer fired, rather than because the owner configured it or a steward
+   model decided it from evidence.
+
+A "yes" to either needs an explicit owner instruction naming the change. The app exposes state
+and verbs, and judgment is exercised by the owner and by stewards that read evidence. Encoding
+judgment into the app replaces judgment with a mechanism that cannot see whether the work is
+right. That is the failure mode this whole document exists to prevent, moved into code where
+it is harder to see and harder to undo.
+
+Existing owner-approved mechanisms stay. The test governs what gets added or tightened. The
+2026-10-20 incident in §19 ("Historical failure: 'make the failure impossible' was read as
+'remove the tool'") is one instance. Do not treat its particular mechanisms as the boundary,
+because the next instance will use different ones. A request to make a failure "impossible" is
+a request about decisions and contracts, never about capability.
 
 ## 2. Where the bugs actually are
 
@@ -479,14 +518,8 @@ empty `write_stdin` poll returns on first output instead of holding Codex's full
 window. Start at `tools-core.ts`
 → `unified-exec.ts` → `shell.ts` → `ownership.ts` → `exec-output.ts`.
 
-**Worker shell execution is the product, not a defect surface.** `exec_command` and
-`write_stdin` are what make a ChatGPT worker a general-purpose engineer here. Never remove,
-gate, containerize or wrap them as a remedy for how a worker behaved, and never route worker
-commands through a controller-owned runner. A behavioural failure is corrected in the
-worker's decision (§19, "An intervention is a change in the worker's next decision") and in
-its repository's work contract. Narrowing what workers can execute requires an explicit owner
-instruction naming that change. 2026-10-20 is the incident that makes this rule necessary (§19,
-"Historical failure: 'make the failure impossible' was read as 'remove the tool'").
+**These tools are the product, not a defect surface.** Changes to them are governed by §1,
+"Who sets the limits".
 
 **`apply_patch`.** Model syntax is Codex V4A. MCP cannot expose a true freeform tool, so
 the raw patch rides inside the `patch` string while the grammar lives in the description.
@@ -1425,9 +1458,10 @@ transcript's tool calls and outputs. Activity counts, row phase, lease freshness
 do not contain it.
 
 The worker is otherwise unrestricted. It keeps its general-purpose tools and solves unforeseen
-problems its own way. What the steward judges is whether each consequential decision follows from
-the objective and from the result just observed. The divergences that consumed 2026-10-19/20 are
-the signatures to look for:
+problems its own way. The one test the steward applies is whether each consequential decision
+follows from the objective and from the result just observed. When it does not, that is the
+divergence, whatever form it takes. The 2026-10-19/20 cases below show what failing that test
+looked like. They are instances, not a checklist, and the next divergence will look different:
 
 - **Rediscovery in place of resumption.** The worker repeats setup, orientation or task selection
   while an already-identified unfinished operation exists. On 2026-10-19 at 05:32 and 06:08 UTC the
@@ -3204,14 +3238,10 @@ Removing the tools makes the product useless and leaves the decision unchanged. 
 remedies are steward correction at the earliest wrong decision, and repository work contracts
 (targeted tests, CI for significant runs).
 
-**Signatures of a repeat**, any one of which stops the work for an owner check:
-- a "fix" whose diff mostly deletes worker capability;
-- "controller-owned", "workers cannot submit", or a verifier/receipt/signature scheme on
-  ordinary task transitions;
-- containerizing or allow-listing worker commands;
-- a mechanism justified by a single incident;
-- a request to make a behaviour "impossible" being implemented in code rather than in the
-  decision and contract layers.
+The particular mechanisms are not the lesson, and pattern-matching against them guards
+only against this exact repeat. The lesson is the two questions in §1, "Who sets the limits".
+Each mechanism above reduced what models could do, or made the app act on their behaviour
+without judgment.
 
 **Near-repeats during the 2026-10-21 correction.** These came from the follow-up work, including
 a strategy report and a Claude Code session. All are corrected:
@@ -3759,6 +3789,11 @@ because the previous feature node closed.
   cross-repository routing, stale failure facts, or shared tooling — even when only one stream is
   blocked. Do not use that authority to take the worker's mathematical/programming unit away from
   it merely because doing so would be faster.
+- **Your standing authority never extends to neutering the app.** Control-plane repair means
+  fixing the documents, routing, scheduling or tooling that misdirect a worker. It never means
+  reducing what workers can do or making the app act on their behaviour without judgment (§1,
+  "Who sets the limits"). If a remedy you are designing works by constraining agents rather than
+  by informing a decision, stop: the correction belongs in the worker's next decision.
 - **Never dispatch the next unit**, and never constrain method. Point at the task and let the
   repository say what comes after.
 - **Never refute a worker with a detector you invented.** Use the repository's own tool; a
@@ -4047,6 +4082,8 @@ private process in `SECURITY.md`, not in public issues, comments, or fixtures.
 - Every producer and consumer of any changed protocol agrees.
 - Model-visible schema and user-visible surface still match the implementation.
 - Unrelated dirty work is untouched.
+- The change passes both questions in §1, "Who sets the limits", or an explicit owner
+  instruction named it.
 - Relevant local checks pass and `npm run verify` passes; `npm run verify:live` also passes for ChatGPT/Chrome changes.
 - Build/packaging checked when the changed layer can differ after bundling.
 - Comments and this file updated only where behavior genuinely changed.
