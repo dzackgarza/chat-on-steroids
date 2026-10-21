@@ -581,6 +581,12 @@ export async function admitWorkstreamCall(
   });
 }
 
+/** The logical workstream whose recorder session this is, or null for an ordinary chat. */
+export function workstreamForSession(sessionId: string): string | null {
+  for (const row of rows.values()) if (row.sessionId === sessionId) return row.id;
+  return null;
+}
+
 /** Recorder session durably owned by one logical workstream, independent of browser routing. */
 export function workstreamRecordingSession(id: string): string | null {
   ready();

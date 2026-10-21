@@ -47,7 +47,7 @@ import { writeDurableNow, writeDurableSoon } from './durable.js';
 import { logInfo, logWarn } from './logger.js';
 import { getSecret } from './secrets.js';
 import { getSession, readEvents, readHandoff, readRecentEvents } from './session/store.js';
-import { resumeBootstrapMatches, resumeBootstrapText } from './session/handoff.js';
+import { handoffBody, resumeBootstrapMatches, resumeBootstrapText } from './session/handoff.js';
 import {
   GOAL_OBJECTIVE_OPENING_TURN,
   GOAL_OBJECTIVE_TRAILER,
@@ -1011,7 +1011,7 @@ async function committedResumeHandoffId(
     if (!event || event.kind !== 'handoff') continue;
     const handoff = await readHandoff(sessionId, event.handoffId);
     if (!handoff) continue;
-    if (authored.some((text) => resumeBootstrapMatches(text, handoff.text))) {
+    if (authored.some((text) => resumeBootstrapMatches(text, handoffBody(handoff)))) {
       legacyCommittedResumeCache.set(sessionId, handoff.id);
       while (legacyCommittedResumeCache.size > 128) {
         const oldest = legacyCommittedResumeCache.keys().next().value as string | undefined;
@@ -1084,12 +1084,12 @@ export async function conversationMessages(sessionId: string): Promise<ChatMessa
   const committedHandoffId = await committedResumeHandoffId(sessionId, summary);
   const committedHandoff = committedHandoffId ? await readHandoff(sessionId, committedHandoffId) : null;
   const committedHandoffMessage = committedHandoff
-    ? ({ role: 'user', content: clip(resumeBootstrapText(committedHandoff.text)) } as ChatMessage)
+    ? ({ role: 'user', content: clip(resumeBootstrapText(handoffBody(committedHandoff))) } as ChatMessage)
     : null;
   let committedHandoffAt = -1;
   if (committedHandoffMessage?.content && committedHandoff) {
     for (let at = ordered.length - 1; at >= 0; at--) {
-      if (ordered[at]?.role === 'user' && resumeBootstrapMatches(ordered[at]!.content, committedHandoff.text)) {
+      if (ordered[at]?.role === 'user' && resumeBootstrapMatches(ordered[at]!.content, handoffBody(committedHandoff))) {
         committedHandoffAt = at;
         break;
       }

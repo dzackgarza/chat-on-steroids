@@ -12,6 +12,8 @@ import { randomUUID } from 'node:crypto';
 import type { Handoff } from '../../shared/session.js';
 import { logInfo } from '../logger.js';
 import { getSession, saveHandoff } from './store.js';
+import { inheritedExecutionRecord } from '../workstream-inheritance.js';
+import { workstreamForSession } from '../workstreams.js';
 import { conversationKeyInstruction } from './conversation-key.js';
 
 export interface PrepareHandoffInput {
@@ -32,6 +34,11 @@ export interface PrepareHandoffInput {
  * reconstructs that chat-facing conversation from the durable session after the local session
  * has been rebound. Sharing one formatter prevents those two model contexts from drifting.
  */
+/** What the next chat is handed: the brief verbatim, then the recorded execution beside it. */
+export function handoffBody(handoff: Pick<Handoff, 'text' | 'record'>): string {
+  return handoff.record ? `${handoff.text}\n\n${handoff.record}` : handoff.text;
+}
+
 export function resumeBootstrapText(summary: string): string {
   return (
     'Continuing a Chat On Steroids session that was compacted. This is the brief the previous chat wrote about ' +
@@ -138,6 +145,8 @@ export async function prepareHandoff(input: PrepareHandoffInput): Promise<Handof
     // brief as well would be a second, weaker copy of state the commit already carries.
     notes: [...(input.notes ?? [])]
   };
+  const record = await inheritedExecutionRecord(workstreamForSession(input.sessionId), input.sessionId);
+  if (record) handoff.record = record;
   await saveHandoff(handoff);
   logInfo(`handoff ${handoff.id} prepared (${handoff.text.length} characters)`);
   return handoff;

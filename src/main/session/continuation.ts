@@ -64,7 +64,7 @@ import {
 } from '../agents.js';
 import { clearGoalObjective, goalObjectiveFor, moveGoalObjective } from '../goal.js';
 import { writeDurableNow, writeDurableSoon } from '../durable.js';
-import { prepareHandoff, resumeBootstrapMatches } from './handoff.js';
+import { handoffBody, prepareHandoff, resumeBootstrapMatches } from './handoff.js';
 import { ensureHandoffRecorded, recordHandoff, rebindConversation } from './recorder.js';
 import { endResumeClaim, noteResumeClaim } from './resume-gate.js';
 import {
@@ -405,7 +405,7 @@ export async function repairPrimeFromResumeShadow(conversationId: string): Promi
   if (!handoff) return false;
   const targetUsers = await readEvents(target.id, { kinds: ['user_message'] }).catch(() => []);
   const exactBootstrap = targetUsers.some(
-    (event) => event.kind === 'user_message' && !event.message.truncated && resumeBootstrapMatches(event.message.text, handoff.text)
+    (event) => event.kind === 'user_message' && !event.message.truncated && resumeBootstrapMatches(event.message.text, handoffBody(handoff))
   );
   if (!exactBootstrap) return false;
   const proof = failed ? `collision WAL + exact handoff ${handoffId}` : `exact handoff ${handoffId}`;
@@ -605,7 +605,7 @@ async function capture(
     const handoff = await produce(entry);
     await transitionNow(entry, (current) => ({
       ...current,
-      summary: handoff.text,
+      summary: handoffBody(handoff),
       handoffId: handoff.id,
       state: 'awaiting-chat',
       error: null

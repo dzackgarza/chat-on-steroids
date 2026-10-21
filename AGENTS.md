@@ -999,6 +999,12 @@ chat A owns session S
   → B continues session S
 ```
 
+**B receives the record as well as the brief.** When the brief is stored, the handoff also captures the
+session's recorded execution (`Handoff.record`, `workstream-inheritance.ts`), and B is typed
+`handoffBody()`: A's brief verbatim, then that record. A compacted chat's successor therefore
+starts from what was actually run, not only from what A said about it. Every consumer that types
+or matches the bootstrap (the bridge, Goal, the provenance checks) uses the same body.
+
 **Must hold.** If preflight or the durable write fails, **A keeps the session**. Once the
 durable write succeeds, publication is total in-memory map movement. Never implement
 compaction by creating a second session or copying history — the whole feature is continuity

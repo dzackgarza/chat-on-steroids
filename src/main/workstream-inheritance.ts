@@ -56,7 +56,7 @@ function callLine(event: ToolCallEvent): string {
  * The newest instruction that was not this controller's own continuation prompt is the last
  * thing the steward or owner asked of the stream.
  */
-export async function inheritedExecutionRecord(workstreamId: string, sessionId: string | null): Promise<string> {
+export async function inheritedExecutionRecord(workstreamId: string | null, sessionId: string | null): Promise<string> {
   if (!sessionId) return "";
   const calls = (await readRecentEvents(sessionId, CALLS, { kinds: ["tool_call"] })) as ToolCallEvent[];
   const messages = (await readRecentEvents(sessionId, 40, {
@@ -85,14 +85,14 @@ export async function inheritedExecutionRecord(workstreamId: string, sessionId: 
       changed.set(change.path, { added: total.added + change.added, removed: total.removed + change.removed });
     }
 
-  const running = unifiedExecManager
-    .listProcesses()
-    .filter((process) => execOwner(process.processId)?.workstreamId === workstreamId);
+  const running = workstreamId
+    ? unifiedExecManager.listProcesses().filter((process) => execOwner(process.processId)?.workstreamId === workstreamId)
+    : [];
 
   const tails = calls.filter((event) => resultMatters(event.call)).slice(-RESULT_TAILS);
 
   const sections = [
-    "INHERITED EXECUTION RECORD — the exact recorded tail of the chats that held this workstream before you. " +
+    "INHERITED EXECUTION RECORD — the exact recorded tail of the chats that held this session before you. " +
       "It is what was already done, read and run; continue from it instead of repeating it.",
   ];
   if (asked)

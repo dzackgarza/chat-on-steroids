@@ -507,6 +507,12 @@ export interface Handoff {
   sourceTokens: number;
   /** Set when the model stopped early or the pack dropped material. */
   notes: string[];
+  /**
+   * The session's recorded execution when the brief was stored (workstream-inheritance.ts),
+   * typed after the brief so the next chat has what was actually run, not only what the
+   * previous chat said about it. Absent on handoffs written before 2026-10-21.
+   */
+  record?: string;
 }
 
 // ---------------------------------------------------------------- agents
