@@ -4,8 +4,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { durableRoot, writeDurableNow } from "./durable.js";
-import { unifiedExecManager } from "./codex/manager.js";
-import { execOwner } from "./codex/ownership.js";
+import { transferExecOwnership } from "./codex/ownership.js";
 import { inFlightCallsForWorkstream, runningToolCallsForWorkstream } from "./mcp/call-context.js";
 import { detachSessionConversation } from "./session/store.js";
 import { logWarn } from "./logger.js";
@@ -543,15 +542,8 @@ export async function admitWorkstreamCall(
     );
     if (!row) return { ok: false, code: "WORKSTREAM_ID_NOT_CURRENT" };
     // Re-attachment fenced the former opaque claim. Execution waits for calls already
-    // admitted under retired claim ids to settle and kills their retained terminal processes.
-    for (const process of unifiedExecManager.listProcesses()) {
-      const owner = execOwner(process.processId);
-      if (
-        owner?.workstreamId === row.id &&
-        row.retiredKeys.includes(owner.claimId)
-      )
-        await unifiedExecManager.terminateProcess(process.processId);
-    }
+    // admitted under retired claim ids to settle; their retained terminal sessions pass to
+    // this claim, which inherits the running work instead of relaunching it.
     if (
       row.retiredKeys.some(
         (claimId) =>
@@ -559,6 +551,7 @@ export async function admitWorkstreamCall(
       )
     )
       return { ok: false, code: "WORKSTREAM_BUSY" };
+    transferExecOwnership(row.id, row.retiredKeys, row.lock);
     row.retiredKeys = [];
     // A replacement chat can begin executing before the browser ACK that names the concrete
     // conversation reaches the bridge. `continueWorkstream()` deliberately carries the

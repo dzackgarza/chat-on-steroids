@@ -103,8 +103,8 @@ export async function inheritedExecutionRecord(workstreamId: string, sessionId: 
     );
   if (running.length)
     sections.push(
-      `Terminal sessions your predecessors left running. Your first call under the new claim stops them (workstreams.ts admitWorkstreamCall), so read their output and logs from the calls above instead of relaunching them blindly:\n${running
-        .map((process) => `- pid ${process.pid ?? "?"} since ${clock(process.startedAt)} in ${process.cwd}: ${oneLine(process.command, ARGS_CHARS)}`)
+      `Terminal sessions your predecessors left running. They pass to your claim on your first call: read them with write_stdin on these session ids instead of relaunching. A session not declared persistent is reaped ten minutes after its last write_stdin (exec-reaper.ts):\n${running
+        .map((process) => `- session_id ${process.processId} (pid ${process.pid ?? "?"}) since ${clock(process.startedAt)} in ${process.cwd}: ${oneLine(process.command, ARGS_CHARS)}`)
         .join("\n")}`,
     );
   if (changed.size)

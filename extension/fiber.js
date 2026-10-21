@@ -1209,6 +1209,26 @@
     return null;
   }
 
+  /**
+   * The prose of a typed-item assistant message, with its content references resolved.
+   *
+   * Since 2026-10 a final answer can be a generative-UI block: `content` is nothing but
+   * `::chatgpt-content-reference{index="N" …}` directives, and the authored prose is the
+   * referenced entry's `model_dil_v2.fallbackMarkdown` — the same text ChatGPT renders when the
+   * block cannot. Recording the bare directive lost every such answer from the transcript and
+   * from the execution record a replacement chat inherits. Only that public fallback text is
+   * read; the block's code, constants and app data stay in the page.
+   */
+  function assistantItemText(item) {
+    const content = typeof item.content === 'string' ? item.content : '';
+    const refs = Array.isArray(item.contentReferences) ? item.contentReferences : [];
+    return content.replace(/::chatgpt-content-reference\{index="(\d+)"[^}]*\}/g, (directive, index) => {
+      const ref = refs[Number(index)];
+      const fallback = ref && ref.model_dil_v2 ? ref.model_dil_v2.fallbackMarkdown : null;
+      return typeof fallback === 'string' ? fallback : directive;
+    });
+  }
+
   /** The items of one turn in model order, groups flattened in place. */
   function flatItems(items, out) {
     for (let at = 0; at < items.length; at++) {
@@ -1251,7 +1271,7 @@
         messages.push({ messageId: id, rawMessageId: id, role: 'user', stable: true, order, createTime: sent ? sent / 1000 : null, rawText: text, renderedHtml: '' });
       } else if (type === 'assistant-message') {
         const id = str(item.messageId);
-        const text = budgetedText(typeof item.content === 'string' ? item.content : '', budget, MAX_RENDERED_TEXT);
+        const text = budgetedText(assistantItemText(item), budget, MAX_RENDERED_TEXT);
         if (!id || !text) continue;
         if (item.phase === 'final_answer') finalAnswerId = id;
         messages.push({ messageId: id, rawMessageId: id, role: 'assistant', stable: item.completed === true, order, createTime: null, rawText: text, renderedHtml: '' });

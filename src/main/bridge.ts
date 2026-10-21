@@ -73,8 +73,6 @@ import {
   workstreamStatus,
   type Workstream,
 } from "./workstreams.js";
-import { unifiedExecManager } from "./codex/manager.js";
-import { execOwner } from "./codex/ownership.js";
 import { inheritedExecutionRecord } from "./workstream-inheritance.js";
 import { promises as fs } from "node:fs";
 import http from "node:http";
@@ -6044,12 +6042,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           );
           continue;
         }
-        if (row.conversationId) {
-          for (const process of unifiedExecManager.listProcesses()) {
-            if (execOwner(process.processId)?.workstreamId === row.id)
-              await unifiedExecManager.terminateProcess(process.processId);
-          }
-        }
+        // The workstream's terminal sessions survive the archive: the replacement's claim
+        // inherits them (transferExecOwnership) and its opening record lists them.
         continue; // The paired extension performs the browser stop/archive, then ACKs.
       }
       if (row.commandId) {
@@ -6168,12 +6162,8 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
       ) {
         continue;
       }
-      if (row.phase === "recovering" && row.conversationId) {
-        for (const process of unifiedExecManager.listProcesses()) {
-          if (execOwner(process.processId)?.workstreamId === row.id)
-            await unifiedExecManager.terminateProcess(process.processId);
-        }
-      }
+      // Recovery stops the turn, not the work: the chat keeps its claim and its terminal
+      // sessions, and reads their output when it resumes.
       const existing = commands.find(
         (command) =>
           command.spec.type === "send" && command.spec.nonce === actionId,
