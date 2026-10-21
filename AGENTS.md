@@ -609,6 +609,21 @@ successful archive mutation response, and the bridge opens a replacement fronten
 context and generic steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
 
+**A replacement inherits its predecessors' execution, not just the brief.** A workstream keeps
+one recorder session across every chat that holds it, so the opening message of any replacement
+carries the inherited execution record (`workstream-inheritance.ts`):
+- the newest tool calls in order, with arguments and metrics;
+- result tails for failures and for calls that changed files, processes or agents;
+- the files those calls changed;
+- the last instruction the stream was given and the predecessor's last real prose;
+- any terminal sessions it left running.
+
+The record is a projection of recorded facts and makes no judgment. Without it, every
+replacement was a fresh start that repeated setup, orientation, source reading and runs
+(2026-10-19/20). Bound chats do not get it, because their own conversation already holds it.
+On the current ChatGPT frontend, final answers record as bare `::chatgpt-content-reference{…}`
+placeholders with no prose. The record skips those, so the tool-call chain is the substance.
+
 Controller-started managed workstreams are **turn-driven**.
 Their fresh observed `turn_end(completed)` schedules the next workstream prompt immediately;
 fresh failed/stopped/interrupted endings enter bounded recovery immediately.
@@ -1350,9 +1365,10 @@ chats looked dead this way in one tick and all three typed immediately when push
 their full ids. The same applies to every recipe that takes a chat: pass the id `just chats`
 prints, in full.
 
-**When a chat's context fills, hand off.** Read its transcript and open a new chat with a very
-simple brief: the ambient task, the tracking documents, and the item, phase or subtask in
-progress. Nothing more.
+**When a chat's context fills, hand off.** The replacement's opening message already carries
+the predecessor's recorded execution (§11, "Workstream leases and recovery"). The brief adds only
+what that record cannot show: the ambient task, the tracking documents, and the item, phase or
+subtask in progress. Nothing more.
 A brief that states what is already done is acceptance evidence the new chat will act on, so
 take it from the repository's record (commits by path, the node's own ledger), never from the
 old chat's prose: on 2026-10-02 a brief saying a copy pass "has read algebra, analysis,

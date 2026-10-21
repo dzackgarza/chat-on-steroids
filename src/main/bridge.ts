@@ -75,6 +75,7 @@ import {
 } from "./workstreams.js";
 import { unifiedExecManager } from "./codex/manager.js";
 import { execOwner } from "./codex/ownership.js";
+import { inheritedExecutionRecord } from "./workstream-inheritance.js";
 import { promises as fs } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -6191,12 +6192,18 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         );
         continue;
       }
+      // A replacement opens with its predecessors' recorded execution, so it resumes the work
+      // instead of rediscovering it (workstream-inheritance.ts).
+      const inherited =
+        !existing && row.phase === "opening"
+          ? await inheritedExecutionRecord(row.id, row.sessionId)
+          : "";
       const command =
         existing ??
         queue({
           type: "send",
           conversationId: row.phase === "opening" ? null : row.conversationId,
-          text: workstreamPrompt(row, connector),
+          text: workstreamPrompt(row, connector, inherited),
           nonce: actionId,
           stopFirst: row.phase === "recovering",
           // Two different stalls. A live page whose model has gone quiet is thinking or

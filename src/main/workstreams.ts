@@ -903,7 +903,7 @@ export async function recoverWorkstreamNow(
 // repository sections needed for the concrete edit. A genuinely new workstream's context remains
 // responsible for asking for full orientation when that is actually necessary.
 export const FRESH_CHAT_ORIENTATION =
-  "Resume from this workstream's durable context/handoff first. Do not restart project setup or reread whole AGENTS/TODO files merely because this is a replacement chat; read only the specific repository sections needed for the inherited concrete edit. If the durable context explicitly says this is genuinely new work with no inherited unit, orient from the repository then. Start substantive implementation immediately. ";
+  "Resume from this workstream's durable context and the inherited execution record above first: it is what your predecessors already read, ran and changed, so do not repeat it. Do not restart project setup or reread whole AGENTS/TODO files merely because this is a replacement chat; read only the specific repository sections needed for the inherited concrete edit. If the durable context explicitly says this is genuinely new work with no inherited unit, orient from the repository then. Start substantive implementation immediately. ";
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
@@ -914,7 +914,7 @@ export const STEWARD_CONTINUATION =
  * A bound chat is the proven holder of the lock and is handed it again; a fresh chat claims
  * the workstream itself.
  */
-export function workstreamPrompt(row: Workstream, connector: string): string {
+export function workstreamPrompt(row: Workstream, connector: string, inherited = ""): string {
   const handoff =
     row.conversationId !== null && row.contextReceivedBy === row.conversationId
       ? ""
@@ -929,7 +929,7 @@ export function workstreamPrompt(row: Workstream, connector: string): string {
     row.phase === "opening"
       ? `Before any other connector operation, call \`workstream\` on the "${connector}" connector with action="continue" and workstream="${row.id}". Then include the returned workstream_id on every ordinary "${connector}" call.`
       : `This chat holds it. Include workstream_id="${row.lock}" on every ordinary "${connector}" connector call. Do not reclaim it routinely. If an ordinary call returns WORKSTREAM_SETUP_REQUIRED, follow that refusal: call \`workstream\` with action="continue" and workstream="${row.id}", then retry using its returned workstream_id. WORKSTREAM_BUSY instead requires retrying with the existing workstream_id, not reclaiming.`;
-  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${handoff}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
+  return `Continue workstream ${row.id} on the "${connector}" connector. ${claim}\n${row.workspace ? `Project: ${row.workspace}\n` : ""}${handoff}${inherited ? `\n${inherited}\n` : ""}${recoveryNotice}\n${row.phase === "opening" ? FRESH_CHAT_ORIENTATION : BOUND_CHAT_ORIENTATION}${STEWARD_CONTINUATION}`;
 }
 
 /** Persistent action intent is written before delivery. The action id is its idempotency key. */
