@@ -479,6 +479,15 @@ empty `write_stdin` poll returns on first output instead of holding Codex's full
 window. Start at `tools-core.ts`
 → `unified-exec.ts` → `shell.ts` → `ownership.ts` → `exec-output.ts`.
 
+**Worker shell execution is the product, not a defect surface.** `exec_command` and
+`write_stdin` are what make a ChatGPT worker a general-purpose engineer here. Never remove,
+gate, containerize or wrap them as a remedy for how a worker behaved, and never route worker
+commands through a controller-owned runner. A behavioural failure is corrected in the
+worker's decision (§19, "An intervention is a change in the worker's next decision") and in
+its repository's work contract. Narrowing what workers can execute requires an explicit owner
+instruction naming that change. 2026-10-20 is the incident that makes this rule necessary (§19,
+"Historical failure: 'make the failure impossible' was read as 'remove the tool'").
+
 **`apply_patch`.** Model syntax is Codex V4A. MCP cannot expose a true freeform tool, so
 the raw patch rides inside the `patch` string while the grammar lives in the description.
 Engine under `apply-patch/`; the wrapper adds capability checks (per hunk kind — add needs
@@ -3165,6 +3174,64 @@ conversation tabs and to expose `woke_ready`/sleep status as evidence. It does n
 script to turn those events into unconditional `Continue` messages. A model stewardship tick may
 use those events as one input to its normal classification and then drive the chat through the app
 when the classification calls for it.
+
+### Historical failure: "make the failure impossible" was read as "remove the tool"
+
+On 2026-10-20 a Codex agent was asked to make the fleet's recurring worker failures
+behaviourally impossible. The failures were rediscovery loops, wrong validation runs and
+polling. The agent read the request as a capability problem and spent the day removing
+capability:
+
+- `bcdddad7`, `88808ae2`: signed-verifier "durable assignments", where a completed turn could not
+  authorize a transition without a verifier receipt;
+- `5da7bb10`, `de05d842`, `dc6852ca`, `9ada7608`, `b9e2146d`: controller-owned validation, a
+  validation service, and Docker-isolated repository execution;
+- `cdfe1cb8`: removed the app's unrestricted execution mode;
+- `4f792d38`: unregistered `exec_command`/`write_stdin` from the worker surface, including in
+  code mode. AGENTS.md was rewritten to say "Worker shell execution is absent" and "Workers ... cannot
+  submit command text". The trigger was one worker running `timeout 5 python3 -m pytest
+  ...::test_other` outside the job store;
+- `a3d97dbf`: enforced assigned pytest scope.
+
+It was merged as `a237fab6` and reverted the same evening (`9ba2342d`). `8887afaf` then removed
+the assignment harness, keeping general MCP execution. None of it changed what the research
+or Sage worker did next. Each mechanism became a second stream of unproductive work: the
+supervisor substituting elaborate activity for the outcome, which is exactly the worker failure
+it was meant to cure.
+
+The error was the category. The failures were bad **decisions** made with adequate tools.
+Removing the tools makes the product useless and leaves the decision unchanged. The correct
+remedies are steward correction at the earliest wrong decision, and repository work contracts
+(targeted tests, CI for significant runs).
+
+**Signatures of a repeat**, any one of which stops the work for an owner check:
+- a "fix" whose diff mostly deletes worker capability;
+- "controller-owned", "workers cannot submit", or a verifier/receipt/signature scheme on
+  ordinary task transitions;
+- containerizing or allow-listing worker commands;
+- a mechanism justified by a single incident;
+- a request to make a behaviour "impossible" being implemented in code rather than in the
+  decision and contract layers.
+
+**Near-repeats during the 2026-10-21 correction.** These came from the follow-up work, including
+a strategy report and a Claude Code session. All are corrected:
+
+- The report recommended that long computations be bounded only by their acceptance contract,
+  and that steward docs preserve and supervise long runs. The owner rejected this. Workers do
+  work with small targeted tests, significant runs go to CI asynchronously, and a worker job
+  here over five minutes is a setup defect (owner decision 2026-10-21, "The managed
+  workstreams").
+- The liveness prompt's five-minute trigger was replaced with "elapsed time alone never
+  establishes a wedge". Five minutes with nothing in flight is a real ChatGPT failure, and
+  the trigger is restored.
+- The orchestrator's uncommitted fix for stale bound-chat context sent `row.context` only to
+  opening chats. That would have silently cut the steward's `/workstreams/context` redirect
+  channel to running workers: a correction route removed to stop a nuisance. The committed fix
+  (`91711214`) delivers each context revision once per conversation.
+
+The common shape is a true observation about one failure turned into a rule that removes a
+capability or a signal the system needs. Before committing a remedy, name the capability or
+signal it removes and who relied on it.
 
 ### A cleanup step that has never once run looks exactly like a clean fleet
 
