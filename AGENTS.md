@@ -1537,22 +1537,18 @@ acceptance of its consumer. The converse also holds: source-backed algorithm con
 an expensive acceptance finishes can be real progress. Establish which chat owns the execution,
 and judge it against that stream's own current obligation.
 
-**A refused correction is the orchestrator's own blocker, not a journal entry.** From 2026-10-20
-on, the orchestrator's `just say`, `just interrupt`, `/workstreams/recover`, `/workstreams/replace`
-and service-restart calls were refused upstream before dispatch on more than a dozen consecutive
-ticks. Each tick logged the refusal, did not bypass it (correctly), and ended. No correction
-reached any worker. After the first refusal of a corrective verb, restoring corrective authority
-becomes the orchestrator's current objective, ahead of further observation of the stream:
+**When the steward's own action fails, restoring its ability to act is the objective.** A
+correction that cannot reach the worker, for any reason, leaves the stream exactly where it was.
+Recording the failure again on the next tick is not an action. Neither is trying the same thing
+unchanged, or treating the failure as background state. So the failed route becomes the
+steward's current work: find out what actually blocks it, and repair it through its legitimate
+route without bypassing an authority boundary. Verify that a correction then really reaches the
+worker. If the repair needs authority the steward does not hold, put that one fact in front of
+the owner once.
 
-1. Do not re-attempt the same refused call unchanged on later ticks.
-2. Establish which call shapes are admitted and which are refused.
-3. Make the first-party app route deliver the correction through its legitimate authority
-   boundary, and verify actual delivery to the worker. The app and connector are owned by this
-   repository, so making that route work is repair work here. Never route around a refusal:
-   no alternate sender, no shell-permission change, no path outside the app.
-4. While corrective authority stays unrestored, report it to the owner once as the blocking
-   control-plane fact, naming the exact refused call and the correction it was carrying. Do not
-   re-record it every tick.
+The instance that forced this: from 2026-10-20 on, the orchestrator's corrective calls were
+refused upstream before dispatch on more than a dozen consecutive ticks. Each tick logged the
+refusal and ended, and no correction reached any worker.
 
 Scheduled automations stay enabled throughout. They are occasions for judgment, not worker-control
 algorithms.
@@ -3651,8 +3647,8 @@ are, not by how appropriate they are. Choose the rung from the failure layer:
   per [An intervention is a change in the worker's next decision](#an-intervention-is-a-change-in-the-workers-next-decision).
 - **Repeated failure of the same chat after the right-layer correction:** replace it. Characterize
   its dirty tree before handoff and preserve all banked work.
-- **The corrective verb itself is refused:** that is the orchestrator's own blocker. Restore the
-  first-party route; do not re-attempt the refused call every tick.
+- **Your own corrective action fails:** restoring your ability to act is now the work. Do not
+  re-record the failure or repeat the action unchanged.
 
 After every rung, verify before another. Never queue several sends, never let a background watcher
 stand in for follow-through, and never climb merely because the desired metric has not moved yet.
