@@ -19,7 +19,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { readDurable, writeDurableSoon } from "./durable.js";
-import { currentCall } from "./mcp/call-context.js";
+import { type CallCaller, currentCall } from "./mcp/call-context.js";
 import { workstreamConversation, workstreamWorkspace } from "./workstreams.js";
 
 /** Tools that only read. They stay available so the rules can be read at all. */
@@ -48,8 +48,22 @@ function save(): void {
   writeDurableSoon("rules-coverage", Object.fromEntries(coverage));
 }
 
-function readerKey(workstreamId: string, claimId: string | null, realPath: string): string {
-  const reader = workstreamConversation(workstreamId) ?? `claim:${claimId ?? ""}`;
+/**
+ * The conversation that has (or has not) seen the rules, by the strongest evidence the call has.
+ *
+ * Coverage is about what is in one conversation's context. A row with no bound conversation
+ * used to fall back to the claim id, which rotates on every reclaim, so the scheduled
+ * orchestrator was made to reread the whole file on every tick of one conversation: 432 full
+ * rereads of a 3,700-line file by 2026-10-21. The connector session key is measured stable
+ * across one chat's calls and distinct across concurrent chats (connector-session.ts), so it
+ * names that conversation when nothing exact does; the claim is the last resort.
+ */
+function readerKey(workstreamId: string, claimId: string | null, realPath: string, caller: CallCaller): string {
+  const reader =
+    workstreamConversation(workstreamId) ??
+    caller.conversationId ??
+    (caller.sessionKey ? `session:${caller.sessionKey}` : null) ??
+    `claim:${claimId ?? ""}`;
   return `${workstreamId}\u0000${reader}\u0000${realPath}`;
 }
 
@@ -92,7 +106,7 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
   await load();
   // readOne() hands over resolvePath()'s canonical real path; no further resolution is needed.
   const path = realPath;
-  const key = readerKey(call.workstreamId, call.workstreamClaimId, path);
+  const key = readerKey(call.workstreamId, call.workstreamClaimId, path, call.caller);
   const prior = coverage.get(key) ?? { path, totalLines, read: [] };
   coverage.set(key, {
     path,
@@ -146,7 +160,7 @@ export async function rulesGateRefusal(
   const virtual = rules.virtual;
   await load();
   const real = rules.path;
-  const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, real)) ?? {
+  const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, real, call.caller)) ?? {
     path: real,
     totalLines: null,
     read: [],

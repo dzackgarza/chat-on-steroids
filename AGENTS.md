@@ -591,9 +591,11 @@ calls renew the five-minute lease; running calls hold it open. Lease expiry alon
 starts revival or replacement. The steward diagnoses stalled work from the actual task,
 tool results and browser state. An intentional pause resumes the same holder without
 inventing activity or treating the wait as a failed conversation. A new claim
-invalidates the old opaque token and cancels pending recovery; retained terminals owned by
-the old claim are stopped and already-admitted old calls must settle before successor
-execution. Browser polls and replayed observations are not activity. The app's own
+invalidates the old opaque token and cancels pending recovery. Already-admitted old calls must
+settle before successor execution, and the old claim's retained terminal sessions pass to the
+new claim (`transferExecOwnership`). Archive and recovery stop the turn, never the running
+work. Fencing is the lock rotation plus `execOwnershipDenied`; killing the work was never
+needed for it. Browser polls and replayed observations are not activity. The app's own
 continuation prompts cannot renew their own lease.
 
 For the scheduled `orchestrator`, a fresh observed terminal turn releases its claim
@@ -621,8 +623,14 @@ carries the inherited execution record (`workstream-inheritance.ts`):
 The record is a projection of recorded facts and makes no judgment. Without it, every
 replacement was a fresh start that repeated setup, orientation, source reading and runs
 (2026-10-19/20). Bound chats do not get it, because their own conversation already holds it.
-On the current ChatGPT frontend, final answers record as bare `::chatgpt-content-reference{…}`
-placeholders with no prose. The record skips those, so the tool-call chain is the substance.
+On the current ChatGPT frontend a final answer can be a generative-UI block whose `content` is only
+`::chatgpt-content-reference{index=…}` directives. `fiber.js` resolves each one to its
+`model_dil_v2.fallbackMarkdown`, so the recorder and the inherited record carry the prose.
+
+The rules gate counts coverage per conversation: the bound conversation, else exact
+conversation evidence, else the connector session key, and only then the claim. Keying an
+unbound row by its rotating claim made the scheduled orchestrator reread this whole file on
+every tick, 432 times by 2026-10-21.
 
 Controller-started managed workstreams are **turn-driven**.
 Their fresh observed `turn_end(completed)` schedules the next workstream prompt immediately;
