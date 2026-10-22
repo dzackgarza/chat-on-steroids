@@ -218,16 +218,26 @@ export function isNativeWindowsPath(input: unknown): input is string {
 }
 
 /**
- * POSIX absolute paths and virtual paths both begin with `/`. The virtual namespace wins when
- * the first segment is an approved root name; every other absolute spelling is treated as a
- * native path copied from shell output and must prove containment before it is translated.
+ * POSIX absolute paths and virtual paths both begin with `/`. A first segment that
+ * names an approved root ordinarily denotes the virtual namespace. Exception: a
+ * pathname lying under the approved root's *native* absolute path is native, even
+ * when that path starts with the same segment. For example, with root `home` at
+ * `/home/dzack`, `/home/gitclones/...` is virtual but `/home/dzack/gitclones/...`
+ * is native. Without this distinction, adding the `home` root makes existing
+ * native paths in shell output silently resolve to `/home/dzack/dzack/...`.
  */
 function isNativePosixPath(roots: readonly Root[], input: unknown): input is string {
   if (IS_WINDOWS || typeof input !== 'string') return false;
   const trimmed = input.trim();
   if (!path.posix.isAbsolute(trimmed)) return false;
   const first = trimmed.split('/').find((part) => part.length > 0)?.toLowerCase();
-  return first !== undefined && !roots.some((root) => root.name.toLowerCase() === first);
+  if (first === undefined) return false;
+  if (!roots.some((root) => root.name.toLowerCase() === first)) return true;
+  return roots.some((root) => {
+    if (!path.posix.isAbsolute(root.path)) return false;
+    const nativeRoot = path.resolve(root.path);
+    return isContained(nativeRoot, trimmed);
+  });
 }
 
 /**
