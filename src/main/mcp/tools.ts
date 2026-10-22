@@ -66,7 +66,13 @@ function workstreamRefusal(
     case "WORKSTREAM_ALREADY_EXISTS":
       return 'That workstream is already registered. Call this tool with action="continue" and the same name to claim it.';
     case "WORKSTREAM_PATH_TAKEN":
-      return `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path. One path has one workstream; claim "${refusal.holder}" with action="continue" instead.`;
+      return (
+        `WORKSTREAM_PATH_TAKEN: workstream "${refusal.holder}" already owns that path. ` +
+        `One path has one logical workstream. If your task is to execute that workstream, ` +
+        `claim it with action="continue" only when it is active and available. ` +
+        `This does not prevent an independently claimed infrastructure workstream from ` +
+        `repairing tooling in that approved repository; do not claim its implementation stream to do so.`
+      );
     case "WORKSTREAM_HELD": {
       const held =
         "WORKSTREAM_HELD: this workstream's lock is held, either by another chat or by this chat's own earlier claim. " +
@@ -97,9 +103,12 @@ function workstreamRefusal(
       );
     case "WORKSTREAM_PAUSED":
       return (
-        "WORKSTREAM_PAUSED: the owner has paused this workstream to free its resources. Stop working: " +
-        "make no further tool calls for it, and end your turn with a short note of where the work stands. " +
-        "The owner resumes it when wanted, and the resumed chat is told."
+        "WORKSTREAM_PAUSED: the owner has paused this workstream. Do not claim it or " +
+        "perform its implementation work; only the owner may resume it. " +
+        "This refusal applies to that workstream alone. If the task is to repair separate " +
+        "orchestration, QC, repository tooling or another independent workstream, continue " +
+        "under the already-authorized identity for that task. A paused implementation " +
+        "workstream is not a blocker to independent infrastructure repair."
       );
   }
 }
