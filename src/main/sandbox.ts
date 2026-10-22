@@ -470,7 +470,11 @@ export function strayVirtualPath(text: string, roots: readonly Root[]): string |
   for (let match = candidate.exec(text); match; match = candidate.exec(text)) {
     const found = match[2]!;
     const first = found.slice(1).split('/')[0]!.toLowerCase();
-    if (names.has(first)) return found;
+    // An approved root named `home` is also the first component of native
+    // paths such as /home/dzack/.... Those commands must not be refused as
+    // virtual-path mistakes: the command tool receives native paths verbatim.
+    // Apply exactly the same native/virtual disambiguation as resolvePath().
+    if (names.has(first) && !isNativePosixPath(roots, found)) return found;
   }
   return null;
 }
