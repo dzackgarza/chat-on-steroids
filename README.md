@@ -292,6 +292,20 @@ one-shot controller fixtures. Auto-advancing workstreams are kept page-mounted r
 in tabless sleep, because their observed turn boundary is the scheduler signal; restart recovery
 also remounts any such conversation that had previously been persisted as slept.
 
+The owner-authorized external watchdog is `scripts/workstream_watchdog.py`.
+It runs once per cron invocation, by default every 30 minutes, without claiming
+a workstream. It reads `GET /workstreams`, `/sleep/status` and the existing
+workstream recorder; a stalled active conversation is recovered first, then
+replaced if the recovery produced no new tool activity. An in-flight tool
+older than five minutes is treated as an execution defect, not healthy work.
+Replacement requests still use the bridge's fencing machinery; they cannot
+terminate a tool call that remains stuck inside the daemon. Paused streams and
+the orchestrator are never targeted. It persists deduplication state under
+`~/.local/state/chat-on-steroids/workstream-watchdog-state.json`.
+Run a read-only check with `python3 scripts/workstream_watchdog.py --dry-run`
+and the focused tests with
+`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p test_workstream_watchdog.py`.
+
 Use `/send/outcome?id=COMMAND_ID` for initial delivery. Workstream status separately tracks
 lease activity and recovery. The extension credential cannot manage workstreams through
 these local-script routes. Reload the extension and refresh connector discovery after an

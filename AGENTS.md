@@ -666,6 +666,15 @@ This explicitly authorized lease-recovery mechanism is the exception to the hist
 timer-driven continuation prohibitions below. Those prohibitions still govern independent
 shell drivers and unbounded pushes outside the app's lease state machine.
 
+**2026-10-25 owner authorization: an external, 30-minute workstream watchdog.**
+`scripts/workstream_watchdog.py` is a further, narrowly authorized exception. Its cron
+tick inspects the controller's live state and durable recorder evidence, treats prolonged
+in-flight tools as an execution defect rather than healthy work, and can request native
+same-chat recovery or fenced replacement for demonstrated stalls. It never claims a
+worker's workstream, unpauses one, directly edits a managed repository or bypasses the
+bridge's ownership and delivery machinery. An accepted replacement request is not proof
+that a new worker executed; failed or incomplete recovery remains a visible failure.
+
 ### Historical header correlation and browser evidence
 
 The following describes the former transport join and the browser evidence still used for
@@ -1417,6 +1426,10 @@ job, timer callback, or other non-model process that sends `Continue`, interrupt
 replaces, or re-scopes a worker merely because time elapsed or a chat is idle is forbidden. The
 difference is not automation versus no automation; it is **scheduled model judgment versus
 judgment-free automatic action**.
+The owner-authorized `scripts/workstream_watchdog.py` exception above is limited to
+controller-native liveness recovery on recorded evidence. It neither substitutes for the
+model steward's examination of a worker's decisions nor authorizes other timer-driven
+worker controls.
 
 An hourly scheduled steward turn may and should contain the shorter intra-hour ticks itself. After
 one full tick has finished, the steward may run a **single foreground** `sleep 1200` through the
