@@ -606,6 +606,8 @@ export interface ExecCommandRequest {
   displayCwd: string;
   env: NodeJS.ProcessEnv;
   tty: boolean;
+  /** Abort the *current call* by terminating its own process, not another session. */
+  cancelSignal?: AbortSignal;
 }
 
 export interface WriteStdinRequest {
@@ -615,6 +617,7 @@ export interface WriteStdinRequest {
   maxOutputTokens: number | undefined;
   truncationPolicy: TruncationPolicy;
   maxWriteStdinYieldTimeMs?: number;
+  cancelSignal?: AbortSignal;
 }
 
 export interface BackgroundTerminalInfo {
@@ -772,6 +775,10 @@ export class UnifiedExecProcessManager {
 
   async execCommand(request: ExecCommandRequest): Promise<ExecCommandToolOutput> {
     let process: UnifiedExecProcess;
+    if (request.cancelSignal?.aborted) {
+      this.releaseProcessId(request.processId);
+      throw UnifiedExecError.processFailed('the over-budget terminal call was cancelled');
+    }
     try {
       this.ensureProcessCapacity(request.processId);
     } catch (error) {
@@ -798,6 +805,16 @@ export class UnifiedExecProcessManager {
         ? error
         : UnifiedExecError.createProcess(error instanceof Error ? error.message : String(error));
     }
+
+    // The call-specific signal owns this precise process instance, not a
+    // reusable numeric session id. A cancellation that raced spawn still ends
+    // this child. The process remains registered until its normal exit path
+    // has observed the termination, so no subsequent workstream runs over it.
+    const terminateOnCancellation = () => {
+      void process.terminate().catch(() => undefined);
+    };
+    request.cancelSignal?.addEventListener('abort', terminateOnCancellation, { once: true });
+    if (request.cancelSignal?.aborted) terminateOnCancellation();
 
     const start = Date.now();
     const wallStart = performance.now();
@@ -873,6 +890,12 @@ export class UnifiedExecProcessManager {
     const entry = this.processes.get(request.processId);
     if (!entry) throw UnifiedExecError.unknownProcessId(request.processId);
     const locked = entry.process;
+
+    const terminateOnCancellation = () => {
+      void locked.terminate().catch(() => undefined);
+    };
+    request.cancelSignal?.addEventListener('abort', terminateOnCancellation, { once: true });
+    if (request.cancelSignal?.aborted) terminateOnCancellation();
 
     // Reads and writes against one session must not overlap: they share a draining buffer.
     const release = await locked.interactionLock.lock();
@@ -968,6 +991,7 @@ export class UnifiedExecProcessManager {
         outputOmittedBytes
       };
     } finally {
+      request.cancelSignal?.removeEventListener('abort', terminateOnCancellation);
       release();
     }
   }

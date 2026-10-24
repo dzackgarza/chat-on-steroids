@@ -95,6 +95,8 @@ export interface CallContext {
    */
   outcome: ToolOutcome | null;
   evidence: CallEvidence;
+  /** One call's controller-owned cancellation; never shared across workstreams. */
+  cancellation: AbortController;
 }
 
 const storage = new AsyncLocalStorage<CallContext>();
@@ -261,6 +263,39 @@ export function runningToolCallsForWorkstream(
     count += 1;
   }
   return count;
+}
+
+/**
+ * An explicitly authorized watchdog may abort the owned workstream's already
+ * over-budget terminal calls. Aborting asks the unified exec runtime to end
+ * the specific process it is waiting on; do NOT remove the in-flight record
+ * here. Only the tool's ordinary finally block proves that it settled.
+ * Unsupported operations remain in flight and visible.
+ */
+export function cancelOverlongTerminalCalls(
+  workstreamId: string,
+  minimumAgeMs: number,
+  now = Date.now(),
+): { requested: number; unsupported: string[]; remaining: number } {
+  const unsupported: string[] = [];
+  let requested = 0;
+  for (const call of running) {
+    if (call.workstreamId !== workstreamId || now - call.startedAt < minimumAgeMs)
+      continue;
+    if (call.tool !== 'exec_command' && call.tool !== 'write_stdin') {
+      unsupported.push(call.tool);
+      continue;
+    }
+    if (!call.cancellation.signal.aborted) {
+      call.cancellation.abort();
+      requested++;
+    }
+  }
+  return {
+    requested,
+    unsupported,
+    remaining: runningToolCallsForWorkstream(workstreamId)
+  };
 }
 
 /** In-flight calls owned by one logical workstream, oldest first. */

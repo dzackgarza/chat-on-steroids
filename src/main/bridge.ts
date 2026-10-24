@@ -116,6 +116,7 @@ import {
   sessionDurableModifiedAt,
 } from "./session/store.js";
 import {
+  cancelOverlongTerminalCalls,
   inFlightCallCensus,
   inFlightCallsForWorkstream,
   inFlightMcpRequests,
@@ -1520,6 +1521,7 @@ async function handle(
     route === "/workstreams/retire" ||
     route === "/workstreams/resume" ||
     route === "/workstreams/recover" ||
+    route === "/workstreams/cancel-overlong" ||
     route === "/workstreams/replace" ||
     route === "/workstreams/context"
   ) {
@@ -1552,6 +1554,50 @@ async function handle(
     const id = workstreamIdSchema.safeParse(body["id"]);
     if (!id.success)
       return json(res, 400, { error: "invalid_workstream_id" }, origin);
+    const hasExpected =
+      Object.prototype.hasOwnProperty.call(body, "expectedConversationId") ||
+      Object.prototype.hasOwnProperty.call(body, "expectedLastActivity");
+    if (hasExpected && (
+      !Object.prototype.hasOwnProperty.call(body, "expectedConversationId") ||
+      !Object.prototype.hasOwnProperty.call(body, "expectedLastActivity") ||
+      !(body["expectedConversationId"] === null ||
+        (typeof body["expectedConversationId"] === "string" &&
+         body["expectedConversationId"].length > 0)) ||
+      typeof body["expectedLastActivity"] !== "number" ||
+      !Number.isSafeInteger(body["expectedLastActivity"])
+    ))
+      return json(res, 400, { error: "invalid_expected_workstream_observation" }, origin);
+    const expected = hasExpected ? {
+      conversationId: body["expectedConversationId"] as string | null,
+      lastActivity: body["expectedLastActivity"] as number,
+    } : undefined;
+    if (route === "/workstreams/cancel-overlong") {
+      // Explicit owner-authorized external watchdog. A 30-minute cron tick
+      // must not be stuck behind an overlong terminal call merely because
+      // that call holds the exclusive workstream lease. A cancellation is
+      // requested only for the exact bound conversation observed by cron,
+      // and only for terminal calls already at least five minutes old.
+      // The ordinary MCP finally block, not this receipt, proves settlement.
+      const expectedConversation = body["conversationId"];
+      const minAgeMs = body["minimumAgeMs"];
+      if (
+        (expectedConversation !== null &&
+          (typeof expectedConversation !== "string" || !expectedConversation)) ||
+        typeof minAgeMs !== "number" ||
+        !Number.isSafeInteger(minAgeMs) ||
+        minAgeMs < 300_000
+      )
+        return json(res, 400, { error: "invalid_cancellation_preconditions" }, origin);
+      const row = workstreamStatus().find((entry) => entry.id === id.data);
+      if (
+        !row || row.id === ORCHESTRATOR_WORKSTREAM_ID ||
+        !row.autoAdvance || row.phase === "paused" ||
+        row.conversationId !== expectedConversation
+      )
+        return json(res, 409, { error: "workstream_changed_or_not_eligible" }, origin);
+      const result = cancelOverlongTerminalCalls(row.id, minAgeMs);
+      return json(res, 200, result, origin);
+    }
     if (route === "/workstreams/resume") {
       const resumed = await resumeWorkstream(id.data);
       return json(res, resumed ? 200 : 409, { resumed }, origin);
@@ -1577,7 +1623,7 @@ async function handle(
       return json(res, configured ? 200 : 404, { configured }, origin);
     }
     if (route === "/workstreams/replace") {
-      const replacing = await replaceWorkstream(id.data);
+      const replacing = await replaceWorkstream(id.data, expected);
       await sweepWorkstreams();
       return json(res, replacing ? 202 : 409, { replacing }, origin);
     }
@@ -1589,7 +1635,7 @@ async function handle(
       const reason = body["reason"];
       if (typeof reason !== "string" || !reason.trim() || reason.length > 500)
         return json(res, 400, { error: "recovery_reason_required_max_500" }, origin);
-      const recovering = await recoverWorkstreamNow(id.data, reason);
+      const recovering = await recoverWorkstreamNow(id.data, reason, Date.now(), expected);
       if (recovering) await sweepWorkstreams();
       return json(res, recovering ? 202 : 409, { recovering }, origin);
     }

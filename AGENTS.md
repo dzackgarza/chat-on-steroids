@@ -670,10 +670,16 @@ shell drivers and unbounded pushes outside the app's lease state machine.
 `scripts/workstream_watchdog.py` is a further, narrowly authorized exception. Its cron
 tick inspects the controller's live state and durable recorder evidence, treats prolonged
 in-flight tools as an execution defect rather than healthy work, and can request native
-same-chat recovery or fenced replacement for demonstrated stalls. It never claims a
+same-chat recovery or fenced replacement for demonstrated stalls. An authenticated,
+conversation-checked controller route aborts an over-budget terminal call's own process;
+the watchdog waits for real settlement, and restarts the headless daemon if the call
+cannot settle. A restart is a last-resort loss of the daemon's in-memory calls, not
+a routine response to a normal terminal process running in the background. It then
+requests recovery of the unchanged logical workstream. It never claims a
 worker's workstream, unpauses one, directly edits a managed repository or bypasses the
 bridge's ownership and delivery machinery. An accepted replacement request is not proof
-that a new worker executed; failed or incomplete recovery remains a visible failure.
+that a new worker executed; failed recovery must be retried on the next watchdog tick,
+not treated as completed just because a message was logged.
 
 ### Historical header correlation and browser evidence
 

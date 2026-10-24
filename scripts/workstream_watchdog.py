@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from urllib.error import HTTPError
@@ -28,13 +29,22 @@ APP_DIR = Path.home() / ".config/chat-on-steroids"
 STATE_DIR = Path.home() / ".local/state/chat-on-steroids"
 BRIDGE_PORTS = range(8765, 8770)
 ACTIVE_PHASES = {"active", "advancing"}
-RECOVERABLE_PHASES = ACTIVE_PHASES | {"recovering", "blocked"}
 NON_PROGRESS_TOOLS = {"write_stdin", "sleep", "session"}
 MAX_EVENT_TAIL_BYTES = 1024 * 1024
 
 
 class BridgeError(RuntimeError):
     pass
+
+
+def _restart_daemon(service: str = "chat-on-steroids.service") -> None:
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "restart", service],
+            check=True, capture_output=True, text=True, timeout=25,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BridgeError(f"cannot restart Core2 service {service}: {exc}") from exc
 
 
 def log(level: str, workstream: str, message: str, **details: object) -> None:
@@ -77,18 +87,32 @@ class Bridge:
         return result
 
     def _discover(self, port: int | None) -> str:
-        ports = [port] if port is not None else BRIDGE_PORTS
-        for candidate in ports:
-            base = f"http://127.0.0.1:{candidate}"
-            try:
-                info = self._request(base, "/hello")
-            except BridgeError:
-                continue
-            if info.get("app") != "chat-on-steroids":
-                continue
-            if info.get("disconnected"):
-                raise BridgeError("Bridge is deliberately disconnected; no intervention")
-            return base
+        def probe() -> str | None:
+            ports = [port] if port is not None else BRIDGE_PORTS
+            for candidate in ports:
+                base = f"http://127.0.0.1:{candidate}"
+                try:
+                    info = self._request(base, "/hello")
+                except BridgeError:
+                    continue
+                if info.get("app") != "chat-on-steroids":
+                    continue
+                if info.get("disconnected"):
+                    raise BridgeError("Bridge is deliberately disconnected; no intervention")
+                return base
+            return None
+
+        live = probe()
+        if live is not None:
+            return live
+        # A crashed daemon cannot answer status or perform native recovery.
+        # Restart it, rather than repeatedly logging an unavailable bridge.
+        _restart_daemon()
+        for _ in range(30):
+            live = probe()
+            if live is not None:
+                return live
+            time.sleep(0.5)
         raise BridgeError("Chat On Steroids bridge not found on localhost ports 8765-8769")
 
     def get(self, endpoint: str) -> dict:
@@ -213,6 +237,14 @@ def action_allowed(
         "activityAgeMs": activity_age,
     }
 
+    # This is evaluated BEFORE the lease/phase/cooldown rules. An overlong
+    # tool is not proof of progress and cannot veto its own cancellation.
+    # In particular, archiving cannot complete while this call is running.
+    if n_calls:
+        if long_call:
+            return "cancel-overlong", "tool execution exceeded five-minute budget", evidence
+        return None, "in-flight call inside its execution budget", evidence
+
     previous = state.get("lastAction")
     if isinstance(previous, dict):
         # A new substantive tool call proves the last intervention achieved activity.
@@ -227,29 +259,16 @@ def action_allowed(
             return None, "recent intervention is still within cooldown", evidence
 
     if phase in {"opening", "archiving"}:
+        if activity_age >= idle_ms and row.get("nextCheck", 0) <= now:
+            return "restart-controller", "controller opening/archive transition is wedged", evidence
         return None, "controller is already opening or archiving a conversation", evidence
 
-    if n_calls:
-        if not long_call:
-            return None, "in-flight call within the five-minute execution budget", evidence
-        if phase in RECOVERABLE_PHASES and (
-            not previous or previous.get("kind") == "recover"
-        ):
-            # Recover refuses a running tool. Replacement *fences* its owner, but
-            # opening still waits for that call to settle. Never claim this kills it.
-            return "replace", "overlong tool call violates execution budget; fence owner", evidence
-        return None, "overlong call persists; replacement cannot finish until it settles", evidence
-
     if phase == "blocked":
-        if previous and previous.get("kind") == "replace":
-            return None, "replacement is still blocked; needs controller/browser repair", evidence
         if activity_age < idle_ms and not previous:
             return None, "recently blocked; awaiting controller recovery", evidence
         return "replace", "blocked workstream requires a new continuation", evidence
 
     if phase == "recovering":
-        if previous and previous.get("kind") == "replace":
-            return None, "replacement already requested", evidence
         if int(row.get("nextCheck") or 0) > now:
             return None, "controller recovery response window remains open", evidence
         if previous or int(row.get("attempts") or 0) > 0:
@@ -262,12 +281,74 @@ def action_allowed(
         return None, "recent tool activity", evidence
 
     if previous and previous.get("kind") == "replace":
-        return None, "replacement already requested; no verified activity", evidence
+        return "replace", "replacement failed to resume the active workstream", evidence
     if previous and previous.get("kind") == "recover":
         return "replace", "same-chat recovery did not produce a new tool action", evidence
     if row.get("conversationId") or row.get("claimedBy"):
         return "recover", "no non-polling tool activity within inactivity horizon", evidence
     return "replace", "unbound idle workstream has no known claimant to revive", evidence
+
+
+def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service") -> dict:
+    """Last-resort repair if the daemon cannot settle its own stuck MCP call."""
+    _restart_daemon(service)
+    for _ in range(30):
+        try:
+            state = bridge.get("/workstreams")
+            if isinstance(state.get("workstreams"), list):
+                return state
+        except BridgeError:
+            pass
+        time.sleep(0.5)
+    raise BridgeError("Core2 restart was requested but bridge did not return")
+
+
+def clear_overlong_call(bridge: Bridge, row: dict, minimum_age_ms: int) -> dict:
+    """Cancel owned over-budget tools; verify settlement or restart Core2."""
+    payload = {
+        "id": row["id"],
+        "conversationId": row.get("conversationId"),
+        "minimumAgeMs": minimum_age_ms,
+    }
+    try:
+        cancelled = bridge.post("/workstreams/cancel-overlong", payload)
+    except BridgeError as exc:
+        # The original conversation can legitimately finish or be replaced
+        # between our GET and POST. That race is success, not a reason to
+        # restart the daemon and disrupt unrelated work.
+        current = bridge.get("/workstreams")
+        fresh = next((r for r in current["workstreams"] if r["id"] == row["id"]), {})
+        calls = bridge.get("/sleep/status").get("inFlightCalls", [])
+        if fresh.get("phase") == "paused" or (
+            fresh.get("conversationId") != row.get("conversationId")
+        ) or not any(
+            c.get("workstreamId") == row["id"] and
+            int(c.get("ageMs") or 0) >= minimum_age_ms for c in calls
+        ):
+            return fresh
+        # The installed watchdog may precede its daemon's updated HTTP route.
+        log("warning", row["id"], "native cancellation unavailable; restarting controller",
+            error=str(exc))
+        state = restart_controller(bridge)
+        return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
+
+    if not isinstance(cancelled.get("requested"), int):
+        raise BridgeError("Cancellation endpoint returned no acknowledgement")
+    for _ in range(12):
+        in_flight = bridge.get("/sleep/status").get("inFlightCalls")
+        if not isinstance(in_flight, list):
+            raise BridgeError("In-flight census unavailable during cancellation")
+        if not any(c.get("workstreamId") == row["id"] for c in in_flight):
+            state = bridge.get("/workstreams")
+            return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
+        time.sleep(1)
+
+    # A daemon still blocked after cancellation must be restarted, rather
+    # than merely logging a permanent wedge for an absent human reader.
+    log("warning", row["id"], "native cancellation did not settle; restarting controller",
+        requested=cancelled["requested"], unsupported=cancelled.get("unsupported", []))
+    state = restart_controller(bridge)
+    return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
 
 
 def run_watchdog(
@@ -309,8 +390,80 @@ def run_watchdog(
             if severity == "error":
                 problems += 1
             continue
+        if action in {"cancel-overlong", "restart-controller"}:
+            if dry_run:
+                log("info", ident, f"DRY RUN: would {action}: {reason}", **evidence)
+                continue
+            try:
+                stuck_transition = action == "restart-controller"
+                fresh = (
+                    clear_overlong_call(bridge, row, call_limit_ms)
+                    if action == "cancel-overlong"
+                    else next(
+                        (r for r in restart_controller(bridge)["workstreams"]
+                         if r["id"] == ident), {}
+                    )
+                )
+                if not fresh:
+                    raise BridgeError("Workstream vanished during controller repair")
+                if fresh.get("conversationId") != row.get("conversationId"):
+                    # Another recovery bound a successor while cancellation
+                    # was running. Never interrupt that new chat on stale facts.
+                    log("info", ident, "new conversation already attached; repair completed")
+                    acted += 1
+                    continue
+                row = fresh
+                phase = row.get("phase")
+                if phase == "paused":
+                    # Owner decisions override an external watchdog tick even
+                    # when they arrive during its bounded cancellation.
+                    continue
+                if phase in ACTIVE_PHASES:
+                    previous = stored.get("lastAction") or {}
+                    action = "replace" if previous.get("kind") == "recover" else "recover"
+                elif phase == "blocked":
+                    action = "replace"
+                elif phase in {"recovering", "archiving", "opening"}:
+                    if stuck_transition and phase in {"archiving", "opening"}:
+                        # The daemon was restarted yet the existing handoff
+                        # remained stranded. This phase already fences the
+                        # previous worker. Open a fresh controller bootstrap
+                        # with the existing durable brief instead of waiting
+                        # another thirty minutes on a dead transition.
+                        bootstrap = bridge.post("/workstreams/start", {
+                            "id": ident,
+                            "context": str(fresh.get("context") or ""),
+                            "autoAdvance": True,
+                        })
+                        if not bootstrap.get("commandId"):
+                            raise BridgeError("Fresh bootstrap was not accepted")
+                        stored["lastAction"] = {
+                            "at": now,
+                            "kind": "force-open",
+                            "conversationId": fresh.get("conversationId"),
+                            "baselineActivity": int(fresh.get("lastActivity") or 0),
+                            "reason": reason,
+                        }
+                        log("warning", ident, "fresh continuation bootstrap issued",
+                            commandId=bootstrap["commandId"])
+                    else:
+                        log("warning", ident, "controller repaired; native handoff proceeding",
+                            phase=phase)
+                    acted += 1
+                    continue
+                else:
+                    raise BridgeError(f"Workstream now has ineligible phase {phase!r}")
+                reason += "; process settled and controller is resuming execution"
+            except BridgeError as exc:
+                problems += 1
+                log("error", ident, f"automatic call/controller repair failed: {exc}", **evidence)
+                continue
         endpoint = "/workstreams/recover" if action == "recover" else "/workstreams/replace"
-        payload = {"id": ident}
+        payload = {
+            "id": ident,
+            "expectedConversationId": row.get("conversationId"),
+            "expectedLastActivity": int(row.get("lastActivity") or 0),
+        }
         if action == "recover":
             payload["reason"] = (
                 "30-minute external watchdog: no non-polling workstream tool activity; "
@@ -319,22 +472,64 @@ def run_watchdog(
         if dry_run:
             log("info", ident, f"DRY RUN: would {action}: {reason}", **evidence)
             continue
+        reply = None
+        failure = ""
         try:
             reply = bridge.post(endpoint, payload)
         except BridgeError as exc:
-            problems += 1
-            log("error", ident, f"{action} failed: {exc}", **evidence)
-            continue
-        accepted = reply.get("recovering") if action == "recover" else reply.get("replacing")
+            failure = str(exc)
+        accepted = (
+            reply.get("recovering") if action == "recover" else reply.get("replacing")
+        ) if reply is not None else False
+        if accepted is not True:
+            try:
+                latest = bridge.get("/workstreams")
+                fresh = next(
+                    (r for r in latest["workstreams"] if r["id"] == ident), {}
+                )
+                # Concurrent progress invalidates the old observation.
+                if not fresh or any(
+                    fresh.get(k) != row.get(k)
+                    for k in ("conversationId", "lastActivity", "phase")
+                ):
+                    log("info", ident, "workstream moved during intervention; no retry")
+                    continue
+                # The control plane rejected a legitimate recovery on an
+                # unchanged stalled row. Restart it and retry, not merely log.
+                latest = restart_controller(bridge)
+                fresh = next(
+                    (r for r in latest["workstreams"] if r["id"] == ident), {}
+                )
+                if not fresh or fresh.get("phase") == "paused":
+                    continue
+                if fresh.get("phase") not in ACTIVE_PHASES | {"recovering", "blocked"}:
+                    continue
+                payload["expectedConversationId"] = fresh.get("conversationId")
+                payload["expectedLastActivity"] = int(fresh.get("lastActivity") or 0)
+                if action == "recover" and fresh.get("phase") not in ACTIVE_PHASES:
+                    action = "replace"
+                    endpoint = "/workstreams/replace"
+                    payload.pop("reason", None)
+                reply = bridge.post(endpoint, payload)
+                accepted = (
+                    reply.get("recovering") if action == "recover"
+                    else reply.get("replacing")
+                )
+                row = fresh
+            except BridgeError as exc:
+                failure = f"{failure}; restart/retry failed: {exc}"
         if accepted is not True:
             problems += 1
-            log("error", ident, f"{action} was not accepted: {reply}", **evidence)
+            log("error", ident, f"all {action} attempts failed: {failure or reply}", **evidence)
             continue
         stored["lastAction"] = {
             "at": now,
             "kind": action,
             "conversationId": row.get("conversationId"),
-            "baselineActivity": evidence["lastNonpollToolAt"] or int(row.get("lastActivity") or 0),
+            "baselineActivity": max(
+                int(evidence["lastNonpollToolAt"] or 0),
+                int(row.get("lastActivity") or 0),
+            ),
             "reason": reason,
         }
         acted += 1
@@ -355,8 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sessions", type=Path, default=APP_DIR / "sessions")
     parser.add_argument("--token", type=Path, default=APP_DIR / "state/local-token")
     args = parser.parse_args(argv)
-    if min(args.idle_minutes, args.call_limit_minutes, args.cooldown_minutes) <= 0:
-        parser.error("Thresholds must be positive")
+    if min(args.idle_minutes, args.cooldown_minutes) <= 0 or args.call_limit_minutes < 5:
+        parser.error("Inactivity/cooldown must be positive and execution limit at least 5 minutes")
     args.state.parent.mkdir(parents=True, exist_ok=True)
     try:
         with (args.state.parent / (args.state.name + ".lock")).open("a+") as lock:

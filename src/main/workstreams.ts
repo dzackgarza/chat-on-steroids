@@ -826,10 +826,17 @@ export async function resumeWorkstream(id: string): Promise<boolean> {
 /** Script-owned hard recovery: fence the current owner and enter the same archive/replacement
  * path used after automatic revival exhaustion. This exists so an external steward can replace
  * a demonstrably dead workstream without reproducing the bridge's private state machine. */
-export async function replaceWorkstream(id: string): Promise<boolean> {
+export async function replaceWorkstream(
+  id: string,
+  expected?: Pick<Workstream, "conversationId" | "lastActivity">,
+): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
     if (!row) return false;
+    if (expected && (
+      row.conversationId !== expected.conversationId ||
+      row.lastActivity !== expected.lastActivity
+    )) return false;
     // A row whose chat never bound (opened by `just new`, so the app never saw it acknowledge)
     // has no chat to archive and no holder recovery can find. An explicit replace is the
     // steward's decision that no other chat holds it, so open a fresh one directly; automatic
@@ -861,11 +868,16 @@ export async function recoverWorkstreamNow(
   id: string,
   reason: string,
   now = Date.now(),
+  expected?: Pick<Workstream, "conversationId" | "lastActivity">,
 ): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
     if (
       !row ||
+      (expected && (
+        row.conversationId !== expected.conversationId ||
+        row.lastActivity !== expected.lastActivity
+      )) ||
       !["active", "advancing"].includes(row.phase) ||
       runningToolCallsForWorkstream(id) > 0
     )

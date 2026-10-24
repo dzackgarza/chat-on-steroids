@@ -298,9 +298,13 @@ a workstream. It reads `GET /workstreams`, `/sleep/status` and the existing
 workstream recorder; a stalled active conversation is recovered first, then
 replaced if the recovery produced no new tool activity. An in-flight tool
 older than five minutes is treated as an execution defect, not healthy work.
-Replacement requests still use the bridge's fencing machinery; they cannot
-terminate a tool call that remains stuck inside the daemon. Paused streams and
-the orchestrator are never targeted. It persists deduplication state under
+The locally authenticated POST `/workstreams/cancel-overlong` checks the observed
+conversation and minimum call age (five minutes) before aborting that call's
+owned terminal process. The watchdog verifies the in-flight call actually settled,
+and restarts the headless daemon if native cancellation cannot complete; it then
+requests same-chat recovery or fenced replacement. A daemon restart is reserved
+for that failure, never merely the existence of a long-lived background process.
+Paused streams and the orchestrator are never targeted. It persists retry state under
 `~/.local/state/chat-on-steroids/workstream-watchdog-state.json`.
 Run a read-only check with `python3 scripts/workstream_watchdog.py --dry-run`
 and the focused tests with

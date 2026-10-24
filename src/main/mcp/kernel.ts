@@ -387,6 +387,7 @@ async function dispatch(
     },
     outcome: null,
     evidence: emptyEvidence(),
+    cancellation: new AbortController(),
   };
   return trackMcpRequest(() =>
     trackInFlight(context, () =>
@@ -597,6 +598,7 @@ async function dispatchNested(
     caller: { ...parent.caller },
     outcome: null,
     evidence: emptyEvidence(),
+    cancellation: new AbortController(),
   };
   return trackMcpRequest(() =>
     trackInFlight(context, async () => {

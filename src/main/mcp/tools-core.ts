@@ -783,7 +783,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               cwd: dir.real,
               displayCwd: dir.virtual,
               env: execChildEnvironment(),
-              tty: input.tty ?? DEFAULT_TTY
+              tty: input.tty ?? DEFAULT_TTY,
+              cancelSignal: currentCall()?.cancellation.signal
             });
             // The admitted workstream claim owns every continuing process. Browser/request
             // correlation is recorder metadata only and does not participate in process authority.
@@ -902,7 +903,8 @@ export function registerCoreTools(reg: SurfaceRegistrar): void {
               input: input.chars ?? '',
               yieldTimeMs: input.yield_time_ms ?? DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
               maxOutputTokens: input.max_output_tokens,
-              truncationPolicy: EXEC_OUTPUT_CEILING_POLICY
+              truncationPolicy: EXEC_OUTPUT_CEILING_POLICY,
+              cancelSignal: currentCall()?.cancellation.signal
             });
             if (output.processId === null) forgetExecOwner(input.session_id);
             noteExec({

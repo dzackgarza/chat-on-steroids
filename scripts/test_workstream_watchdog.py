@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import workstream_watchdog as wd
 
@@ -28,10 +29,15 @@ class FakeBridge:
 
     def post(self, path, body):
         self.posts.append((path, body))
+        if path == "/workstreams/cancel-overlong":
+            self.calls = []
+            return {"requested": 1, "unsupported": [], "remaining": 1}
         if path == "/workstreams/recover":
             return {"recovering": True}
         if path == "/workstreams/replace":
             return {"replacing": True}
+        if path == "/workstreams/start":
+            return {"id": body["id"], "commandId": "new-continuation-command"}
         raise AssertionError(path)
 
 
@@ -85,8 +91,12 @@ class WatchdogTest(unittest.TestCase):
     def test_overlong_tool_is_an_error_not_evidence_of_health(self):
         calls = [{"workstreamId": "research", "ageMs": 6 * MINUTE}]
         action, why, _ = self.decision(row(lastActivity=NOW), calls=calls)
-        self.assertEqual(action, "replace")
-        self.assertIn("overlong", why)
+        self.assertEqual(action, "cancel-overlong")
+        self.assertIn("budget", why)
+        self.assertEqual(
+            self.decision(row(phase="archiving"), calls=calls)[0],
+            "cancel-overlong",
+        )
 
     def test_other_workstreams_calls_do_not_block_recovery(self):
         calls = [{"workstreamId": "other", "ageMs": 45 * MINUTE}]
@@ -101,21 +111,24 @@ class WatchdogTest(unittest.TestCase):
         state["lastAction"]["at"] = NOW - 31 * MINUTE
         self.assertEqual(self.decision(state=state)[0], "replace")
 
-    def test_replacement_is_not_repeated_without_progress(self):
+    def test_replacement_failure_is_retried_after_cooldown(self):
         state = {"lastAction": {
             "kind": "replace", "at": NOW - 90 * MINUTE,
             "baselineActivity": NOW - 31 * MINUTE,
         }}
-        self.assertIsNone(self.decision(state=state)[0])
+        self.assertEqual(self.decision(state=state)[0], "replace")
 
     def test_blocked_must_be_stale_unless_recovery_failed(self):
         self.assertIsNone(self.decision(row(phase="blocked", lastActivity=NOW))[0])
         self.assertEqual(self.decision(row(phase="blocked"))[0], "replace")
 
-    def test_opening_and_archiving_are_not_double_dispatched(self):
+    def test_opening_and_archiving_trigger_controller_repair_when_stale(self):
         for phase in ("opening", "archiving"):
             with self.subTest(phase=phase):
-                self.assertIsNone(self.decision(row(phase=phase))[0])
+                self.assertEqual(self.decision(row(phase=phase))[0], "restart-controller")
+                self.assertIsNone(
+                    self.decision(row(phase=phase, lastActivity=NOW - MINUTE))[0]
+                )
 
     def test_no_known_claimant_goes_directly_to_replacement(self):
         self.assertEqual(
@@ -173,6 +186,88 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(len(bridge.posts), 1)
         self.assertEqual(bridge.posts[0][0], "/workstreams/recover")
         self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "recover")
+
+    def test_overlong_tool_is_cancelled_and_recovery_actually_requested(self):
+        bridge = FakeBridge([row(lastActivity=NOW)], [
+            {"workstreamId": "research", "ageMs": 6 * MINUTE, "tool": "write_stdin"},
+        ])
+        state = {"version": 1, "streams": {}}
+        result = wd.run_watchdog(
+            bridge, state, sessions_dir=self.sessions, now=NOW,
+            idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+            cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [p for p, _ in bridge.posts],
+            ["/workstreams/cancel-overlong", "/workstreams/recover"],
+        )
+        self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "recover")
+
+    def test_unsettled_tool_forces_controller_restart_then_recovery(self):
+        bridge = FakeBridge([row(lastActivity=NOW)], [
+            {"workstreamId": "research", "ageMs": 8 * MINUTE},
+        ])
+        state = {"version": 1, "streams": {}}
+        def still_inflight(path, body):
+            bridge.posts.append((path, body))
+            return {"requested": 0, "unsupported": ["apply_patch"], "remaining": 1}
+        bridge.post = still_inflight
+        with patch.object(wd, "restart_controller", return_value={
+            "workstreams": [row(lastActivity=NOW)]
+        }) as restart, patch.object(wd.time, "sleep"):
+            result = wd.clear_overlong_call(bridge, row(), 5 * MINUTE)
+        self.assertEqual(result["id"], "research")
+        restart.assert_called_once()
+
+    def test_bridge_outage_is_repaired_not_just_reported(self):
+        token = self.sessions / "local-token"
+        token.write_text("test-local-credential", encoding="utf-8")
+        with patch.object(
+            wd.Bridge, "_request",
+            side_effect=[wd.BridgeError("connection refused"), {"app": "chat-on-steroids"}],
+        ), patch.object(wd, "_restart_daemon") as restart:
+            bridge = wd.Bridge(token, port=8765)
+        self.assertEqual(bridge.base, "http://127.0.0.1:8765")
+        restart.assert_called_once_with()
+
+    def test_stale_archiving_forces_a_fresh_continuation_after_restart(self):
+        stuck = row(phase="archiving", context="Preserve the unfinished implementation")
+        bridge = FakeBridge([stuck])
+        state = {"version": 1, "streams": {}}
+        with patch.object(wd, "restart_controller",
+                          return_value={"workstreams": [stuck]}) as restart:
+            outcome = wd.run_watchdog(
+                bridge, state, sessions_dir=self.sessions, now=NOW,
+                idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+                cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+            )
+        self.assertEqual(outcome, 0)
+        restart.assert_called_once()
+        self.assertEqual(bridge.posts, [
+            ("/workstreams/start", {
+                "id": "research",
+                "context": "Preserve the unfinished implementation",
+                "autoAdvance": True,
+            }),
+        ])
+        self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "force-open")
+
+    def test_concurrent_worker_resume_does_not_trigger_a_restart(self):
+        bridge = FakeBridge([row()])
+        state = {"version": 1, "streams": {}}
+        def concurrently_resumed(path, body):
+            bridge.rows[0] = row(lastActivity=NOW)
+            raise wd.BridgeError("HTTP 409: stale expected observation")
+        bridge.post = concurrently_resumed
+        with patch.object(wd, "restart_controller") as restart:
+            outcome = wd.run_watchdog(
+                bridge, state, sessions_dir=self.sessions, now=NOW,
+                idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+                cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+            )
+        self.assertEqual(outcome, 0)
+        restart.assert_not_called()
 
     def test_unavailable_tool_census_fails_closed(self):
         bridge = FakeBridge([row()])
