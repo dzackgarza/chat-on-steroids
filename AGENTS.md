@@ -586,6 +586,23 @@ reservation, and then kernel dispatch. A stale connector schema must be refreshe
 
 ### Workstream leases and recovery
 
+**Ownership is not execution quality.** An in-flight MCP call, live PID, renewed lease, busy
+browser turn or active CPU is evidence that something holds execution resources, *not* evidence
+that it is doing appropriate work. The object of stewardship is the worker's decision relative
+to the repository's actual task: was this operation worth launching, and should it be blocking
+the agent at all? Small targeted tests/probes answer the question raised by the current edit.
+Large builds, full suites and acceptance families run asynchronously on CI; the worker keeps
+implementing rather than synchronously waiting, polling or repeatedly relaunching them.
+For `research`, a worker-run job exceeding five minutes is a serious workflow failure,
+not an ordinary thirty-minute computation to leave alone. An agent can be fully alive while
+drifting into unnecessary validation, GitHub-run waiting, a forbidden PR workflow, or
+repeated tool calls that cannot advance its objective. Diagnose and correct that *upstream
+decision*, not its latest timeout symptom. The short execution bounds protect useful work
+from serial blockage; they do not imply that a call occupying the lease is productive, nor
+that a long-running job should be polled to completion. See the October 21 owner ruling and
+"A computational wait in place of work" below. Preserve ownership fencing and avoid
+duplicating side effects when recovering; those are safety properties, not excuses for delay.
+
 `workstreams.ts` owns durable exclusive claims for every logical workstream. Admitted tool
 calls renew the five-minute lease; running calls hold it open. Lease expiry alone never
 starts revival or replacement. The steward diagnoses stalled work from the actual task,
