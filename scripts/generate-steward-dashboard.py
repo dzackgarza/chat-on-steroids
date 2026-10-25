@@ -598,14 +598,38 @@ def repo_payload(name: str, repo: Path, classification: str) -> dict[str, object
         progress = research_progress(summary)
     else:
         progress = sage_progress(summary)
+    try:
+        head = git(repo, "rev-parse", "--short", "HEAD").strip()
+        tree_state = dirty(repo)
+    except (OSError, RuntimeError) as exc:
+        # A repository moved onto a disconnected or incomplete mount must not
+        # prevent the live dashboard from exposing the resulting blocker.
+        # No historical commit/acceptance estimate is inferred from an
+        # unreadable working tree.
+        return {
+            "name": name, "objective": copy["objective"],
+            "progress_label": copy["progress"], "path": str(repo),
+            "head": "unavailable", "classification": "blocked",
+            "dirty": {"count": 0, "by_status": {}},
+            "processes": [], "commits": [], "files": [],
+            "dag": [], "dag_available": False,
+            "dag_summary": {"open": None, "closed": None, "ready": None},
+            "progress": {
+                "headline": "Source checkout unavailable",
+                "detail": f"The repository cannot be read or validated: {exc}. "
+                          "No issue or mathematical acceptance is inferred.",
+                "remaining": None,
+            },
+            "remaining_history": [],
+        }
     return {
         "name": name,
         "objective": copy["objective"],
         "progress_label": copy["progress"],
         "path": str(repo),
-        "head": git(repo, "rev-parse", "--short", "HEAD").strip(),
+        "head": head,
         "classification": classification,
-        "dirty": dirty(repo),
+        "dirty": tree_state,
         "processes": process_rows(repo),
         "commits": commits(repo),
         "files": recent_files(repo),
