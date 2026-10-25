@@ -39,11 +39,20 @@ class BridgeError(RuntimeError):
 
 
 def _restart_daemon(service: str = "chat-on-steroids.service") -> None:
+    # Cron normally has no XDG_RUNTIME_DIR, so `systemctl --user` cannot find
+    # the existing user bus even though the service itself is healthy.
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["systemctl", "--user", "restart", service],
-            check=True, capture_output=True, text=True, timeout=25,
+            check=False, capture_output=True, text=True, timeout=25, env=env,
         )
+        if result.returncode:
+            raise BridgeError(
+                f"cannot restart Core2 service {service}: "
+                f"{result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'}"
+            )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         raise BridgeError(f"cannot restart Core2 service {service}: {exc}") from exc
 
@@ -293,9 +302,13 @@ def action_allowed(
         return "replace", "replacement failed to resume the active workstream", evidence
     if previous and previous.get("kind") == "recover":
         return "replace", "same-chat recovery did not produce a new tool action", evidence
-    if row.get("conversationId") or row.get("claimedBy"):
+    if row.get("conversationId"):
         return "recover", "no non-polling tool activity within inactivity horizon", evidence
-    return "replace", "unbound idle workstream has no known claimant to revive", evidence
+    claimants = row.get("claimedBy") or []
+    last_claimant = claimants[-1] if claimants else None
+    if last_claimant and last_claimant not in (row.get("retiredConversations") or []):
+        return "recover", "unbound idle workstream has a nonretired claimant to revive", evidence
+    return "replace", "unbound idle workstream has no eligible claimant to revive", evidence
 
 
 def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service") -> dict:
@@ -511,28 +524,23 @@ def run_watchdog(
                 ):
                     log("info", ident, "workstream moved during intervention; no retry")
                     continue
-                # The control plane rejected a legitimate recovery on an
-                # unchanged stalled row. Restart it and retry, not merely log.
-                latest = restart_controller(bridge)
-                fresh = next(
-                    (r for r in latest["workstreams"] if r["id"] == ident), {}
-                )
-                if not fresh or fresh.get("phase") == "paused":
+                pending = bridge.get("/sleep/status").get("inFlightCalls")
+                if not isinstance(pending, list) or len(pending) >= 50:
+                    raise BridgeError("In-flight census incomplete after recovery refusal")
+                if any(c.get("workstreamId") == ident for c in pending):
+                    log("info", ident, "worker began a call during recovery; no replacement")
                     continue
-                if fresh.get("phase") not in ACTIVE_PHASES | {"recovering", "blocked"}:
-                    continue
-                payload["expectedConversationId"] = fresh.get("conversationId")
-                payload["expectedLastActivity"] = int(fresh.get("lastActivity") or 0)
-                if action == "recover" and fresh.get("phase") not in ACTIVE_PHASES:
+                # A refusal from the live controller is NOT proof its daemon
+                # is broken. The claimant can have retired since our sample;
+                # restart would interrupt unrelated active workers. The same
+                # observed idle row is eligible for native fenced replacement.
+                if action == "recover" and fresh.get("phase") in ACTIVE_PHASES:
                     action = "replace"
                     endpoint = "/workstreams/replace"
                     payload.pop("reason", None)
-                reply = bridge.post(endpoint, payload)
-                accepted = (
-                    reply.get("recovering") if action == "recover"
-                    else reply.get("replacing")
-                )
-                row = fresh
+                    reply = bridge.post(endpoint, payload)
+                    accepted = reply.get("replacing")
+                    row = fresh
             except BridgeError as exc:
                 failure = f"{failure}; restart/retry failed: {exc}"
         if accepted is not True:

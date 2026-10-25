@@ -163,6 +163,18 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(
             self.decision(row(conversationId=None, claimedBy=[]))[0], "replace"
         )
+        self.assertEqual(
+            self.decision(row(
+                conversationId=None, claimedBy=["old-chat"],
+                retiredConversations=["old-chat"],
+            ))[0], "replace"
+        )
+        self.assertEqual(
+            self.decision(row(
+                conversationId=None, claimedBy=["current-chat"],
+                retiredConversations=["old-chat"],
+            ))[0], "recover"
+        )
 
     def test_recorder_polls_cannot_mask_old_nonpoll_activity(self):
         sid = "2026-10-24-aabbccdd"
@@ -215,6 +227,26 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(len(bridge.posts), 1)
         self.assertEqual(bridge.posts[0][0], "/workstreams/recover")
         self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "recover")
+        # A legitimate 409 (e.g. claimant retired) is not a crashed daemon.
+        # Escalate a still-idle, unchanged row to native fenced replacement.
+        refusing = FakeBridge([row()])
+        original_post = refusing.post
+        def refused_recovery(path, body):
+            if path == "/workstreams/recover":
+                refusing.posts.append((path, body))
+                return {"recovering": False}
+            return original_post(path, body)
+        refusing.post = refused_recovery
+        with patch.object(wd, "restart_controller") as restart:
+            self.assertEqual(wd.run_watchdog(
+                refusing, {"version": 1, "streams": {}},
+                **options, dry_run=False,
+            ), 0)
+        restart.assert_not_called()
+        self.assertEqual(
+            [p for p, _ in refusing.posts],
+            ["/workstreams/recover", "/workstreams/replace"],
+        )
 
     def test_overlong_tool_is_cancelled_and_recovery_actually_requested(self):
         bridge = FakeBridge([row(lastActivity=NOW)], [
@@ -260,6 +292,18 @@ class WatchdogTest(unittest.TestCase):
             bridge = wd.Bridge(token, port=8765)
         self.assertEqual(bridge.base, "http://127.0.0.1:8765")
         restart.assert_called_once_with()
+        # Run the real subprocess adapter with a cron-like empty environment.
+        # The restart attempt must still receive the user-bus runtime directory.
+        with patch.dict(wd.os.environ, {}, clear=True), patch.object(
+            wd.subprocess, "run", return_value=wd.subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            ),
+        ) as systemctl:
+            wd._restart_daemon()
+        self.assertEqual(
+            systemctl.call_args.kwargs["env"]["XDG_RUNTIME_DIR"],
+            f"/run/user/{wd.os.getuid()}",
+        )
 
     def test_stale_archiving_forces_a_fresh_continuation_after_restart(self):
         stuck = row(phase="archiving", context="Preserve the unfinished implementation")
@@ -297,6 +341,25 @@ class WatchdogTest(unittest.TestCase):
                 cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
             )
         self.assertEqual(outcome, 0)
+        restart.assert_not_called()
+
+        # Admission of a new call can race with a refused recover even if the
+        # row's observed phase and timestamps have not changed yet.
+        active = FakeBridge([row()])
+        def concurrent_call(path, body):
+            active.posts.append((path, body))
+            active.calls = [{"workstreamId": "research", "tool": "read", "ageMs": 1}]
+            return {"recovering": False}
+        active.post = concurrent_call
+        with patch.object(wd, "restart_controller") as restart:
+            outcome = wd.run_watchdog(
+                active, {"version": 1, "streams": {}},
+                sessions_dir=self.sessions, now=NOW,
+                idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+                cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+            )
+        self.assertEqual(outcome, 0)
+        self.assertEqual(len(active.posts), 1)
         restart.assert_not_called()
 
     def test_unavailable_tool_census_fails_closed(self):
