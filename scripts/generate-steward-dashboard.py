@@ -219,8 +219,11 @@ def commits(repo: Path) -> list[dict[str, object]]:
     # all of it on every refresh makes `git log --numstat` block on thousands of
     # historic tree reads (observed in D state under host I/O pressure). Reuse
     # that series only when its recorded HEAD is an ancestor of the current HEAD;
-    # Git itself then supplies precisely the intervening commits. A rewritten
-    # history or a first run still obtains the full series from Git.
+    # Git itself then supplies precisely the intervening commits. On a cold
+    # start or after an unreadable checkout the old dashboard may not have a
+    # usable HEAD. Bound that initial diagnostic history instead of walking
+    # the repository's entire --numstat history; commit telemetry is not a
+    # mathematical completion denominator.
     previous: list[dict[str, object]] = []
     previous_head: str | None = None
     dashboard = ROOT / "steward-dashboard/index.html"
@@ -242,7 +245,9 @@ def commits(repo: Path) -> list[dict[str, object]]:
         # A missing/corrupt/rewritten old presentation is not Git authority.
         previous_head = None
         previous = []
-    raw = git(repo, "log", f"--format={fmt}", "--numstat", *([f"{previous_head}..HEAD"] if previous_head else []))
+    raw = git(repo, "log", f"--format={fmt}", "--numstat", *(
+        [f"{previous_head}..HEAD"] if previous_head else ["-n", "500"]
+    ))
     out: list[dict[str, object]] = []
     for block in raw.split("\x1e"):
         block = block.strip("\n")
