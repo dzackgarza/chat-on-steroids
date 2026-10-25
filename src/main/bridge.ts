@@ -393,6 +393,32 @@ function currentBrowserRoute(conversationId: string): string {
   for (let hop = 0; hop < 8; hop++) {
     const next = browserRoutePromotions.get(current);
     if (!next || next === current) break;
+    // ChatGPT can reuse one local-chatgpt:<uuid> route for a subsequent fresh
+    // chat. If that route is now the current frontend of a workstream but its
+    // recorded promotion points to a chat the SAME workstream has retired,
+    // the promotion belongs to its predecessor. Never reopen that retired
+    // chat as the new worker's browser route. This is especially important
+    // when an opening command is superseded by an admitted model tool call:
+    // its normal fresh-chat ACK then cannot clear the earlier promotion.
+    if (provisionalRoute(current)) {
+      const rebound = workstreamStatus().find(
+        (row) =>
+          row.conversationId === current &&
+          row.retiredConversations.includes(next),
+      );
+      if (rebound) {
+        browserRoutePromotions.delete(current);
+        browserRoutePromotionAt.delete(current);
+        writeDurableSoon(ROUTE_PROMOTIONS_STATE, {
+          version: 1,
+          promotions: [...browserRoutePromotions.entries()],
+        });
+        logWarn(
+          `bridge: discarded stale promotion of reused frontend ${current} to retired chat ${next} for ${rebound.id}`,
+        );
+        break;
+      }
+    }
     current = next;
   }
   return current;
