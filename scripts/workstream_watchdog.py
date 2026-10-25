@@ -115,15 +115,31 @@ class Bridge:
         live = probe()
         if live is not None:
             return live
-        # A crashed daemon cannot answer status or perform native recovery.
-        # Restart it, rather than repeatedly logging an unavailable bridge.
-        _restart_daemon()
-        for _ in range(30):
+        # The daemon exposes the bridge only after restoring durable sessions.
+        # A running daemon may take considerably longer than its systemd start
+        # acknowledgement to finish that restoration. Restarting it in this
+        # state discards its progress and can perpetuate the outage.
+        env = os.environ.copy()
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        try:
+            service = subprocess.run(
+                ["systemctl", "--user", "is-active", "chat-on-steroids.service"],
+                check=False, capture_output=True, text=True, timeout=5, env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise BridgeError(f"Cannot establish daemon state; refusing blind restart: {exc}") from exc
+        if service.returncode != 0:
+            # An actually stopped daemon needs native service recovery.
+            _restart_daemon()
+        for _ in range(90):
             live = probe()
             if live is not None:
                 return live
             time.sleep(0.5)
-        raise BridgeError("Chat On Steroids bridge not found on localhost ports 8765-8769")
+        raise BridgeError(
+            "Chat On Steroids daemon is active but its bridge is not yet ready; "
+            "leave initialization running and recheck on the next watchdog tick"
+        )
 
     def get(self, endpoint: str) -> dict:
         return self._request(self.base, endpoint)

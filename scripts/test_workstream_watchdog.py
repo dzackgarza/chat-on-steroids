@@ -288,10 +288,30 @@ class WatchdogTest(unittest.TestCase):
         with patch.object(
             wd.Bridge, "_request",
             side_effect=[wd.BridgeError("connection refused"), {"app": "chat-on-steroids"}],
-        ), patch.object(wd, "_restart_daemon") as restart:
+        ), patch.object(wd, "_restart_daemon") as restart, patch.object(
+            wd.subprocess, "run", return_value=wd.subprocess.CompletedProcess(
+                args=[], returncode=3, stdout="inactive", stderr=""
+            ),
+        ):
             bridge = wd.Bridge(token, port=8765)
         self.assertEqual(bridge.base, "http://127.0.0.1:8765")
         restart.assert_called_once_with()
+        # Real cold start on 2026-10-25 retained sessions for minutes before
+        # exposing the bridge. Never bounce an already-running daemon just
+        # because its listener is not yet ready at the old 15-second boundary.
+        with patch.object(
+            wd.Bridge, "_request",
+            side_effect=[wd.BridgeError("still initializing")] * 36
+                        + [{"app": "chat-on-steroids"}],
+        ), patch.object(wd, "_restart_daemon") as restart, patch.object(
+            wd.subprocess, "run", return_value=wd.subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="active", stderr=""
+            ),
+        ), patch.object(wd.time, "sleep") as sleep:
+            delayed = wd.Bridge(token, port=8765)
+        self.assertEqual(delayed.base, "http://127.0.0.1:8765")
+        self.assertEqual(sleep.call_count, 35)
+        restart.assert_not_called()
         # Run the real subprocess adapter with a cron-like empty environment.
         # The restart attempt must still receive the user-bus runtime directory.
         with patch.dict(wd.os.environ, {}, clear=True), patch.object(
