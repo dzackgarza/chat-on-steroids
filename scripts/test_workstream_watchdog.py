@@ -79,6 +79,23 @@ class WatchdogTest(unittest.TestCase):
     def test_recent_work_is_not_interrupted(self):
         self.assertIsNone(self.decision(row(lastActivity=NOW - 2 * MINUTE))[0])
 
+    def test_owner_five_minute_failure_horizon_keeps_live_calls_safe(self):
+        def decide(minutes, *, calls=None):
+            return wd.action_allowed(
+                row(lastActivity=NOW - minutes * MINUTE), {}, now=NOW,
+                idle_ms=wd.DEFAULT_IDLE_MINUTES * MINUTE,
+                call_limit_ms=5 * MINUTE, cooldown_ms=30 * MINUTE,
+                calls=calls or [], sessions_dir=self.sessions,
+            )[0]
+
+        self.assertIsNone(decide(4))
+        self.assertEqual(decide(6), "recover")
+        # No elapsed-time observation can evict a call still in flight.
+        self.assertIsNone(decide(31, calls=[{
+            "workstreamId": "research", "ageMs": MINUTE,
+            "tool": "exec_command",
+        }]))
+
     def test_paused_and_non_auto_advance_are_untouched(self):
         self.assertIsNone(self.decision(row(phase="paused"))[0])
         self.assertIsNone(self.decision(row(autoAdvance=False))[0])

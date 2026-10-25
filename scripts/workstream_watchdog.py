@@ -32,6 +32,10 @@ ACTIVE_PHASES = {"active", "advancing"}
 NON_PROGRESS_TOOLS = {"write_stdin", "sleep", "session"}
 TERMINAL_TOOLS = {"exec_command", "write_stdin"}
 MAX_EVENT_TAIL_BYTES = 1024 * 1024
+# The cron cadence is thirty minutes, but the owner's §19 failure horizon is
+# five minutes of no workstream activity with no call in flight. Do not add
+# another full half-hour of inactivity before native recovery becomes eligible.
+DEFAULT_IDLE_MINUTES = 5
 
 
 class BridgeError(RuntimeError):
@@ -584,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workstream", action="append", default=[], help="limit to one ID (repeatable)")
     parser.add_argument("--dry-run", action="store_true", help="inspect without POSTs or state writes")
     parser.add_argument("--port", type=int, default=None, help="localhost bridge port, or autodetect")
-    parser.add_argument("--idle-minutes", type=int, default=30)
+    parser.add_argument("--idle-minutes", type=int, default=DEFAULT_IDLE_MINUTES)
     parser.add_argument("--call-limit-minutes", type=int, default=5)
     parser.add_argument("--cooldown-minutes", type=int, default=30)
     parser.add_argument("--state", type=Path, default=STATE_DIR / "workstream-watchdog-state.json")
