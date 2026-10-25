@@ -89,7 +89,8 @@ class WatchdogTest(unittest.TestCase):
         self.assertIsNone(self.decision(calls=calls)[0])
 
     def test_overlong_tool_is_an_error_not_evidence_of_health(self):
-        calls = [{"workstreamId": "research", "ageMs": 6 * MINUTE}]
+        calls = [{"workstreamId": "research", "ageMs": 6 * MINUTE,
+                  "tool": "exec_command"}]
         action, why, _ = self.decision(row(lastActivity=NOW), calls=calls)
         self.assertEqual(action, "cancel-overlong")
         self.assertIn("budget", why)
@@ -97,6 +98,34 @@ class WatchdogTest(unittest.TestCase):
             self.decision(row(phase="archiving"), calls=calls)[0],
             "cancel-overlong",
         )
+
+    def test_overlong_nonterminal_tool_never_triggers_unconditional_restart(self):
+        calls = [{"workstreamId": "research", "ageMs": 6 * MINUTE,
+                  "tool": "apply_patch"}]
+        action, why, _ = self.decision(row(lastActivity=NOW), calls=calls)
+        self.assertIsNone(action)
+        self.assertIn("steward diagnosis", why)
+        bridge = FakeBridge([row(lastActivity=NOW)], calls)
+        with patch.object(wd, "restart_controller") as restart:
+            with self.assertRaises(wd.BridgeError):
+                wd.clear_overlong_call(bridge, row(), 5 * MINUTE)
+        self.assertEqual(bridge.posts, [])
+        restart.assert_not_called()
+
+    def test_mixed_terminal_and_nonterminal_calls_do_not_restart_daemon(self):
+        calls = [
+            {"workstreamId": "research", "ageMs": 6 * MINUTE,
+             "tool": "exec_command"},
+            {"workstreamId": "research", "ageMs": MINUTE,
+             "tool": "read"},
+        ]
+        self.assertIsNone(self.decision(calls=calls)[0])
+        bridge = FakeBridge([row()], calls)
+        with patch.object(wd, "restart_controller") as restart:
+            with self.assertRaises(wd.BridgeError):
+                wd.clear_overlong_call(bridge, row(), 5 * MINUTE)
+        self.assertEqual(bridge.posts, [])
+        restart.assert_not_called()
 
     def test_other_workstreams_calls_do_not_block_recovery(self):
         calls = [{"workstreamId": "other", "ageMs": 45 * MINUTE}]
@@ -206,12 +235,13 @@ class WatchdogTest(unittest.TestCase):
 
     def test_unsettled_tool_forces_controller_restart_then_recovery(self):
         bridge = FakeBridge([row(lastActivity=NOW)], [
-            {"workstreamId": "research", "ageMs": 8 * MINUTE},
+            {"workstreamId": "research", "ageMs": 8 * MINUTE,
+             "tool": "exec_command"},
         ])
         state = {"version": 1, "streams": {}}
         def still_inflight(path, body):
             bridge.posts.append((path, body))
-            return {"requested": 0, "unsupported": ["apply_patch"], "remaining": 1}
+            return {"requested": 0, "unsupported": ["exec_command"], "remaining": 1}
         bridge.post = still_inflight
         with patch.object(wd, "restart_controller", return_value={
             "workstreams": [row(lastActivity=NOW)]

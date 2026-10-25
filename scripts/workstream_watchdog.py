@@ -30,6 +30,7 @@ STATE_DIR = Path.home() / ".local/state/chat-on-steroids"
 BRIDGE_PORTS = range(8765, 8770)
 ACTIVE_PHASES = {"active", "advancing"}
 NON_PROGRESS_TOOLS = {"write_stdin", "sleep", "session"}
+TERMINAL_TOOLS = {"exec_command", "write_stdin"}
 MAX_EVENT_TAIL_BYTES = 1024 * 1024
 
 
@@ -189,13 +190,15 @@ def latest_nonpoll_tool(session_id: str | None, sessions_dir: Path) -> int | Non
     return latest
 
 
-def call_info(calls: list, stream_id: str) -> tuple[int, int]:
+def call_info(calls: list, stream_id: str) -> tuple[int, int, bool]:
     matching = [
         c for c in calls
         if isinstance(c, dict) and c.get("workstreamId") == stream_id
     ]
-    return len(matching), max(
-        (int(c.get("ageMs") or 0) for c in matching), default=0
+    return (
+        len(matching),
+        max((int(c.get("ageMs") or 0) for c in matching), default=0),
+        all(c.get("tool") in TERMINAL_TOOLS for c in matching),
     )
 
 
@@ -209,7 +212,7 @@ def action_allowed(
     if phase == "paused" or not row.get("autoAdvance") or ident == "orchestrator":
         return None, "not an active auto-advancing workstream", {}
 
-    n_calls, longest_call = call_info(calls, ident)
+    n_calls, longest_call, terminal_only = call_info(calls, ident)
     last_activity = int(row.get("lastActivity") or 0)
     fresh_recorded = latest_nonpoll_tool(row.get("sessionId"), sessions_dir)
     prior_recorded = int(state.get("lastNonpollSeenAt") or 0)
@@ -242,6 +245,12 @@ def action_allowed(
     # In particular, archiving cannot complete while this call is running.
     if n_calls:
         if long_call:
+            if not terminal_only:
+                # The controller can abort terminal processes, not arbitrary
+                # in-flight mutations. Restarting its daemon would kill an
+                # unsupported apply_patch/read/etc. and possibly other workers.
+                # This requires a model steward's judgment, not cron policy.
+                return None, "overlong nonterminal tool requires steward diagnosis", evidence
             return "cancel-overlong", "tool execution exceeded five-minute budget", evidence
         return None, "in-flight call inside its execution budget", evidence
 
@@ -305,6 +314,14 @@ def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service"
 
 def clear_overlong_call(bridge: Bridge, row: dict, minimum_age_ms: int) -> dict:
     """Cancel owned over-budget tools; verify settlement or restart Core2."""
+    census = bridge.get("/sleep/status").get("inFlightCalls")
+    if not isinstance(census, list):
+        raise BridgeError("In-flight census unavailable before terminal cancellation")
+    owned = [c for c in census if c.get("workstreamId") == row["id"]]
+    if any(c.get("tool") not in TERMINAL_TOOLS for c in owned):
+        raise BridgeError("Nonterminal call now in flight; cannot safely cancel or restart daemon")
+    if not owned:
+        raise BridgeError("The overlong terminal call has settled; reassess live worker state")
     payload = {
         "id": row["id"],
         "conversationId": row.get("conversationId"),
