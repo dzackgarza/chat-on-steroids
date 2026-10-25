@@ -92,11 +92,11 @@ class WatchdogTest(unittest.TestCase):
         calls = [{"workstreamId": "research", "ageMs": 6 * MINUTE,
                   "tool": "exec_command"}]
         action, why, _ = self.decision(row(lastActivity=NOW), calls=calls)
-        self.assertEqual(action, "cancel-overlong")
-        self.assertIn("budget", why)
+        self.assertIsNone(action)
+        self.assertIn("steward diagnosis", why)
         self.assertEqual(
             self.decision(row(phase="archiving"), calls=calls)[0],
-            "cancel-overlong",
+            None,
         )
 
     def test_overlong_nonterminal_tool_never_triggers_unconditional_restart(self):
@@ -248,7 +248,7 @@ class WatchdogTest(unittest.TestCase):
             ["/workstreams/recover", "/workstreams/replace"],
         )
 
-    def test_overlong_tool_is_cancelled_and_recovery_actually_requested(self):
+    def test_overlong_tool_is_reported_without_unconditional_cancellation(self):
         bridge = FakeBridge([row(lastActivity=NOW)], [
             {"workstreamId": "research", "ageMs": 6 * MINUTE, "tool": "write_stdin"},
         ])
@@ -258,12 +258,9 @@ class WatchdogTest(unittest.TestCase):
             idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
             cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
         )
-        self.assertEqual(result, 0)
-        self.assertEqual(
-            [p for p, _ in bridge.posts],
-            ["/workstreams/cancel-overlong", "/workstreams/recover"],
-        )
-        self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "recover")
+        self.assertEqual(result, 1)
+        self.assertEqual(bridge.posts, [])
+        self.assertNotIn("lastAction", state["streams"]["research"])
 
     def test_unsettled_tool_forces_controller_restart_then_recovery(self):
         bridge = FakeBridge([row(lastActivity=NOW)], [

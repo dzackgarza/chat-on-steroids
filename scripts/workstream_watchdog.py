@@ -266,17 +266,12 @@ def action_allowed(
     }
 
     # This is evaluated BEFORE the lease/phase/cooldown rules. An overlong
-    # tool is not proof of progress and cannot veto its own cancellation.
-    # In particular, archiving cannot complete while this call is running.
+    # tool is a serious execution/workflow defect, not proof of progress.
+    # The scheduled watchdog reports it to the model steward; elapsed time
+    # does not authorize the watchdog to kill the call or restart the daemon.
     if n_calls:
         if long_call:
-            if not terminal_only:
-                # The controller can abort terminal processes, not arbitrary
-                # in-flight mutations. Restarting its daemon would kill an
-                # unsupported apply_patch/read/etc. and possibly other workers.
-                # This requires a model steward's judgment, not cron policy.
-                return None, "overlong nonterminal tool requires steward diagnosis", evidence
-            return "cancel-overlong", "tool execution exceeded five-minute budget", evidence
+            return None, "overlong worker-blocking tool requires steward diagnosis", evidence
         return None, "in-flight call inside its execution budget", evidence
 
     previous = state.get("lastAction")
