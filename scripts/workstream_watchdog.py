@@ -314,7 +314,12 @@ def action_allowed(
 def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service") -> dict:
     """Last-resort repair if the daemon cannot settle its own stuck MCP call."""
     _restart_daemon(service)
-    for _ in range(30):
+    # On 2026-10-25 the real service needed about 17 seconds from the
+    # restart request to the bridge listener. The former 15-second probe
+    # exhausted just as the bridge opened, misclassifying a successful
+    # restart as a failed recovery. Allow a bounded 45-second readiness
+    # window; a restart ACK alone is never treated as a live bridge.
+    for _ in range(90):
         try:
             state = bridge.get("/workstreams")
             if isinstance(state.get("workstreams"), list):
