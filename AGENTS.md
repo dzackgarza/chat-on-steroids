@@ -2499,12 +2499,12 @@ mode that produced most of the incidents in this section.
    Review delivered units against every acceptance clause before approving the next selection,
    even while the sole worker implements another coherent unit. Record either the acceptance
    verdict and reviewed revision or the exact remaining requirement on the existing issue.
-   For research, `CONTRIBUTING.md` `DEV-61`, `DEV-58`, #414 and #486 distinguish source closure
-   from terminal execution. Link the unchanged unexecuted assertions from their open terminal
-   owner before closing a satisfied source prerequisite. Execution-phase issues require executed
-   evidence. Keeping source prerequisites open solely for the terminal phase they block makes
-   that phase unreachable. Report source and executed acceptance separately, and repair a
-   continuation brief that contradicts this ordering. A missed delivery target requires checking
+   Close each issue against its original acceptance requirements. Required runtime assertions
+   remain obligations of that issue until executed; linking them from terminal acceptance does
+   not discharge them. Distinguish delivered source from accepted issues. If a repository phase
+   rule prevents acceptance, resolve that execution decision rather than count source delivery
+   as closure. Repair any continuation brief that weakens these requirements.
+   A missed delivery target requires checking
    this acceptance path; an active implementation worker does not settle whether review was done.
    Do not add a rule merely to narrate what happened; change a rule only when it changes the next
    action under an observable condition.
