@@ -682,7 +682,23 @@ export async function scheduleWorkstreamAfterTurn(
     if (!turnId || time > now + 5_000 || time < now - 60_000) return false;
     const row = [...rows.values()].find(
       (candidate) =>
-        candidate.conversationId === conversationId &&
+        (candidate.conversationId === conversationId ||
+          // A live model can resume a controller-unbound row with its retained
+          // claim, perform real work, and complete a turn without emitting the
+          // NEW claim line. The old line identifies its last recorded claimant
+          // but cannot bind the newly rotated lock. At that exact terminal
+          // boundary, restore routing only for the sole unretired claimant of
+          // an active row with a recently admitted workstream tool call.
+          // Otherwise the tab reaper closes the completed chat as unmanaged
+          // and the controller never advances its next turn.
+          (candidate.conversationId === null &&
+            candidate.phase === "active" &&
+            candidate.claimedBy.at(-1) === conversationId &&
+            !candidate.retiredConversations.includes(conversationId) &&
+            candidate.lastActivity >= time - WORKSTREAM_LEASE_MS &&
+            ![...rows.values()].some(
+              (other) => other.id !== candidate.id && other.conversationId === conversationId,
+            ))) &&
         (candidate.autoAdvance || candidate.id === ORCHESTRATOR_WORKSTREAM_ID) &&
         (candidate.phase === "active" ||
           // The advance may have reached ChatGPT but its turn can end before
@@ -698,6 +714,11 @@ export async function scheduleWorkstreamAfterTurn(
     )
       return false;
     if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
+
+    // The unbound last claimant was authenticated by its existing claim-line
+    // provenance plus fresh Core tool execution; it is not a new worker claim.
+    // Restore only its browser route, leaving the opaque lock and lease intact.
+    if (row.conversationId === null) row.conversationId = conversationId;
 
     if (row.id === ORCHESTRATOR_WORKSTREAM_ID) {
       // A real terminal turn frees the next scheduled tick. A call still executing
