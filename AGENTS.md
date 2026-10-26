@@ -1437,6 +1437,22 @@ controller-native liveness recovery on recorded evidence. It neither substitutes
 model steward's examination of a worker's decisions nor authorizes other timer-driven
 worker controls.
 
+**The steward does not own the user's terminal sessions or another agent's CLI input.**
+Never send text, keystrokes, control sequences, pasted buffers or commands into an
+existing tmux/screen pane, interactive shell, REPL, TTY, or independently running
+Codex/other CLI agent session. This includes `tmux send-keys`, `tmux paste-buffer`,
+`screen -X stuff`, writing to a pane's TTY, or equivalent GUI input automation.
+Inspecting a process or reading its existing recorded output does not grant
+authority to steer it through its terminal. An observed slow or stalled Codex
+worker is **not** permission to inject a supervisory message into the owner's
+pane. Address ChatGPT workers using the existing Core2 workstream/controller
+or ChatGPT conversation path, and coordinate external workers only through
+their explicitly authorized native control channel. Otherwise preserve their
+ownership, artifacts and dirty work while resolving work that does not race
+them. Never send a terminal message as an apology or as a purported handoff.
+This is an owner-interaction boundary, not a reduction of shell or source-editing
+capabilities available to workers in their own authorized tasks.
+
 An hourly scheduled steward turn may and should contain the shorter intra-hour ticks itself. After
 one full tick has finished, the steward may run a **single foreground** `sleep 1200` through the
 connector, remain in the same model turn, and perform the next full tick from fresh evidence when
