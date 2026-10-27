@@ -939,13 +939,11 @@ export const FRESH_CHAT_ORIENTATION =
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "DO THE WORK. This auto-continued turn is not a request for a progress report. " +
-  "Resume the exact unfinished task from the last concrete finding and take the next implementation action now. " +
-  "If the previous turn identified a missing constructor, operation, proof, mapping, or failing assertion, implement or repair it; do not end another turn explaining that it remains missing or describing how you would implement it. " +
-  "Do not repeat source surveys, orientation, status checks, architectural discussions, or CI polls when the next required edit is already identified. Read only the specific source needed for that edit, then make it. " +
-  "If a targeted check fails, repair the cause and continue, rather than ending the turn with a failure report. " +
-  "Preserve other workers' changes and the original acceptance requirements. Follow the repository's current phase: use small targeted checks when authorized, or source/syntax checks when execution is suspended; send significant runs to CI asynchronously against a named revision and keep implementing. " +
-  "Do not end a turn merely to announce progress, remaining work, a plan, or a proposed fix. Finish the assigned artifact and its permitted verification, or identify the specific owner-only decision or external refusal that actually prevents the next action.";
+  "THIS IS YOUR AUTOMATIC CONTINUATION, NOT A REQUEST FOR A REPORT. The previous assistant turn ended, but the same unfinished task remains yours. Nobody else will implement a fix merely because you described it in a final answer. Treat that answer as a bookmark of unfinished work, not a delivered result. " +
+  "When your previous turn already named the obstruction and next operation (for example, 'the constructor is missing; the next change must add its realization'), the investigation has identified what to do: make that change using the tools NOW. Your next action should advance the artifact, not restate the diagnosis. Do not inspect the same sources again and end with another version of 'the constructor remains unimplemented.' " +
+  "If you left an implementation incomplete, continue editing it. If a targeted test failed, repair the observed failure. If one specific fact is still needed to make a correct change, investigate only that fact, use its answer to implement the change, and continue in this turn. Do not let finding the next step become the endpoint of another turn. " +
+  "Avoid repeated source surveys, architectural recaps, status checks, CI polling, and unrelated micro-optimizations when a known missing requirement is awaiting implementation. Preserve other workers' changes and the original task's full acceptance requirements. Follow the repository's execution phase: small targeted checks when authorized, source/syntax checks when execution is suspended, and significant runs on asynchronous CI while implementation proceeds. " +
+  "A turn boundary is not a task boundary. Do not conclude with a progress report, proposed fix, or list of remaining work addressed to nobody. Keep performing the concrete work until the requested result is delivered and verified, or a specific external refusal or owner-only decision actually prevents the next authorized action.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
