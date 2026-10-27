@@ -939,7 +939,13 @@ export const FRESH_CHAT_ORIENTATION =
 export const BOUND_CHAT_ORIENTATION =
   "You have already read this repository's AGENTS.md and TODOs in this chat: resume the unit you were on, and re-read only the specific section you need. ";
 export const STEWARD_CONTINUATION =
-  "Preserve other workers’ changes and resolve the current repository task under its own phase and acceptance requirements. Continue the inherited unfinished implementation rather than repeating orientation, status checks or source surveys. Validate only in ways the repository's current phase permits: use small targeted tests when authorized, or source/syntax checks and deferred acceptance when execution is explicitly suspended. Significant runs (full builds, acceptance families, whole suites) go to CI asynchronously against a named revision only when that phase authorizes them; keep implementing while they run and consume the verdict when it arrives. Never spend a turn waiting on or polling a run; a local run that would block you for more than five minutes means the setup needs a CI route or a targeted test, so fix that instead. Judge progress from accepted behavior and source changes, never elapsed time, tool-call counts, commits or checkboxes.";
+  "DO THE WORK. This auto-continued turn is not a request for a progress report. " +
+  "Resume the exact unfinished task from the last concrete finding and take the next implementation action now. " +
+  "If the previous turn identified a missing constructor, operation, proof, mapping, or failing assertion, implement or repair it; do not end another turn explaining that it remains missing or describing how you would implement it. " +
+  "Do not repeat source surveys, orientation, status checks, architectural discussions, or CI polls when the next required edit is already identified. Read only the specific source needed for that edit, then make it. " +
+  "If a targeted check fails, repair the cause and continue, rather than ending the turn with a failure report. " +
+  "Preserve other workers' changes and the original acceptance requirements. Follow the repository's current phase: use small targeted checks when authorized, or source/syntax checks when execution is suspended; send significant runs to CI asynchronously against a named revision and keep implementing. " +
+  "Do not end a turn merely to announce progress, remaining work, a plan, or a proposed fix. Finish the assigned artifact and its permitted verification, or identify the specific owner-only decision or external refusal that actually prevents the next action.";
 /**
  * The message the controller sends for one action. `connector` is the name the owner gave
  * this app's connector in ChatGPT, so a chat that has several connectors calls this one.
