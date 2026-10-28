@@ -829,6 +829,18 @@ _send $chat $text mode="refuse" reload="false":
                 # a bare count hides the difference. `unplaced` is the one charged to every chat.
                 jq -r '.inFlightCalls[]? | "      \(.tool) \((.ageMs / 1000) | floor)s \(.attribution) \(.conversationId // "unplaced")"' \
                     <<<"$accepted" >&2 2>/dev/null || true
+                # When _send itself was started through a connector exec_command, that
+                # call is among the pending unattributed calls. Synchronously polling
+                # from inside it deadlocks delivery: the call cannot settle until this
+                # recipe exits, and the browser cannot type until it settles. Leave the
+                # already-queued message intact, then let the caller verify the outcome
+                # separately after its own tool call has returned. Never claim delivery.
+                if jq -e '.inFlightCalls[]? | select(.tool == "exec_command" and .attribution == "unattributed")' \
+                    <<<"$accepted" >/dev/null 2>&1; then
+                    echo "queued but NOT delivered: command $id; the connector tool must finish before the browser can type." >&2
+                    echo "Verify GET /send/outcome?id=$id from a later call; only sent_verified proves delivery." >&2
+                    exit 75
+                fi
             fi
             probe=$(curl -sS --connect-timeout 5 -m 45 -o /dev/null -w '%{http_code}' \
                 "http://127.0.0.1:$port/send/outcome?id=$id" -H "authorization: Bearer $token" || echo 000)
