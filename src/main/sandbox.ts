@@ -169,8 +169,13 @@ async function realpathDeepest(absPath: string): Promise<{ real: string; missing
   }
 }
 
-/** Reads the canonical path of an approved root, failing loudly if it has gone away. */
-async function realRoot(root: Root): Promise<string> {
+/**
+ * Resolve an approved root without expanding the union of authorized paths.
+ * A stale symlink root is usable only if its entire current destination is
+ * already contained in another independently verified approved root. That
+ * makes it an alias of an existing grant, not an additional permission.
+ */
+async function realRoot(root: Root, roots: readonly Root[]): Promise<string> {
   try {
     const current = await canonicalRealpath(root.path);
     // roots:add persists validateNewRoot()'s canonical path. Re-resolving that pathname is a
@@ -178,13 +183,32 @@ async function realRoot(root: Root): Promise<string> {
     // approved directory itself with a junction silently moves the sandbox boundary to whatever
     // unapproved tree the junction names. Path equivalence is case-insensitive on Windows via
     // isContained(), matching the rest of this module's containment rules.
-    if (!isContained(root.path, current) || !isContained(current, root.path)) {
-      throw new SandboxError(`Root "/${root.name}" changed on disk. Remove it and approve the folder again.`);
+    if (isContained(root.path, current) && isContained(current, root.path))
+      return current;
+
+    // A replaced pathname cannot expand access: only another *unchanged*
+    // root whose approval already covers the canonical destination can
+    // justify this alias. Checking that other root's own identity prevents
+    // chaining stale grants. All child paths still face the ordinary
+    // canonical containment checks against `current` below. Retargeting the
+    // symlink later cannot redirect an already resolved canonical path.
+    for (const other of roots) {
+      if (other === root) continue;
+      try {
+        const approved = await canonicalRealpath(other.path);
+        if (
+          isContained(other.path, approved) &&
+          isContained(approved, other.path) &&
+          isContained(approved, current)
+        ) return current;
+      } catch {
+        // An absent or changed second root supplies no independent grant.
+      }
     }
-    return current;
   } catch {
-    throw new SandboxError(`Root "/${root.name}" is not available or changed on disk. Remove it and approve the folder again.`);
+    // Missing roots retain the original fail-closed behavior.
   }
+  throw new SandboxError(`Root "/${root.name}" is not available or changed on disk. Remove it and approve the folder again.`);
 }
 
 export interface ResolveOptions {
@@ -291,7 +315,7 @@ async function normaliseNativePath(roots: readonly Root[], input: string): Promi
   for (const root of roots) {
     let rootReal: string;
     try {
-      rootReal = await realRoot(root);
+      rootReal = await realRoot(root, roots);
     } catch {
       continue;
     }
@@ -351,7 +375,7 @@ export async function resolvePath(
     throw new SandboxError(`Unknown root "/${segments[0]}". Approved roots: ${names}`);
   }
 
-  const rootReal = await realRoot(root);
+  const rootReal = await realRoot(root, roots);
   const rest = segments.slice(1);
   const candidate = rest.length === 0 ? rootReal : path.join(rootReal, ...rest);
 
@@ -398,7 +422,7 @@ export function toVirtualPath(root: Root, rootReal: string, realPath: string): s
 export async function resolveRoot(roots: readonly Root[], name: string): Promise<{ root: Root; real: string }> {
   const root = roots.find((r) => r.name.toLowerCase() === name.toLowerCase());
   if (!root) throw new SandboxError(`Unknown root "/${name}"`);
-  return { root, real: await realRoot(root) };
+  return { root, real: await realRoot(root, roots) };
 }
 
 /**
