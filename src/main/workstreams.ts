@@ -26,6 +26,8 @@ export const WORKSTREAM_LEASE_MS = 5 * 60_000;
 export const ORCHESTRATOR_WORKSTREAM_ID = "orchestrator";
 /** How long a delivered revive gives the worker to resume before the chat is replaced. */
 const REVIVE_RESPONSE_MS = 2 * 60_000;
+/** Bound the extension archive ACK even when it remains connected but stops draining. */
+export const ARCHIVE_ACK_TIMEOUT_MS = 5 * 60_000;
 export const RECOVERY_BACKOFF_MS = [30_000] as const;
 const MAX_RECOVERY_ATTEMPTS = RECOVERY_BACKOFF_MS.length;
 export const workstreamIdSchema = z
@@ -876,7 +878,7 @@ export async function replaceWorkstream(
     if (!["active", "advancing", "recovering", "blocked"].includes(row.phase) || !row.conversationId) return false;
     row.phase = "archiving";
     row.attempts = 3;
-    row.nextCheck = 0;
+    row.nextCheck = Date.now() + ARCHIVE_ACK_TIMEOUT_MS;
     row.commandId = null;
     row.actionId = `archive-${row.lock}`;
     if (!row.error?.startsWith("five_minute_")) row.error = null;
@@ -1019,8 +1021,13 @@ export async function nextWorkstreamActions(
       ) {
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
+        row.nextCheck = now + ARCHIVE_ACK_TIMEOUT_MS;
         row.error = null;
       }
+      // Upgrade legacy archive transactions with no deadline exactly once; subsequent
+      // sweeps must not renew this durable deadline, even across daemon restarts.
+      if (row.phase === "archiving" && row.nextCheck <= 0)
+        row.nextCheck = now + ARCHIVE_ACK_TIMEOUT_MS;
       // A revive in flight is judged by its own outcome, never by a timer racing its delivery:
       // the command's deadline bounds the wait, a failed or lost command releases the row
       // immediately, and a delivered one starts the response window below.
@@ -1074,6 +1081,7 @@ export async function nextWorkstreamActions(
         row.phase = "archiving";
         row.actionId = `archive-${row.lock}`;
         row.commandId = null;
+        row.nextCheck = now + ARCHIVE_ACK_TIMEOUT_MS;
       } else {
         row.attempts++;
         row.actionId = `revive-${row.lock}-${row.attempts}`;
@@ -1260,7 +1268,10 @@ export async function finishWorkstreamArchive(
         `workstream ${row.id}: archiving ${row.conversationId} failed (${error}); retiring it unarchived and opening the replacement`,
       );
     row.phase = "opening";
-    if (!row.error?.startsWith("five_minute_")) row.error = null;
+    // An unconfirmed archive is visible as a diagnostic, not reported as a successful
+    // browser mutation. It does not prevent replacement or an explicit model reclaim.
+    if (error) row.error = `archive_unconfirmed: ${error}`;
+    else if (!row.error?.startsWith("five_minute_")) row.error = null;
     if (row.conversationId) {
       // The old frontend stops being a valid reinjection route here. Do not keep it as
       // "current" while the replacement bootstrap is still opening: if that fresh bootstrap
@@ -1274,6 +1285,7 @@ export async function finishWorkstreamArchive(
     }
     row.actionId = `replace-${row.lock}`;
     row.commandId = null;
+    row.nextCheck = 0;
     await save();
     return true;
   });

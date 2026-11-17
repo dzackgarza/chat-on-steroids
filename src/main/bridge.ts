@@ -6039,11 +6039,40 @@ function workstreamCommandCurrent(command: Command): boolean {
     autoAdvancingWorkstreamForCommand(command.id)
   );
 }
+/**
+ * Reconcile an archive transaction when there is no extension capable of ACKing it.
+ *
+ * The archived frontend is browser hygiene, not the fence: the logical workstream has
+ * already left the admitted phases. If the browser is gone, no /workstreams/archive POST
+ * can arrive, so waiting in `archiving` makes the model-facing `continue` refuse *all*
+ * successors indefinitely. Retire the old route as unarchived (with an explicit diagnostic)
+ * using the same guarded completion transition an extension error would take. Do not
+ * fabricate an archive success, a replacement command, or a new conversation identity.
+ * A call that was admitted before the fence still has to settle first.
+ * Any delayed browser ACK is refused by the existing action-id transition guard.
+ */
+async function releaseArchivesWithoutExtension(reason: string): Promise<void> {
+  for (const row of workstreamStatus()) {
+    if (row.phase !== "archiving" || !row.actionId) continue;
+    if (runningToolCallsForWorkstream(row.id) > 0) continue;
+    if (await finishWorkstreamArchive(row.id, row.actionId, reason)) {
+      logWarn(
+        `workstream ${row.id}: ${reason}; old conversation retired without confirmed archive; replacement pending browser availability`,
+      );
+    }
+  }
+}
+
 /** One recovery driver, owned by the bridge maintenance timer and its shutdown. */
 export async function sweepWorkstreams(now = Date.now()): Promise<void> {
   if (workstreamSweep) return workstreamSweep;
   workstreamSweep = (async () => {
-    if (await browserDisconnected()) return;
+    if (await browserDisconnected()) {
+      // Explicit disconnect forbids browser actions but cannot leave an old archive lock
+      // permanently unreclaimable. The next live extension can open the replacement.
+      await releaseArchivesWithoutExtension("browser explicitly disconnected");
+      return;
+    }
     // A fresh replacement can attach before the browser ACK binds its concrete conversation.
     // During that narrow window continueWorkstream() deliberately leaves
     // active + commandId + actionId=null.  Do not let the generic superseded-action cleanup
@@ -6106,17 +6135,25 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
       const actionId = row.actionId!;
       if (!currentWorkstreamAction(row.id, actionId)) continue;
       if (row.phase === "archiving") {
-        if (!row.conversationId) {
-          await blockWorkstreamAction(
-            row.id,
-            actionId,
-            "browser_conversation_not_bound",
+        if (!row.conversationId || !browserPresent()) {
+          await releaseArchivesWithoutExtension(
+            !row.conversationId
+              ? "no browser conversation exists to archive"
+              : "browser extension is not active to acknowledge the archive",
           );
           continue;
         }
-        // The workstream's terminal sessions survive the archive: the replacement's claim
-        // inherits them (transferExecOwnership) and its opening record lists them.
-        continue; // The paired extension performs the browser stop/archive, then ACKs.
+        if (row.nextCheck <= now && runningToolCallsForWorkstream(row.id) === 0) {
+          // The extension still reports presence, but the *specific* archive action
+          // never ACKed. Bound that state using the deadline persisted at archive
+          // entry; the action-id guard also refuses a late browser ACK.
+          if (await finishWorkstreamArchive(row.id, actionId, "archive acknowledgment deadline expired"))
+            logWarn(`workstream ${row.id}: archive ACK deadline expired; old browser route retired unarchived`);
+          continue;
+        }
+        // An active extension owns the browser archive/ACK until the deadline.
+        // An inactive extension takes the fail-forward branch above.
+        continue;
       }
       if (row.commandId) {
         const receipt = receiptFor(row.commandId);
@@ -6240,6 +6277,11 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         (command) =>
           command.spec.type === "send" && command.spec.nonce === actionId,
       );
+      // Opening a ChatGPT conversation requires the paired extension. Retain the
+      // durable `opening` action until it returns; repeatedly queueing commands while
+      // no browser is present creates only expired receipts and phantom tab attempts.
+      // A model can meanwhile explicitly reclaim the workstream from `opening`.
+      if (!existing && row.phase === "opening" && !browserPresent()) continue;
       if (!existing && row.phase === "opening" && now < freshChatBackoff.until) continue;
       // A published usage-limit deadline holds every send, recovery included (chatgpt-limits.ts).
       if (!existing && now < sendBlockedUntil(now)) continue;
