@@ -1443,3 +1443,37 @@ export async function releaseFailedWorkstreamReplacementBind(
     return true;
   });
 }
+
+/**
+ * Reopen the existing replacement transaction after a *proved unsuccessful* bootstrap.
+ *
+ * A model can claim an `opening` workstream before the browser's send acknowledges,
+ * leaving `active + commandId + actionId=null`. If the browser then reports a terminal
+ * failure and no conversation was ever bound, there is no chat to continue. Leaving this
+ * row `active` with no command invents a worker and strands the logical workstream.
+ *
+ * Restore `opening` using the current claim and retain the failed command id for one
+ * controller sweep. Its durable receipt then takes the existing `opening` retry/backoff
+ * path. No replacement is reported as created, and an absent/ambiguous receipt cannot
+ * authorize this transition.
+ */
+export async function reopenUnsentWorkstreamReplacement(
+  id: string,
+  failedCommandId: string,
+): Promise<boolean> {
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (!row || row.phase !== "active" || row.conversationId !== null ||
+        row.actionId !== null ||
+        (row.commandId !== failedCommandId && row.lateCommandId !== failedCommandId) ||
+        inFlightCallsForWorkstream(id).length > 0)
+      return false;
+    row.phase = "opening";
+    row.actionId = `replace-${row.lock}`;
+    row.commandId = failedCommandId;
+    row.lateCommandId = null;
+    row.nextCheck = 0;
+    await save();
+    return true;
+  });
+}

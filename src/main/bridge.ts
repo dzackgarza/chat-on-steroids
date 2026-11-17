@@ -57,6 +57,7 @@ import {
   releaseFailedWorkstreamDelivery,
   noteWorkstreamRecoveryDelivered,
   releaseFailedWorkstreamReplacementBind,
+  reopenUnsentWorkstreamReplacement,
   replaceWorkstream,
   retireWorkstream,
   reserveWorkstream,
@@ -6100,10 +6101,32 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         // row's clearing transition. Replay that *same* committed receipt, never invent
         // a replacement or drop the already-bound conversation.
         await completeWorkstreamReplacementReceipt(commandId, receipt.conversationId);
+      } else if (row.phase === "active" && receipt && !receipt.committed &&
+                 row.conversationId === null) {
+        // The actual browser proved no bootstrap was delivered. A model claim that
+        // arrived before this receipt cannot make the absent conversation real.
+        // Re-enter the *existing* opening retry path, rather than stranding an
+        // unbound `active` row with no command and no browser owner.
+        if (await reopenUnsentWorkstreamReplacement(row.id, commandId))
+          logWarn(`workstream ${row.id}: unsent bootstrap ${commandId}; re-entered opening retry`);
       } else if (row.phase === "active" &&
                  ((receipt && !receipt.committed) || (!liveCommand && !receipt))) {
+        // A lost command with no receipt is ambiguous; do not open a duplicate
+        // until a steward has established that it really sent nothing.
         await releaseFailedWorkstreamReplacementBind(row.id, commandId);
       }
+    }
+    // Recover durable rows written by the old code, which already cleared commandId
+    // into lateCommandId after a browser-proven unsent bootstrap. A receipt is
+    // required; a merely missing command is insufficient to authorize replacement.
+    for (const row of workstreamStatus()) {
+      if (row.phase !== "active" || row.conversationId !== null ||
+          row.actionId !== null || !row.lateCommandId)
+        continue;
+      const receipt = receiptFor(row.lateCommandId);
+      if (receipt && !receipt.committed &&
+          await reopenUnsentWorkstreamReplacement(row.id, row.lateCommandId))
+        logWarn(`workstream ${row.id}: recovered a stranded unbound claim from failed bootstrap ${receipt.id}`);
     }
     for (const row of workstreamStatus()) {
       if (
