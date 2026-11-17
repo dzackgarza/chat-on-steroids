@@ -6,7 +6,7 @@ import { z } from "zod";
 import { durableRoot, writeDurableNow } from "./durable.js";
 import { transferExecOwnership } from "./codex/ownership.js";
 import { inFlightCallsForWorkstream, runningToolCallsForWorkstream } from "./mcp/call-context.js";
-import { detachSessionConversation } from "./session/store.js";
+import { detachSessionConversation, getSession } from "./session/store.js";
 import { logWarn } from "./logger.js";
 import type { ChatObservation } from "./session/recorder.js";
 import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream, workerWorkstreamsOf } from "./agents.js";
@@ -620,6 +620,37 @@ export async function setWorkstreamRecordingSession(
     )
       return false;
     row.sessionId = sessionId;
+    await save();
+    return true;
+  });
+}
+
+/**
+ * Repair a workstream's recorder pointer only after its old session is provably absent.
+ *
+ * A missing on-disk recorder must not cause every subsequent tool call to be dropped
+ * forever. Never silently overwrite a readable older session, and never share a new
+ * session between workstreams. The recorder retains the missing id in the recovered
+ * session's title, so this continuity break is explicit instead of fabricated history.
+ * The exact old-id comparison is a CAS against concurrent repairs or chat claims.
+ */
+export async function repairMissingWorkstreamRecordingSession(
+  id: string,
+  missingSessionId: string,
+  replacementSessionId: string,
+): Promise<boolean> {
+  if (!missingSessionId || !replacementSessionId || missingSessionId === replacementSessionId)
+    return false;
+  return exclusive(async () => {
+    ready();
+    const row = rows.get(id);
+    if (!row || row.sessionId !== missingSessionId ||
+        [...rows.values()].some((other) => other.id !== id && other.sessionId === replacementSessionId))
+      return false;
+    // Metadata recovery and journal reconstruction are the session owner's decision;
+    // only when it returns no session may this pointer be replaced.
+    if (await getSession(missingSessionId)) return false;
+    row.sessionId = replacementSessionId;
     await save();
     return true;
   });
