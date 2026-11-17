@@ -42,6 +42,7 @@ import {
   bindWorkstreamConversation,
   claimedWorkstreamOf,
   bindWorkstreamReplacement,
+  completeWorkstreamReplacementReceipt,
   blockWorkstreamAction,
   configureWorkstream,
   currentWorkstreamAction,
@@ -4315,6 +4316,11 @@ async function handle(
         origin,
       );
     }
+    // The replacement's browser route may have bound before this ACK, and its model may
+    // already have reclaimed the workstream. Release the controller command rendezvous
+    // only after finalizeCommand durably retired the command and wrote its real receipt.
+    if (receipt.committed && receipt.conversationId)
+      await completeWorkstreamReplacementReceipt(command.id, receipt.conversationId);
     // A failed bootstrap/revival can be the transition that frees the final worker slot, and
     // unlike an MCP call there is no dispatcher epilogue after this ACK. Settle the durable
     // command first, then release/park the quiescent active incarnation if no slot is occupied.
@@ -6081,18 +6087,21 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
     // release the stale marker so normal lease recovery can resume.  A committed receipt can
     // be replayed here to finish the bind after a crash between receipt persistence and row save.
     for (const row of workstreamStatus()) {
-      if (
-        row.phase !== "active" ||
-        row.actionId !== null ||
-        !row.commandId
-      )
-        continue;
+      if (!row.commandId || !(
+        row.phase === "opening" ||
+        (row.phase === "active" && row.actionId === null)
+      )) continue;
       const commandId = row.commandId;
       const receipt = receiptFor(commandId);
       const liveCommand = commands.some((command) => command.id === commandId);
       if (receipt?.committed && receipt.conversationId) {
         await bindWorkstreamFrontend(commandId, receipt.conversationId);
-      } else if ((receipt && !receipt.committed) || (!liveCommand && !receipt)) {
+        // A daemon restart may have landed the command receipt but not the workstream
+        // row's clearing transition. Replay that *same* committed receipt, never invent
+        // a replacement or drop the already-bound conversation.
+        await completeWorkstreamReplacementReceipt(commandId, receipt.conversationId);
+      } else if (row.phase === "active" &&
+                 ((receipt && !receipt.committed) || (!liveCommand && !receipt))) {
         await releaseFailedWorkstreamReplacementBind(row.id, commandId);
       }
     }
@@ -6727,6 +6736,7 @@ async function bindSentFreshCommand(command: Command): Promise<boolean> {
     armDeadline(command, 5_000);
     return true;
   }
+  await completeWorkstreamReplacementReceipt(command.id, conversation);
   commandTabTargets.delete(command.id);
   logWarn(
     `bridge: ${specKey(command.spec)} never acknowledged, but its tab shows ${conversation}; bound that chat instead of opening another`,
@@ -7052,6 +7062,19 @@ function drop(command: Command, why: string): boolean {
       const pages = await tabs.list();
       const tab = pages.find((entry) => entry.id === target);
       if (!tab) return;
+      const shown = tabConversation(tab.url);
+      if (shown) {
+        const route = currentBrowserRoute(shown);
+        // An already-bound workstream or live worker owns this actual ChatGPT tab.
+        // A stale command is not authority to close a living conversation: its command
+        // id and transcript are separate identities. Duplicate-tab cleanup, if needed,
+        // belongs to reapBrowserTabs() and its conversation-aware custody policy.
+        if (workstreamStatus().some((row) =>
+          row.conversationId && currentBrowserRoute(row.conversationId) === route &&
+          ["active", "advancing", "recovering", "opening"].includes(row.phase)
+        ) || liveAgentConversations().some((conversation) => currentBrowserRoute(conversation) === route))
+          return;
+      }
       // A failed send's tab is always closed. It did nothing, and keeping it as "the chat's last
       // tab" left a document holding the dead command's marker and a delivery attempt stuck in
       // revival custody. The extension then preferred that tab for every later revival of the

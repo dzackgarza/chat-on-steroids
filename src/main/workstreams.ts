@@ -1336,15 +1336,11 @@ export async function bindWorkstreamReplacement(
     row.retiredConversations = row.retiredConversations.filter(
       (id) => id !== conversationId,
     );
-    // The opening message carried the context; its ACK is the receipt.
-    row.contextReceivedBy = conversationId;
-    // Delivery of the bootstrap starts the bound chat's lease.
-    if (row.phase === "opening") row.lastActivity = Date.now();
-    // The command id is retained only as a late-ACK rendezvous between the model's setup call
-    // and this browser binding. Once the concrete conversation is known it has no remaining
-    // controller meaning and must not survive as stale state on an active row.
-    row.commandId = null;
-    row.lateCommandId = null;
+    // This may precede the command's durable receipt: an extension observation can
+    // identify the chat before /commands/ack finishes. Retain commandId so the still-live
+    // bootstrap remains valid if the model has already claimed the workstream and cleared
+    // actionId. Otherwise the bridge drops the send as superseded and closes its live tab.
+    // The receipt-completion transition below is the only writer that clears this marker.
     await save();
     return {
       id: row.id,
@@ -1352,6 +1348,39 @@ export async function bindWorkstreamReplacement(
       previousConversationId,
       conversationId,
     };
+  });
+}
+
+/**
+ * Finish binding a replacement only AFTER its send receipt was durably committed.
+ *
+ * The browser can report the new conversation and the model can reclaim its workstream
+ * while the original send is still awaiting acknowledgement. Clearing the pending command
+ * at either earlier boundary is incorrect: the command and its tab still belong to this
+ * live chat. Match both the exact command and conversation before clearing its rendezvous.
+ * A crash between command-receipt persistence and this row save is replayed by the bridge's
+ * receipt reconciliation. A stale acknowledgment from a superseded command cannot mutate
+ * another claimant's workstream.
+ */
+export async function completeWorkstreamReplacementReceipt(
+  commandId: string,
+  conversationId: string,
+): Promise<boolean> {
+  return exclusive(async () => {
+    const row = [...rows.values()].find(
+      (candidate) =>
+        (candidate.commandId === commandId || candidate.lateCommandId === commandId) &&
+        candidate.conversationId === conversationId &&
+        (candidate.phase === "opening" ||
+          (candidate.phase === "active" && candidate.actionId === null)),
+    );
+    if (!row) return false;
+    row.contextReceivedBy = conversationId;
+    if (row.phase === "opening") row.lastActivity = Date.now();
+    row.commandId = null;
+    row.lateCommandId = null;
+    await save();
+    return true;
   });
 }
 
