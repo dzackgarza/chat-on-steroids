@@ -288,6 +288,7 @@ Scripts use the loopback bridge and its existing `state/local-token` bearer cred
 | `GET /workstreams` | Owner conversation, phase, activity/expiry times, recovery attempts, pending command and error |
 | `POST /workstreams/pause` | `{ "id": "research" }`; stops recovery and refuses its tool calls |
 | `POST /workstreams/resume` | `{ "id": "research" }`; resumes a paused owner |
+| `POST /workstreams/recover` | `{ "id": "research", "reason": "steward diagnosis" }`; same-chat recovery; an independently verified unarchived former claimant may also be identified exactly by `verifiedUnarchivedClaimant`, with the existing expected-row CAS fields |
 | `POST /workstreams/replace` | `{ "id": "research" }`; immediately fences the current owner and enters the same archive/replacement path used after failed automatic recovery |
 
 Controller-started workstreams auto-advance by default. A `completed` turn queues the next

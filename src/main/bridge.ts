@@ -1666,7 +1666,16 @@ async function handle(
       const reason = body["reason"];
       if (typeof reason !== "string" || !reason.trim() || reason.length > 500)
         return json(res, 400, { error: "recovery_reason_required_max_500" }, origin);
-      const recovering = await recoverWorkstreamNow(id.data, reason, Date.now(), expected);
+      // An explicit local steward who checked the account's unarchived listing
+      // may revive one formerly retired last claimant. The workstream state
+      // still requires exact claimant and expected-row identity matching.
+      const verified = body["verifiedUnarchivedClaimant"];
+      if (verified !== undefined && typeof verified !== "string")
+        return json(res, 400, { error: "verified_unarchived_claimant_must_be_string" }, origin);
+      const recovering = await recoverWorkstreamNow(
+        id.data, reason, Date.now(), expected,
+        typeof verified === "string" ? verified : undefined,
+      );
       if (recovering) await sweepWorkstreams();
       return json(res, recovering ? 202 : 409, { recovering }, origin);
     }

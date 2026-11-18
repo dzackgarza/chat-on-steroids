@@ -243,9 +243,11 @@ export function workstreamConversation(id: string): string | null {
 }
 
 /**
- * Clears one stale browser reinjection route after the browser/backend has proved it no longer
- * exists. This changes no workstream ownership: logical id, opaque claim, recorder session,
- * workspace and activity all remain untouched.
+ * Clears an inactive stale browser reinjection route. Backend lookup alone is
+ * NOT allowed to retire an active workstream's browser identity: a real Sage
+ * conversation remained unarchived in ChatGPT while an erroneous browser
+ * invalidation cleared its active route and closed its tab. A live claimant
+ * can only be replaced through the explicit fenced workstream lifecycle.
  */
 export async function invalidateWorkstreamConversation(
   id: string,
@@ -257,7 +259,7 @@ export async function invalidateWorkstreamConversation(
     if (
       !row ||
       row.conversationId !== conversationId ||
-      ["archiving", "opening"].includes(row.phase)
+      ["active", "advancing", "recovering", "archiving", "opening"].includes(row.phase)
     )
       return false;
     if (!row.retiredConversations.includes(conversationId))
@@ -989,6 +991,7 @@ export async function recoverWorkstreamNow(
   reason: string,
   now = Date.now(),
   expected?: Pick<Workstream, "conversationId" | "lastActivity">,
+  verifiedUnarchivedClaimant?: string,
 ): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
@@ -1005,15 +1008,28 @@ export async function recoverWorkstreamNow(
     // Explicit steward recovery is also needed after an automation-owned chat has
     // claimed this workstream without a live page to rebind the browser route.
     // A previously observed claim line identifies the exact chat to revive. Do
-    // not guess an earlier claimant or revive a retired/provisional conversation:
-    // the steward can choose the existing fenced replacement path in that case.
+    // not guess an earlier claimant or revive a retired/provisional conversation
+    // without independent account-level evidence of the exact unarchived chat.
+    // One erroneous browser invalidation retired an actually live Sage route;
+    // a locally authorized steward must be able to recover that same chat
+    // without manufacturing another replacement.
     const conversation = row.conversationId ?? row.claimedBy.at(-1) ?? null;
     if (
       !conversation ||
       provisionalRoute(conversation) ||
-      row.retiredConversations.includes(conversation)
+      (row.retiredConversations.includes(conversation) &&
+        !(row.conversationId === null &&
+          verifiedUnarchivedClaimant === conversation &&
+          SERVER_CONVERSATION_ID.test(conversation))) ||
+      [...rows.values()].some((other) =>
+        other.id !== id && other.conversationId === conversation)
     )
       return false;
+    if (verifiedUnarchivedClaimant === conversation) {
+      row.retiredConversations = row.retiredConversations.filter((c) => c !== conversation);
+      row.pendingArchives = row.pendingArchives.filter((c) => c !== conversation);
+      row.orphanedBootstraps = row.orphanedBootstraps.filter((c) => c !== conversation);
+    }
     row.conversationId = conversation;
     row.phase = "recovering";
     row.attempts = 0;

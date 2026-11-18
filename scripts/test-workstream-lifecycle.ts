@@ -15,13 +15,17 @@ import {
   bindWorkstreamConversation,
   continueWorkstream,
   finishWorkstreamArchive,
+  invalidateWorkstreamConversation,
   nextWorkstreamActions,
   noteSuccessfulWorkstreamTool,
   pendingWorkstreamArchives,
+  pauseWorkstream,
   queueFailedBootstrapArchive,
   recordWorkstreamCommand,
+  recoverWorkstreamNow,
   replaceWorkstream,
   reserveWorkstream,
+  resumeWorkstream,
   restoreWorkstreams,
   scheduleWorkstreamAfterTurn,
   setWorkstreamAutoAdvance,
@@ -46,6 +50,9 @@ void (async () => {
     if (!noOp.ok) throw new Error('unreachable');
     await setWorkstreamAutoAdvance('no-op', true);
     assert.equal(await bindWorkstreamConversation(noOp.workstreamId, 'chat-no-op'), 'no-op');
+    // A ChatGPT route probe must not erase a current, tool-capable workstream.
+    assert.equal(await invalidateWorkstreamConversation('no-op', 'chat-no-op'), false);
+    assert.equal(state('no-op').conversationId, 'chat-no-op');
     assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-empty', 'completed', 2100, 2100), true);
     assert.equal(state('no-op').phase, 'active');
     assert.match(state('no-op').error ?? '', /^auto_continue_without_successful_tool:/);
@@ -149,6 +156,25 @@ void (async () => {
     assert.equal(await bindWorkstreamConversation(claimedLate.workstreamId, 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'), 'late-ack');
     assert.deepEqual(state('late-ack').pendingArchives, []);
     assert.ok(!state('late-ack').retiredConversations.includes('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'));
+
+    // The inactive case still permits an explicit stale-route invalidation.
+    const parked = await startWorkstream('parked', path.join(temp, 'parked'), 530000);
+    assert.equal(parked.ok, true);
+    if (!parked.ok) throw new Error('unreachable');
+    assert.equal(await bindWorkstreamConversation(parked.workstreamId, 'ffffffff-ffff-ffff-ffff-ffffffffffff'), 'parked');
+    assert.equal(await pauseWorkstream('parked'), true);
+    assert.equal(await invalidateWorkstreamConversation('parked', 'ffffffff-ffff-ffff-ffff-ffffffffffff'), true);
+    assert.equal(state('parked').conversationId, null);
+    assert.ok(state('parked').retiredConversations.includes('ffffffff-ffff-ffff-ffff-ffffffffffff'));
+    assert.equal(await resumeWorkstream('parked'), true);
+    assert.equal(await recoverWorkstreamNow('parked', 'verified old chat', 540000), false);
+    assert.equal(await recoverWorkstreamNow('parked', 'verified old chat', 540000, undefined,
+      'abababab-abab-abab-abab-abababababab'), false);
+    assert.equal(await recoverWorkstreamNow('parked', 'verified old chat', 540000, undefined,
+      'ffffffff-ffff-ffff-ffff-ffffffffffff'), true);
+    assert.equal(state('parked').phase, 'recovering');
+    assert.equal(state('parked').conversationId, 'ffffffff-ffff-ffff-ffff-ffffffffffff');
+    assert.ok(!state('parked').retiredConversations.includes('ffffffff-ffff-ffff-ffff-ffffffffffff'));
 
     console.log('PASS: no-work advancement, stale-claim exclusion, archive timeout, orphan cleanup, durable ACK');
   } finally {

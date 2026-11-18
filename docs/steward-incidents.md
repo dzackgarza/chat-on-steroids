@@ -1455,3 +1455,12 @@ unbounded continuation loop despite the corrected controller. The watchdog now r
 `auto_continue_without_successful_tool` as a decision requiring steward diagnosis,
 never automatic revival; it still reports overlong in-flight tools independently.
 The negative path is covered by `test_workstream_watchdog.py`.
+
+A follow-up runtime restart found that the browser route-invalidating path
+removed the Sage worker's active conversation and put it in the retired tab
+list, even though a fresh ChatGPT account listing still showed that conversation
+unarchived. A single backend lookup can be an inconsistent signal; it is not
+authority to revoke the active model claim. Active/advancing/recovering workstream
+routes therefore no longer accept background invalidation. The controller's
+explicit fenced replacement and the owner's paused/blocked cleanup retain their
+separate semantics; the lifecycle test covers both positive and negative paths.
