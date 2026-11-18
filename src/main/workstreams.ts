@@ -15,6 +15,8 @@ import { retirePrimeRuns, workerEndedForWorkstream, workerOwnsWorkstream, worker
 export function provisionalRoute(conversationId: string): boolean {
   return /^(?:WEB|local-chatgpt):/i.test(conversationId);
 }
+/** Same backend route grammar the paired browser extension accepts. */
+const SERVER_CONVERSATION_ID = /^[0-9a-f-]{8,64}$/i;
 
 /**
  * The lock's lifetime: five minutes after the last tool call the app received under it. Only
@@ -1326,7 +1328,7 @@ export async function queueFailedBootstrapArchive(
   commandId: string,
   conversationId: string,
 ): Promise<boolean> {
-  if (!conversationId || provisionalRoute(conversationId)) return false;
+  if (!SERVER_CONVERSATION_ID.test(conversationId)) return false;
   return exclusive(async () => {
     const row = rows.get(id);
     if (
@@ -1395,7 +1397,7 @@ export async function finishWorkstreamArchive(
       // but the obligation survives every replacement/daemon restart.
       if (
         error &&
-        !provisionalRoute(row.conversationId) &&
+        SERVER_CONVERSATION_ID.test(row.conversationId) &&
         !row.pendingArchives.includes(row.conversationId)
       ) {
         row.pendingArchives.push(row.conversationId);
@@ -1431,7 +1433,7 @@ export function pendingWorkstreamArchives(): Array<{ id: string; conversationId:
         (row.orphanedBootstraps.includes(conversationId) ||
           (row.conversationId && !["archiving", "opening"].includes(row.phase))) &&
         row.retiredConversations.includes(conversationId) &&
-        !provisionalRoute(conversationId))
+        SERVER_CONVERSATION_ID.test(conversationId))
       .map((conversationId) => ({ id: row.id, conversationId })),
   );
 }

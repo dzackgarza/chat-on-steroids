@@ -74,36 +74,36 @@ void (async () => {
     // verifiable orphan. A wrong/stale command cannot nominate one.
     const bootstrap = await reserveWorkstream('orphan', 'fixture', 'cmd-start', true, 4000);
     assert.equal(bootstrap.ok, true);
-    assert.equal(await queueFailedBootstrapArchive('orphan', 'wrong-command', 'orphan-chat'), false);
+    assert.equal(await queueFailedBootstrapArchive('orphan', 'wrong-command', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), false);
     assert.equal(await queueFailedBootstrapArchive('orphan', 'cmd-start', 'WEB:temporary'), false);
-    assert.equal(await queueFailedBootstrapArchive('orphan', 'cmd-start', 'orphan-chat'), true);
+    assert.equal(await queueFailedBootstrapArchive('orphan', 'cmd-start', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), true);
     assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'orphan'),
-      [{ id: 'orphan', conversationId: 'orphan-chat' }]);
+      [{ id: 'orphan', conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }]);
 
     // A timed-out archive must release the former owner *and* preserve the
     // unconfirmed backend cleanup until a distinct successor is bound.
     const first = await startWorkstream('replace', path.join(temp, 'two'), 5000);
     assert.equal(first.ok, true);
     if (!first.ok) throw new Error('unreachable');
-    assert.equal(await bindWorkstreamConversation(first.workstreamId, 'old-chat'), 'replace');
+    assert.equal(await bindWorkstreamConversation(first.workstreamId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'), 'replace');
     assert.equal(await replaceWorkstream('replace'), true);
     const archived = state('replace').actionId;
     assert.ok(archived);
     assert.equal(state('replace').phase, 'archiving');
     assert.equal(await finishWorkstreamArchive('replace', archived, 'extension unavailable'), true);
     assert.equal(state('replace').phase, 'opening');
-    assert.deepEqual(state('replace').pendingArchives, ['old-chat']);
+    assert.deepEqual(state('replace').pendingArchives, ['bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb']);
     assert.ok(!pendingWorkstreamArchives().some((item) => item.id === 'replace'));
     assert.equal(await finishWorkstreamArchive('replace', archived, null), false);
 
     const successor = await continueWorkstream('replace', 6000);
     assert.equal(successor.ok, true);
     if (!successor.ok) throw new Error('unreachable');
-    assert.equal(await bindWorkstreamConversation(successor.workstreamId, 'new-chat'), 'replace');
+    assert.equal(await bindWorkstreamConversation(successor.workstreamId, 'cccccccc-cccc-cccc-cccc-cccccccccccc'), 'replace');
     assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'replace'),
-      [{ id: 'replace', conversationId: 'old-chat' }]);
-    assert.equal(await acknowledgeWorkstreamArchiveCleanup('replace', 'new-chat'), false);
-    assert.equal(await acknowledgeWorkstreamArchiveCleanup('replace', 'old-chat'), true);
+      [{ id: 'replace', conversationId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' }]);
+    assert.equal(await acknowledgeWorkstreamArchiveCleanup('replace', 'cccccccc-cccc-cccc-cccc-cccccccccccc'), false);
+    assert.equal(await acknowledgeWorkstreamArchiveCleanup('replace', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'), true);
     assert.deepEqual(state('replace').pendingArchives, []);
     assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'replace'), []);
 
@@ -111,7 +111,7 @@ void (async () => {
     // and reload the workstream document to validate the restart boundary.
     const durable = JSON.parse(await readFile(path.join(temp, 'state', 'workstreams.json'), 'utf8'));
     assert.ok(durable.rows.some((row: { id: string; orphanedBootstraps: string[] }) =>
-      row.id === 'orphan' && row.orphanedBootstraps.includes('orphan-chat')));
+      row.id === 'orphan' && row.orphanedBootstraps.includes('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')));
     // Force an actual serialization/parse round trip: a same-root restore
     // would simply reuse the current in-memory map.
     initDurableStore(path.join(temp, 'empty-other-root'));
@@ -120,9 +120,9 @@ void (async () => {
     initDurableStore(temp);
     await restoreWorkstreams();
     assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'orphan'),
-      [{ id: 'orphan', conversationId: 'orphan-chat' }]);
-    assert.equal(await acknowledgeWorkstreamArchiveCleanup('orphan', 'orphan-chat'), true);
-    assert.equal(await acknowledgeWorkstreamArchiveCleanup('orphan', 'orphan-chat'), false);
+      [{ id: 'orphan', conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }]);
+    assert.equal(await acknowledgeWorkstreamArchiveCleanup('orphan', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), true);
+    assert.equal(await acknowledgeWorkstreamArchiveCleanup('orphan', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), false);
 
     console.log('PASS: no-work advancement, stale-claim exclusion, archive timeout, orphan cleanup, durable ACK');
   } finally {
