@@ -291,9 +291,10 @@ Controller-started workstreams auto-advance by default. A `completed` turn queue
 workstream prompt **only if that workstream completed a successful ordinary connector call
 since the previous turn boundary**. Claiming a workstream, receiving a rejected tool response,
 and emitting an assistant reply do not constitute execution. A completed turn without that
-evidence is reported as `blocked` with `auto_continue_without_successful_tool` instead of
-spawning an indefinite chain of empty turns; the owner or steward can explicitly reclaim the
-same workstream after correcting the obstruction. An observed failed/stopped/interrupted turn
+evidence retains the `active` workstream and tool capability, reports
+`auto_continue_without_successful_tool`, and schedules no more automatic prompts.
+A steward can correct the obstruction and continue the existing chat without a new claim
+or replacement. An observed failed/stopped/interrupted turn
 enters the bounded recovery path. `action=start` from the model remains identity registration
 only and does not make that chat self-driving. Set `autoAdvance:false` on `/workstreams/start` for
 one-shot controller fixtures. A separate live fixture with `--no-work-loop` tests the no-tool

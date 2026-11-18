@@ -235,10 +235,10 @@ try {
   if (noWorkMode) {
     // Real ChatGPT: a completed non-tool turn must be diagnosed instead of
     // creating a second send, even though this workstream has auto-advance on.
-    const blocked = await waitFor('completed no-work turn blocks the advance', async () => {
+    const blocked = await waitFor('completed no-work turn suppresses the advance', async () => {
       const rows = (await bridgeGet('/workstreams')).workstreams ?? [];
       const row = rows.find((item) => item.id === id);
-      if (row?.phase !== 'blocked' || !row.error?.startsWith('auto_continue_without_successful_tool:') ||
+      if (row?.phase !== 'active' || !row.error?.startsWith('auto_continue_without_successful_tool:') ||
           !row.conversationId || row.actionId || row.commandId) return null;
       return row;
     }, START_TIMEOUT_MS);
@@ -246,7 +246,7 @@ try {
     assert.ok(await pageForConversation(oldConversation));
     await sleep(5_000);
     const after = (await bridgeGet('/workstreams')).workstreams.find((item) => item.id === id);
-    assert.equal(after.phase, 'blocked', 'a completed no-work turn must not schedule another');
+    assert.equal(after.phase, 'active', 'a completed no-work turn must preserve execution capability');
     assert.equal(after.lastAdvancedTurnId, blocked.lastAdvancedTurnId);
     assert.equal(after.commandId, null);
     console.log(JSON.stringify({

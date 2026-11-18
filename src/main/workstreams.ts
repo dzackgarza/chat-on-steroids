@@ -140,6 +140,10 @@ export async function restoreWorkstreams(): Promise<void> {
     rows.clear();
     for (const row of restored) {
       if (rows.has(row.id)) throw new Error("Duplicate durable workstream");
+      // A no-work turn suppresses automatic sends, not ordinary tool access.
+      // Repair rows persisted by the earlier overrestrictive transition.
+      if (row.phase === "blocked" && row.error?.startsWith("auto_continue_without_successful_tool:"))
+        row.phase = "active";
       // Builds before the archive-route fix left a successfully archived frontend in
       // conversationId while the row was already opening its replacement. This shape is
       // unambiguous: opening + replace-* is reachable only after archive success, so the old
@@ -812,8 +816,8 @@ export async function scheduleWorkstreamAfterTurn(
     // while all actual reads had failed. The old active→advancing loop accepted
     // those completed turns indefinitely. Only a successful ordinary call since
     // the preceding turn boundary authorizes another automatic continuation.
-    // Leave this chat reachable for an explicit owner/steward correction; do
-    // not archive or manufacture further conversations as a response to prose.
+    // Keep the tool claim active for an owner/steward correction. It must not
+    // archive, revoke execution, or manufacture further automatic messages.
     const noSuccessfulCall =
       outcome === "completed" &&
       row.lastSuccessfulToolAt <= row.lastAdvancedTurnTime;
@@ -832,7 +836,7 @@ export async function scheduleWorkstreamAfterTurn(
       row.actionId = null;
       row.error = "conversation_length_exhausted";
     } else if (noSuccessfulCall) {
-      row.phase = "blocked";
+      row.phase = "active";
       row.actionId = null;
       row.nextCheck = 0;
       row.attempts = 0;

@@ -1421,9 +1421,11 @@ turn*, not a claim/lease timestamp or an assistant message.
 
 The admitted tool now records a durable success witness once per turn, tied to its current
 opaque claim and recorded only after the real result is known. The scheduler still reports
-terminal turns, but a `completed` turn without the witness enters the explicitly diagnosable
-`blocked` state rather than auto-advancing. An explicit owner/steward reclaim is still
-possible; failed tool calls and detached old claims cannot manufacture progress. The actual
+terminal turns, but a `completed` turn without the witness suppresses the next automatic
+send while retaining ordinary tool access in the same `active` chat. The first implementation
+instead entered `blocked`, revoking tools; a live sage-indefinite-port turn exposed the
+second lockout, so restore now repairs any already-blocked rows. Failed tool calls and
+detached old claims cannot manufacture progress. The actual
 cross-turn and restart transitions are tested against the workstream store, independently of
 the live ChatGPT acceptance surface.
 

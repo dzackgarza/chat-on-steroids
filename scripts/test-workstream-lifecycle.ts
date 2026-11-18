@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { initDurableStore } from '../src/main/durable';
 import {
+  admitWorkstreamCall,
   acknowledgeWorkstreamArchiveCleanup,
   bindWorkstreamConversation,
   continueWorkstream,
@@ -46,28 +47,33 @@ void (async () => {
     await setWorkstreamAutoAdvance('no-op', true);
     assert.equal(await bindWorkstreamConversation(noOp.workstreamId, 'chat-no-op'), 'no-op');
     assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-empty', 'completed', 2100, 2100), true);
-    assert.equal(state('no-op').phase, 'blocked');
+    assert.equal(state('no-op').phase, 'active');
     assert.match(state('no-op').error ?? '', /^auto_continue_without_successful_tool:/);
     assert.equal(state('no-op').actionId, null);
     assert.ok(!(await nextWorkstreamActions(2200, true)).some((entry) => entry.id === 'no-op'));
-    assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-empty-again', 'completed', 2300, 2300), false);
+    assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-empty-again', 'completed', 2300, 2300), true);
+    assert.equal(state('no-op').phase, 'active');
+    assert.equal(state('no-op').actionId, null);
 
-    // An explicit model reclaim remains available; a genuinely successful call
-    // permits exactly one more automatic continuation.
-    const reclaimed = await continueWorkstream('no-op', 3000);
+    // A no-work turn must NOT revoke ordinary tool admission. That earlier
+    // implementation blocked Sage itself after one text-only response.
+    const admitted = await admitWorkstreamCall(noOp.workstreamId, 3000);
+    assert.equal(admitted.ok, true);
+    // A later legitimate reclaim also remains available after lease expiry.
+    const reclaimed = await continueWorkstream('no-op', 400000);
     assert.equal(reclaimed.ok, true);
     if (!reclaimed.ok) throw new Error('unreachable');
     assert.equal(await bindWorkstreamConversation(reclaimed.workstreamId, 'chat-no-op'), 'no-op');
-    await noteSuccessfulWorkstreamTool('no-op', noOp.workstreamId, 3010); // stale claim
+    await noteSuccessfulWorkstreamTool('no-op', noOp.workstreamId, 400010); // stale claim
     assert.equal(state('no-op').lastSuccessfulToolAt, 0);
-    await noteSuccessfulWorkstreamTool('no-op', reclaimed.workstreamId, 3020);
-    assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-real', 'completed', 3100, 3100), true);
+    await noteSuccessfulWorkstreamTool('no-op', reclaimed.workstreamId, 400020);
+    assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-real', 'completed', 400100, 400100), true);
     assert.equal(state('no-op').phase, 'advancing');
     const advance = state('no-op').actionId;
     assert.ok(advance);
     assert.equal(await recordWorkstreamCommand('no-op', advance, 'cmd-next'), true);
-    assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-after-no-work', 'completed', 3200, 3200), true);
-    assert.equal(state('no-op').phase, 'blocked');
+    assert.equal(await scheduleWorkstreamAfterTurn('chat-no-op', 'turn-after-no-work', 'completed', 400200, 400200), true);
+    assert.equal(state('no-op').phase, 'active');
     assert.equal(state('no-op').commandId, null);
 
     // A server conversation allocated by an uncommitted bootstrap is a
