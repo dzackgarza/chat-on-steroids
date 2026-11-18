@@ -1438,3 +1438,11 @@ browser tab, and acknowledges them only after a ChatGPT backend read confirms `i
 or an authoritative 404. A retired owner cannot be cleaned up until a distinct successor is
 bound; a never-delivered bootstrap is independently certified as an orphan. Live workers and
 unrelated conversations are never cleanup candidates by title or inactivity heuristic.
+
+Live acceptance on 2026-11-18 also exposed ChatGPT HTTP 429 responses while verifying old
+fixture archives. An archive mutation is not accepted as completed until the backend read
+confirms `is_archived` or an authoritative 404. The extension now honors the backend's
+`Retry-After` (or a conservative cooldown) instead of retrying each minute, and retains the
+unacknowledged cleanup queue across restarts. The test-fixture cleanup stops at the first
+429, skips client-only provisional conversation IDs, and preserves failed fixtures for
+another verified cleanup instead of treating a successful PATCH as archival proof.

@@ -168,12 +168,27 @@ async function archiveConversation(conversationId) {
     if (!session.ok) return { error: 'session_http_' + session.status };
     const auth = await session.json();
     if (typeof auth.accessToken !== 'string') return { error: 'session_token_missing' };
+    const current = await fetch('/backend-api/conversation/${conversationId}', {
+      credentials: 'include', headers: { Authorization: 'Bearer ' + auth.accessToken }
+    });
+    if (current.status === 404) return { status: 404, ok: true, alreadyGone: true };
+    if (!current.ok) return { status: current.status, ok: false };
+    if ((await current.json())?.is_archived === true)
+      return { status: 200, ok: true, alreadyArchived: true };
     const response = await fetch('/backend-api/conversation/${conversationId}', {
       method: 'PATCH', credentials: 'include',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.accessToken },
       body: JSON.stringify({ is_archived: true })
     });
-    return { status: response.status, ok: response.ok };
+    if (response.status === 404) return { status: 404, ok: true, alreadyGone: true };
+    if (!response.ok) return { status: response.status, ok: false };
+    const confirm = await fetch('/backend-api/conversation/${conversationId}', {
+      credentials: 'include', headers: { Authorization: 'Bearer ' + auth.accessToken }
+    });
+    if (confirm.status === 404) return { status: 404, ok: true, alreadyGone: true };
+    if (!confirm.ok) return { status: confirm.status, ok: false };
+    const data = await confirm.json();
+    return { status: confirm.status, ok: data?.is_archived === true };
   })()`);
 }
 
@@ -196,19 +211,39 @@ if (process.argv.includes('--cleanup-fixtures')) {
   const fixtures = rows.filter((row) =>
     /^live-acceptance-\d+$/.test(row.id) && row.phase === 'paused');
   const failures = [];
-  for (const fixture of fixtures) {
+  fixtureLoop: for (const fixture of fixtures) {
+    let fixtureFailed = false;
     const conversations = new Set([
       fixture.conversationId, ...(fixture.retiredConversations ?? []),
     ].filter(Boolean));
     for (const conversation of conversations) {
+      // These are page-local draft IDs, never ChatGPT backend conversations;
+      // the backend correctly refuses archive PATCH against them with HTTP 400.
+      if (/^(?:WEB|local-chatgpt):/i.test(conversation)) continue;
       const archived = await archiveConversation(conversation).catch((error) => {
         failures.push(`${conversation}: ${error.message}`);
+        fixtureFailed = true;
         return null;
       });
-      if (archived && !archived.ok) failures.push(`${conversation}: HTTP ${archived.status}`);
-      await closeConversationTabs(conversation).catch((error) =>
-        failures.push(`${conversation} tab: ${error.message}`));
+      if (archived && !archived.ok) {
+        fixtureFailed = true;
+        failures.push(`${conversation}: verification HTTP ${archived.status}`);
+        // Do not multiply a ChatGPT account-level 429 into N more backend
+        // requests on the other fixtures. They stay paused and recoverable.
+        if (archived.status === 429) break fixtureLoop;
+      }
+      if (archived?.ok) {
+        await closeConversationTabs(conversation).catch((error) => {
+          fixtureFailed = true;
+          failures.push(`${conversation} tab: ${error.message}`);
+        });
+      }
     }
+    // A disposable fixture with no outstanding ChatGPT conversation must not
+    // permanently accumulate in the app's durable managed workstream list.
+    if (!fixtureFailed)
+      await bridgePost('/workstreams/retire', { id: fixture.id }).catch((error) =>
+        failures.push(`${fixture.id} retire: ${error.message}`));
   }
   console.log(JSON.stringify({ fixtures: fixtures.length, failedCleanups: failures.length }));
   if (failures.length) throw new Error(`Fixture cleanup incomplete: ${failures.join('; ')}`);
@@ -217,7 +252,8 @@ if (process.argv.includes('--cleanup-fixtures')) {
 const noWorkMode = process.argv.includes('--no-work-loop');
 const context = noWorkMode ? [
   'LIVE ACCEPTANCE FIXTURE ONLY.',
-  'The entire task is to reply with exactly "NO-WORK-DONE". Do not call any ordinary connector tools or edit any files.',
+  `First call the ${pluginName} workstream tool with action="continue" and workstream="${id}". Print the exact workstream claim line as instructed by that tool.`,
+  'Then reply with exactly "NO-WORK-DONE". Do not call any ordinary connector tools or edit any files.',
   'This tests whether the controller recognizes a completed turn with no successful tools; make one short reply and stop.'
 ].join(' ') : [
   'LIVE ACCEPTANCE FIXTURE ONLY.',
@@ -238,6 +274,8 @@ try {
     const blocked = await waitFor('completed no-work turn suppresses the advance', async () => {
       const rows = (await bridgeGet('/workstreams')).workstreams ?? [];
       const row = rows.find((item) => item.id === id);
+      if (row?.phase === 'blocked' && row.error)
+        throw new Error(`fixture delivery failed before the no-work turn: ${row.error}`);
       if (row?.phase !== 'active' || !row.error?.startsWith('auto_continue_without_successful_tool:') ||
           !row.conversationId || row.actionId || row.commandId) return null;
       return row;
@@ -331,16 +369,25 @@ try {
   const current = (await bridgeGet('/workstreams').catch(() => ({ workstreams: [] })))
     .workstreams.find((row) => row.id === id);
   await bridgePost('/workstreams/pause', { id }).catch(() => undefined);
+  let archiveFailed = false;
   for (const conversation of new Set(
     [oldConversation, replacementConversation, current?.conversationId].filter(Boolean)
   )) {
+    if (/^(?:WEB|local-chatgpt):/i.test(conversation)) continue;
     const archived = await archiveConversation(conversation).catch((error) => {
       console.warn(`Could not archive fixture ${conversation}: ${error.message}`);
+      archiveFailed = true;
       return null;
     });
-    if (archived && !archived.ok)
+    if (archived && !archived.ok) {
+      archiveFailed = true;
       console.warn(`Fixture ${conversation}: archive returned status ${archived.status}`);
-    await closeConversationTabs(conversation).catch((error) =>
-      console.warn(`Could not close fixture ${conversation} tabs: ${error.message}`));
+    }
+    if (archived?.ok) {
+      await closeConversationTabs(conversation).catch((error) =>
+        console.warn(`Could not close fixture ${conversation} tabs: ${error.message}`));
+    }
   }
+  if (!archiveFailed)
+    await bridgePost('/workstreams/retire', { id }).catch(() => undefined);
 }

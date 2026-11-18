@@ -3537,26 +3537,51 @@ async function archiveChatThroughHost(conversationId, host) {
     const execution = chrome.scripting.executeScript({
       target: { tabId: host.id }, world: 'MAIN', args: [conversationId],
       func: async (id) => {
+        const rateLimit = (response, error) => {
+          const header = response.headers.get('Retry-After');
+          const delta = !header ? NaN : /^\d+(?:\.\d+)?$/.test(header)
+            ? Number(header) * 1000 : Date.parse(header) - Date.now();
+          const retryAfterMs = Number.isFinite(delta)
+            ? Math.max(60_000, Math.min(60 * 60_000, delta))
+            : 15 * 60_000;
+          return { error, retryAfterMs };
+        };
         const session = await fetch('/api/auth/session', {
           credentials: 'include', signal: AbortSignal.timeout(15_000)
         });
-        if (!session.ok) return { error: `archive_session_http_${session.status}` };
+        if (!session.ok) return session.status === 429
+          ? rateLimit(session, 'archive_session_http_429')
+          : { error: `archive_session_http_${session.status}` };
         const auth = await session.json();
         if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
         const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
         const endpoint = `/backend-api/conversation/${id}`;
+        // A previous attempt may already have archived the chat but lost its
+        // browser ACK. Avoid another mutation when the backend already says
+        // that the desired postcondition holds.
+        const earlier = await fetch(endpoint, {
+          headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
+        });
+        if (earlier.status === 404) return { archived: true, alreadyGone: true };
+        if (earlier.status === 429) return rateLimit(earlier, 'archive_probe_http_429');
+        if (!earlier.ok) return { error: `archive_probe_http_${earlier.status}` };
+        if ((await earlier.json())?.is_archived === true) return { archived: true, alreadyArchived: true };
         const response = await fetch(endpoint, {
           method: 'PATCH', headers, credentials: 'include',
           signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
         });
         // Gone/removed already meets the desired inbox invariant.
         if (response.status === 404) return { archived: true, alreadyGone: true };
-        if (!response.ok) return { error: `archive_http_${response.status}` };
+        if (!response.ok) return response.status === 429
+          ? rateLimit(response, 'archive_http_429')
+          : { error: `archive_http_${response.status}` };
         const verified = await fetch(endpoint, {
           headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
         });
         if (verified.status === 404) return { archived: true, alreadyGone: true };
-        if (!verified.ok) return { error: `archive_verify_http_${verified.status}` };
+        if (!verified.ok) return verified.status === 429
+          ? rateLimit(verified, 'archive_verify_http_429')
+          : { error: `archive_verify_http_${verified.status}` };
         const body = await verified.json();
         return body?.is_archived === true
           ? { archived: true }
@@ -3728,6 +3753,11 @@ async function acknowledgeWorkstreamArchive(action, matches) {
  * supplies an existing authenticated browser tab, so cleanup opens no chats.
  */
 async function cleanupRetiredWorkstreamArchives() {
+  // ChatGPT can rate-limit archive reads and writes. Preserve the exact durable
+  // queue and observe Retry-After instead of retrying on every minute alarm.
+  const retry = (await chrome.storage.local.get('workstreamArchiveCleanupAfter'))
+    .workstreamArchiveCleanupAfter;
+  if (Number.isFinite(retry) && retry > Date.now()) return;
   const pending = await call('/workstreams/archive-cleanup');
   if (!pending.ok || !Array.isArray(pending.data?.actions)) return;
   const routes = await call('/workstreams/routes');
@@ -3757,7 +3787,13 @@ async function cleanupRetiredWorkstreamArchives() {
         break;
       }
       // No more browser attempts on this tick after a rate-limit/authentication failure.
-      if (/429|401|403|session_token|session_http/.test(result.error ?? '')) return;
+      if (/429/.test(result.error ?? '')) {
+        await chrome.storage.local.set({
+          workstreamArchiveCleanupAfter: Date.now() + (result.retryAfterMs ?? 15 * 60_000)
+        });
+        return;
+      }
+      if (/401|403|session_token|session_http/.test(result.error ?? '')) return;
     }
     if (!done) return; // exact queue entry stays durable for the next browser alarm
   }

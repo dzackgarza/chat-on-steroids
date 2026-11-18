@@ -273,6 +273,8 @@ AGENTS.md, TODOs and vault plans as needed, then begin the next unblocked DAG wo
 Delivery or archival errors are exposed in workstream status. A bounded, unconfirmed archive
 does not strand the workstream: the old owner is fenced, the replacement opens, and an exact
 durable backend-archive obligation remains until the browser verifies and acknowledges it.
+ChatGPT HTTP 429 retains that exact pending obligation through `Retry-After` (or a
+conservative bounded retry delay) rather than making a new request every minute.
 An uncommitted fresh-chat receipt that nevertheless identifies a real orphan conversation
 is cleaned up under that same exact-id protocol; no title/age sweep archives user chats.
 
