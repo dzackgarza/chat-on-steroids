@@ -57,6 +57,8 @@ const rowSchema = z
     autoAdvance: z.boolean().default(false),
     lastAdvancedTurnId: z.string().nullable().default(null),
     lastAdvancedTurnTime: z.number().default(0),
+    /** Last successful ordinary MCP call, not a claim, tool rejection, or browser turn. */
+    lastSuccessfulToolAt: z.number().default(0),
     attempts: z.number().int().min(0).max(3),
     nextCheck: z.number(),
     commandId: z.string().nullable(),
@@ -71,6 +73,10 @@ const rowSchema = z
     error: z.string().nullable(),
     retiredKeys: z.array(z.string()),
     retiredConversations: z.array(z.string()),
+    /** Exact former owner conversations whose backend archive was not acknowledged. */
+    pendingArchives: z.array(z.string()).default([]),
+    /** Uncommitted fresh-chat receipts that provably never delivered a bootstrap. */
+    orphanedBootstraps: z.array(z.string()).default([]),
     /** Chats whose recorded claim line named this row, under its current lock or a retired
      * one. Exact evidence of which workstream a chat holds, kept across reclaims. */
     claimedBy: z.array(z.string()).default([]),
@@ -380,6 +386,7 @@ export async function startWorkstream(
       autoAdvance: false,
       lastAdvancedTurnId: null,
       lastAdvancedTurnTime: 0,
+      lastSuccessfulToolAt: 0,
       attempts: 0,
       nextCheck: 0,
       commandId: null,
@@ -387,6 +394,8 @@ export async function startWorkstream(
       error: null,
       retiredKeys: [],
       retiredConversations: [],
+      pendingArchives: [],
+      orphanedBootstraps: [],
       claimedBy: [],
       contextReceivedBy: null,
     });
@@ -447,6 +456,7 @@ export async function continueWorkstream(
       autoAdvance: prior.autoAdvance,
       lastAdvancedTurnId: prior.lastAdvancedTurnId,
       lastAdvancedTurnTime: prior.lastAdvancedTurnTime,
+      lastSuccessfulToolAt: prior.lastSuccessfulToolAt,
       attempts: 0,
       nextCheck: 0,
       // Keep the controller's commandId only while the row is still `opening`, so a late
@@ -456,6 +466,8 @@ export async function continueWorkstream(
       error: null,
       retiredKeys,
       retiredConversations: [...prior.retiredConversations],
+      pendingArchives: [...prior.pendingArchives],
+      orphanedBootstraps: [...prior.orphanedBootstraps],
       claimedBy: [...prior.claimedBy],
       contextReceivedBy: prior.contextReceivedBy,
     });
@@ -500,6 +512,7 @@ export async function reserveWorkstream(
       autoAdvance,
       lastAdvancedTurnId: prior?.lastAdvancedTurnId ?? null,
       lastAdvancedTurnTime: prior?.lastAdvancedTurnTime ?? 0,
+      lastSuccessfulToolAt: prior?.lastSuccessfulToolAt ?? 0,
       attempts: 0,
       nextCheck: 0,
       commandId,
@@ -507,6 +520,8 @@ export async function reserveWorkstream(
       error: null,
       retiredKeys: [...(prior?.retiredKeys ?? [])],
       retiredConversations: [...(prior?.retiredConversations ?? [])],
+      pendingArchives: [...(prior?.pendingArchives ?? [])],
+      orphanedBootstraps: [...(prior?.orphanedBootstraps ?? [])],
       claimedBy: [...(prior?.claimedBy ?? [])],
       contextReceivedBy: context === prior?.context ? prior.contextReceivedBy : null,
     });
@@ -580,6 +595,28 @@ export async function admitWorkstreamCall(
       workstreamId: row.lock,
       sessionId: row.sessionId,
     };
+  });
+}
+
+/**
+ * A returned, successful ordinary connector call is evidence of execution; a
+ * workstream claim, rejected tool, or model turn completion is not. Keep one
+ * durable witness per turn, so 40 calls do not add 40 extra state writes.
+ *
+ * The exact claim check prevents a late result from a retired chat from making
+ * its successor's otherwise-empty turn appear productive.
+ */
+export async function noteSuccessfulWorkstreamTool(
+  id: string,
+  claim: string,
+  finishedAt = Date.now(),
+): Promise<void> {
+  await exclusive(async () => {
+    const row = rows.get(id);
+    if (!row || row.lock !== claim || row.lastSuccessfulToolAt > row.lastAdvancedTurnTime)
+      return;
+    row.lastSuccessfulToolAt = Math.max(finishedAt, row.lastAdvancedTurnTime + 1);
+    await save();
   });
 }
 
@@ -691,6 +728,9 @@ export async function bindWorkstreamConversation(
     row.retiredConversations = row.retiredConversations.filter(
       (id) => id !== conversationId,
     );
+    // A reclaimed frontend is no longer an eligible cleanup target.
+    row.pendingArchives = row.pendingArchives.filter((id) => id !== conversationId);
+    row.orphanedBootstraps = row.orphanedBootstraps.filter((id) => id !== conversationId);
     await save();
     return row.id;
   });
@@ -765,6 +805,16 @@ export async function scheduleWorkstreamAfterTurn(
     }
 
     const unclaimedAdvance = row.phase === "advancing";
+    // In an auto-driven code workstream, a completed *model turn* is not proof
+    // that any tool ran. The research incident emitted 88 such completions
+    // while all actual reads had failed. The old active→advancing loop accepted
+    // those completed turns indefinitely. Only a successful ordinary call since
+    // the preceding turn boundary authorizes another automatic continuation.
+    // Leave this chat reachable for an explicit owner/steward correction; do
+    // not archive or manufacture further conversations as a response to prose.
+    const noSuccessfulCall =
+      outcome === "completed" &&
+      row.lastSuccessfulToolAt <= row.lastAdvancedTurnTime;
     row.lastAdvancedTurnId = turnId;
     row.lastAdvancedTurnTime = time;
     row.commandId = null;
@@ -779,6 +829,12 @@ export async function scheduleWorkstreamAfterTurn(
       row.nextCheck = now;
       row.actionId = null;
       row.error = "conversation_length_exhausted";
+    } else if (noSuccessfulCall) {
+      row.phase = "blocked";
+      row.actionId = null;
+      row.nextCheck = 0;
+      row.attempts = 0;
+      row.error = `auto_continue_without_successful_tool:${turnId}`;
     } else if (outcome === "completed" && !unclaimedAdvance) {
       row.phase = "advancing";
       row.attempts = 0;
@@ -1259,6 +1315,35 @@ export async function retryFailedWorkstreamReplacementDelivery(
   });
 }
 
+/**
+ * A fresh-chat command may create a server conversation but fail before
+ * delivering its bootstrap. Only the exact uncommitted command receipt may
+ * identify that orphan; neither a timer nor a guessed chat title may do so.
+ * It is a retired frontend, not a successor, and must eventually be archived.
+ */
+export async function queueFailedBootstrapArchive(
+  id: string,
+  commandId: string,
+  conversationId: string,
+): Promise<boolean> {
+  if (!conversationId || provisionalRoute(conversationId)) return false;
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (
+      !row || row.phase !== "opening" || row.commandId !== commandId ||
+      row.conversationId !== null ||
+      [...rows.values()].some((other) => other.conversationId === conversationId)
+    ) return false;
+    if (!row.retiredConversations.includes(conversationId))
+      row.retiredConversations.push(conversationId);
+    if (!row.pendingArchives.includes(conversationId))
+      row.pendingArchives.push(conversationId);
+    if (!row.orphanedBootstraps.includes(conversationId))
+      row.orphanedBootstraps.push(conversationId);
+    await save();
+    return true;
+  });
+}
 export async function blockWorkstreamAction(
   id: string,
   actionId: string,
@@ -1304,6 +1389,17 @@ export async function finishWorkstreamArchive(
     if (error) row.error = `archive_unconfirmed: ${error}`;
     else if (!row.error?.startsWith("five_minute_")) row.error = null;
     if (row.conversationId) {
+      // A timeout/absent extension may have left the ChatGPT backend conversation
+      // unarchived. Persist an exact cleanup obligation *before* releasing the old
+      // route. The replacement must not wait for this unrelated browser hygiene,
+      // but the obligation survives every replacement/daemon restart.
+      if (
+        error &&
+        !provisionalRoute(row.conversationId) &&
+        !row.pendingArchives.includes(row.conversationId)
+      ) {
+        row.pendingArchives.push(row.conversationId);
+      }
       // The old frontend stops being a valid reinjection route here. Do not keep it as
       // "current" while the replacement bootstrap is still opening: if that fresh bootstrap
       // fails, or an independently running claimant renews the logical workstream before the
@@ -1317,6 +1413,45 @@ export async function finishWorkstreamArchive(
     row.actionId = `replace-${row.lock}`;
     row.commandId = null;
     row.nextCheck = 0;
+    await save();
+    return true;
+  });
+}
+
+/** Only formerly owned, unconfirmed archives; never infer targets from titles or age. */
+export function pendingWorkstreamArchives(): Array<{ id: string; conversationId: string }> {
+  ready();
+  const current = new Set([...rows.values()].map((row) => row.conversationId));
+  return [...rows.values()].flatMap((row) =>
+    // A former *owner* requires proof of a distinct successor. A failed
+    // fresh-chat send that never delivered its bootstrap is provably an orphan,
+    // so it needs no successor before it may be cleaned up.
+    row.pendingArchives
+      .filter((conversationId) => !current.has(conversationId) &&
+        (row.orphanedBootstraps.includes(conversationId) ||
+          (row.conversationId && !["archiving", "opening"].includes(row.phase))) &&
+        row.retiredConversations.includes(conversationId) &&
+        !provisionalRoute(conversationId))
+      .map((conversationId) => ({ id: row.id, conversationId })),
+  );
+}
+
+/** Browser ACK after a verified backend archive (or an authoritative 404). */
+export async function acknowledgeWorkstreamArchiveCleanup(
+  id: string,
+  conversationId: string,
+): Promise<boolean> {
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (
+      !row?.pendingArchives.includes(conversationId) ||
+      (!row.orphanedBootstraps.includes(conversationId) &&
+        (!row.conversationId || ["archiving", "opening"].includes(row.phase))) ||
+      !row.retiredConversations.includes(conversationId) ||
+      [...rows.values()].some((other) => other.conversationId === conversationId)
+    ) return false;
+    row.pendingArchives = row.pendingArchives.filter((item) => item !== conversationId);
+    row.orphanedBootstraps = row.orphanedBootstraps.filter((item) => item !== conversationId);
     await save();
     return true;
   });
@@ -1367,6 +1502,8 @@ export async function bindWorkstreamReplacement(
     row.retiredConversations = row.retiredConversations.filter(
       (id) => id !== conversationId,
     );
+    row.pendingArchives = row.pendingArchives.filter((id) => id !== conversationId);
+    row.orphanedBootstraps = row.orphanedBootstraps.filter((id) => id !== conversationId);
     // This may precede the command's durable receipt: an extension observation can
     // identify the chat before /commands/ack finishes. Retain commandId so the still-live
     // bootstrap remains valid if the model has already claimed the workstream and cleared

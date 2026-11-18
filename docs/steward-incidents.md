@@ -1409,3 +1409,30 @@ ChatGPT conversation `6afc1627-9490-83e9-89c6-d9ff87367a09`, with an open manage
 tab and successful `exec_command` tool calls written to its new recorder. This is actual
 successor execution, not a scheduled action or a commit-clock proxy. The original missing
 recorder history remains unavailable and is explicitly disclosed by its successor's title.
+
+## 2026-11-18: completed model turns without execution, and lost cleanup after archive fallback
+
+The controller used a ChatGPT `completed` turn as unconditional authorization to send another
+prompt. During the broken `/research` filesystem grant, the workstream recorder held two
+rejected reads and **88 completed turns** without successful tool execution. Each reply that
+said work was blocked triggered another model turn, creating an unbounded no-work loop.
+The missing identity was a *successful ordinary connector result since the previous completed
+turn*, not a claim/lease timestamp or an assistant message.
+
+The admitted tool now records a durable success witness once per turn, tied to its current
+opaque claim and recorded only after the real result is known. The scheduler still reports
+terminal turns, but a `completed` turn without the witness enters the explicitly diagnosable
+`blocked` state rather than auto-advancing. An explicit owner/steward reclaim is still
+possible; failed tool calls and detached old claims cannot manufacture progress. The actual
+cross-turn and restart transitions are tested against the workstream store, independently of
+the live ChatGPT acceptance surface.
+
+The second gap was that `finishWorkstreamArchive(error)` correctly allowed a replacement to
+open, but discarded the old ChatGPT conversation's remaining backend-archive obligation.
+An uncommitted fresh-chat send could likewise allocate a server conversation before failing,
+leaving a `New chat` without a durable owner. Both cases now retain exact IDs in the workstream
+state. The extension retries only those recorded obligations, through an already open authenticated
+browser tab, and acknowledges them only after a ChatGPT backend read confirms `is_archived`
+or an authoritative 404. A retired owner cannot be cleaned up until a distinct successor is
+bound; a never-delivered bootstrap is independently certified as an orphan. Live workers and
+unrelated conversations are never cleanup candidates by title or inactivity heuristic.

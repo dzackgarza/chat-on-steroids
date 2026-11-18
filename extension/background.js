@@ -3526,6 +3526,59 @@ void load().then(() => {
   void reconcileWorkstreamRoutes().catch(() => undefined);
 });
 
+/**
+ * One authenticated, idempotent backend archive operation shared by the
+ * immediate handoff and later retry of an unconfirmed archive. The PATCH must
+ * be followed by a GET: HTTP 200 alone has not proved inbox retirement.
+ */
+async function archiveChatThroughHost(conversationId, host) {
+  if (typeof host?.id !== 'number') return { error: 'archive_host_missing' };
+  try {
+    const execution = chrome.scripting.executeScript({
+      target: { tabId: host.id }, world: 'MAIN', args: [conversationId],
+      func: async (id) => {
+        const session = await fetch('/api/auth/session', {
+          credentials: 'include', signal: AbortSignal.timeout(15_000)
+        });
+        if (!session.ok) return { error: `archive_session_http_${session.status}` };
+        const auth = await session.json();
+        if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
+        const endpoint = `/backend-api/conversation/${id}`;
+        const response = await fetch(endpoint, {
+          method: 'PATCH', headers, credentials: 'include',
+          signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
+        });
+        // Gone/removed already meets the desired inbox invariant.
+        if (response.status === 404) return { archived: true, alreadyGone: true };
+        if (!response.ok) return { error: `archive_http_${response.status}` };
+        const verified = await fetch(endpoint, {
+          headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
+        });
+        if (verified.status === 404) return { archived: true, alreadyGone: true };
+        if (!verified.ok) return { error: `archive_verify_http_${verified.status}` };
+        const body = await verified.json();
+        return body?.is_archived === true
+          ? { archived: true }
+          : { error: 'archive_not_visible_in_backend' };
+      }
+    });
+    // Both page fetches and the extension RPC must have finite deadlines.
+    let timeoutId;
+    try {
+      const timeout = new Promise((resolve) => {
+        timeoutId = setTimeout(() => resolve(null), 35_000);
+      });
+      const result = await Promise.race([execution, timeout]);
+      return result?.[0]?.result ?? { error: 'archive_host_timeout' };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** The app fences the old lease before asking the browser to stop and archive it. */
 async function archiveWorkstreamChat(action) {
   // Same route grammar as every other controller surface: legacy UUIDs and WEB:<uuid>.
@@ -3629,48 +3682,13 @@ async function archiveWorkstreamChat(action) {
   let archivedResult = null;
   let lastError = 'archive_host_unavailable';
   const archiveThroughHost = async (host) => {
-    if (typeof host?.id !== 'number') return false;
-    try {
-      const archiveExecution = chrome.scripting.executeScript({
-        target: { tabId: host.id }, world: 'MAIN', args: [conversationId],
-        func: async (id) => {
-          const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
-          if (!session.ok) return { error: `archive_session_http_${session.status}` };
-          const auth = await session.json();
-          if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
-          const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
-          const response = await fetch(`/backend-api/conversation/${id}`, {
-            method: 'PATCH', headers, credentials: 'include', signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
-          });
-          // Idempotent retirement: a route ChatGPT no longer has is already unavailable for
-          // reinjection, which is exactly the state archiving is meant to establish.
-          if (response.status === 404) return { archived: true, alreadyGone: true };
-          if (!response.ok) return { error: `archive_http_${response.status}` };
-          return { archived: true };
-        }
-      });
-      // executeScript itself can stay pending after the page-side fetch has timed out if the
-      // renderer freezes. Bound the browser RPC separately so one dead tab cannot hold the
-      // global archive drain latch forever.
-      const archived = await Promise.race([
-        archiveExecution,
-        new Promise((resolve) => setTimeout(() => resolve(null), 20_000))
-      ]);
-      if (!archived) {
-        lastError = 'archive_host_timeout';
-        return false;
-      }
-      const result = archived[0]?.result ?? null;
-      if (result?.archived === true) {
-        archivedResult = result;
-        return true;
-      }
-      lastError = result?.error ?? 'archive_no_result';
-      return false;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      return false;
+    const result = await archiveChatThroughHost(conversationId, host);
+    if (result?.archived === true) {
+      archivedResult = result;
+      return true;
     }
+    lastError = result?.error ?? 'archive_no_result';
+    return false;
   };
   try {
     for (const host of candidates) {
@@ -3701,6 +3719,48 @@ async function acknowledgeWorkstreamArchive(action, matches) {
     if (matches(open) && typeof open.id === 'number') await removeTabKeepingBrowser(open.id);
   }
   await chrome.storage.local.remove('workstreamArchiveReceipt');
+}
+
+/**
+ * Retry only archived-but-unconfirmed former workstream owners. The app's
+ * durable queue is the sole source of targets; titles, age, and unrelated tabs
+ * never confer permission to archive a conversation. A newly bound successor
+ * supplies an existing authenticated browser tab, so cleanup opens no chats.
+ */
+async function cleanupRetiredWorkstreamArchives() {
+  const pending = await call('/workstreams/archive-cleanup');
+  if (!pending.ok || !Array.isArray(pending.data?.actions)) return;
+  const routes = await call('/workstreams/routes');
+  if (!routes.ok) return;
+  const live = new Set((routes.data?.routes ?? [])
+    .map((route) => cleanConversationId(route.conversationId)).filter(Boolean));
+  const tabs = (await chrome.tabs.query({ url: 'https://chatgpt.com/*' }))
+    .filter((tab) => typeof tab.id === 'number' && live.has(conversationForTab(tab)));
+  if (!tabs.length) return;
+  // A bounded pass avoids multiplying a ChatGPT 429 into a fleet-wide request storm.
+  for (const action of pending.data.actions.slice(0, 3)) {
+    const conversationId = cleanConversationId(action?.conversationId);
+    if (!conversationId || !action?.id || live.has(conversationId)) continue;
+    // An old claimant may have been revived since the first listing; the
+    // producer must still explicitly authorize this exact retired route.
+    const check = await call('/workstreams/archive-cleanup');
+    if (!check.ok || !check.data?.actions?.some((entry) =>
+      entry.id === action.id && entry.conversationId === conversationId)) continue;
+    let done = false;
+    for (const host of tabs.slice(0, 2)) {
+      const result = await archiveChatThroughHost(conversationId, host);
+      if (result.archived === true) {
+        const ack = await call('/workstreams/archive-cleanup', {
+          method: 'POST', body: JSON.stringify({ id: action.id, conversationId })
+        });
+        done = ack.ok;
+        break;
+      }
+      // No more browser attempts on this tick after a rate-limit/authentication failure.
+      if (/429|401|403|session_token|session_http/.test(result.error ?? '')) return;
+    }
+    if (!done) return; // exact queue entry stays durable for the next browser alarm
+  }
 }
 
 /**
@@ -3887,14 +3947,16 @@ async function drainWorkstreamArchives() {
       if ((await chrome.storage.local.get('workstreamArchiveReceipt')).workstreamArchiveReceipt) return;
     }
     const response = await call('/workstreams/archive');
-    if (!response.ok || !Array.isArray(response.data?.actions)) return;
-    for (const action of response.data.actions) {
-      await archiveWorkstreamChat(action).catch(async (error) => {
-        await call('/workstreams/archive', { method: 'POST', body: JSON.stringify({
-          id: action.id, actionId: action.actionId, error: String(error.message).slice(0, 500)
-        }) });
-      });
+    if (response.ok && Array.isArray(response.data?.actions)) {
+      for (const action of response.data.actions) {
+        await archiveWorkstreamChat(action).catch(async (error) => {
+          await call('/workstreams/archive', { method: 'POST', body: JSON.stringify({
+            id: action.id, actionId: action.actionId, error: String(error.message).slice(0, 500)
+          }) });
+        });
+      }
     }
+    await cleanupRetiredWorkstreamArchives();
   } finally {
     archivingWorkstreams = false;
   }

@@ -23,6 +23,7 @@ import { rawPromises as fs } from "../rawfs.js";
 import { inboundConnectorSession, inboundRequestId } from "./inbound.js";
 import {
   admitWorkstreamCall,
+  noteSuccessfulWorkstreamTool,
   workstreamWorkspace,
 } from "../workstreams.js";
 import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
@@ -528,6 +529,13 @@ async function dispatchTracked(
   // The admitted workstream supplies identity before execution. Recording belongs to this
   // request's completion boundary, with no browser grace window or fleet-wide charge.
   await recording;
+  if (
+    context.workstreamId &&
+    context.workstreamClaimId &&
+    (context.outcome ?? (result.isError ? "rejected" : "ok")) === "ok"
+  ) {
+    await noteSuccessfulWorkstreamTool(context.workstreamId, context.workstreamClaimId);
+  }
   if (name === "observe" || name === "computer") {
     logInfo(
       `desktop timing recorder_wait_ms=${Date.now() - recorderStartedAt} attributed=true`,
@@ -631,6 +639,13 @@ async function dispatchNested(
         inferredMethod: context.caller.inferredMethod ?? null,
         nested: true,
       });
+      if (
+        context.workstreamId &&
+        context.workstreamClaimId &&
+        (context.outcome ?? (result.isError ? "rejected" : "ok")) === "ok"
+      ) {
+        await noteSuccessfulWorkstreamTool(context.workstreamId, context.workstreamClaimId);
+      }
       surfaceToolCallAt.set(surface, Date.now());
       return result;
     }),

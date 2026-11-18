@@ -214,7 +214,12 @@ if (process.argv.includes('--cleanup-fixtures')) {
   if (failures.length) throw new Error(`Fixture cleanup incomplete: ${failures.join('; ')}`);
   process.exit(0);
 }
-const context = [
+const noWorkMode = process.argv.includes('--no-work-loop');
+const context = noWorkMode ? [
+  'LIVE ACCEPTANCE FIXTURE ONLY.',
+  'The entire task is to reply with exactly "NO-WORK-DONE". Do not call any ordinary connector tools or edit any files.',
+  'This tests whether the controller recognizes a completed turn with no successful tools; make one short reply and stop.'
+].join(' ') : [
   'LIVE ACCEPTANCE FIXTURE ONLY.',
   'Do not edit files, run shell commands, or touch another workstream.',
   `Use the plugin named ${pluginName}, not any other connector. First call \`workstream\` with action="continue" and workstream="${id}", then use the returned workstream_id to READ AGENTS.md in /home/dzack/gitclones/chat-on-steroids.`,
@@ -225,8 +230,30 @@ let replacementConversation = null;
 
 try {
   const startedAt = Date.now();
-  await bridgePost('/workstreams/start', { id, context, autoAdvance: false });
+  await bridgePost('/workstreams/start', { id, context, autoAdvance: noWorkMode });
 
+  if (noWorkMode) {
+    // Real ChatGPT: a completed non-tool turn must be diagnosed instead of
+    // creating a second send, even though this workstream has auto-advance on.
+    const blocked = await waitFor('completed no-work turn blocks the advance', async () => {
+      const rows = (await bridgeGet('/workstreams')).workstreams ?? [];
+      const row = rows.find((item) => item.id === id);
+      if (row?.phase !== 'blocked' || !row.error?.startsWith('auto_continue_without_successful_tool:') ||
+          !row.conversationId || row.actionId || row.commandId) return null;
+      return row;
+    }, START_TIMEOUT_MS);
+    oldConversation = blocked.conversationId;
+    assert.ok(await pageForConversation(oldConversation));
+    await sleep(5_000);
+    const after = (await bridgeGet('/workstreams')).workstreams.find((item) => item.id === id);
+    assert.equal(after.phase, 'blocked', 'a completed no-work turn must not schedule another');
+    assert.equal(after.lastAdvancedTurnId, blocked.lastAdvancedTurnId);
+    assert.equal(after.commandId, null);
+    console.log(JSON.stringify({
+      ok: true, workstream: id, noWorkTurn: true, preventedAdvance: true,
+      conversationId: oldConversation
+    }, null, 2));
+  } else {
   const first = await waitFor('real workstream conversation + connector activity', async () => {
     const rows = (await bridgeGet('/workstreams')).workstreams ?? [];
     const row = rows.find((candidate) => candidate.id === id);
@@ -297,6 +324,7 @@ try {
     oldArchived: true,
     replacementLive: true
   }, null, 2));
+  }
 } finally {
   // The fixture can fail before assigning oldConversation, despite having created a
   // real chat. The durable row owns that chat and gives its exact id for cleanup.

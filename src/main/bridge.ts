@@ -38,6 +38,7 @@ import {
   restoreConversationKeys,
 } from "./session/conversation-key.js";
 import {
+  acknowledgeWorkstreamArchiveCleanup,
   autoAdvancingWorkstreamForCommand,
   bindWorkstreamConversation,
   claimedWorkstreamOf,
@@ -51,6 +52,8 @@ import {
   nextWorkstreamActions,
   managedWorkstreamForConversation,
   pauseWorkstream,
+  pendingWorkstreamArchives,
+  queueFailedBootstrapArchive,
   promoteWorkstreamConversation,
   recordWorkstreamCommand,
   recoverWorkstreamNow,
@@ -2184,6 +2187,22 @@ async function handle(
       },
       origin,
     );
+  }
+  // This is NOT an archive/replacement action. A failed or timed-out archive
+  // already released its old owner, and the successor can continue running.
+  // The extension retries the precise former conversation until ChatGPT's
+  // backend confirms its archive, independently of the successor's lifecycle.
+  if (route === "/workstreams/archive-cleanup" && req.method === "GET") {
+    return json(res, 200, { actions: pendingWorkstreamArchives() }, origin);
+  }
+  if (route === "/workstreams/archive-cleanup" && req.method === "POST") {
+    const body = (await readBody(req)) as Record<string, unknown>;
+    if (typeof body["id"] !== "string" || typeof body["conversationId"] !== "string")
+      return json(res, 400, { error: "bad_request" }, origin);
+    const accepted = await acknowledgeWorkstreamArchiveCleanup(
+      body["id"], body["conversationId"],
+    );
+    return json(res, accepted ? 200 : 409, { accepted }, origin);
   }
   if (route === "/workstreams/routes" && req.method === "GET") {
     const rows = workstreamStatus();
@@ -6220,6 +6239,11 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
           continue;
         }
         if (row.phase === "opening" && receipt && !receipt.committed) {
+          // A failed *fresh* bootstrap may nevertheless have allocated a
+          // concrete ChatGPT conversation. Retire that exact orphan from the
+          // failed command's receipt before freeing its replacement marker.
+          if (receipt.conversationId)
+            await queueFailedBootstrapArchive(row.id, row.commandId, receipt.conversationId);
           // A throttled fresh chat is ChatGPT's short new-conversation backpressure (the notice
           // clears in about 30 s); freshChatBackoff below owns it. Feeding it to the account-wide
           // usage hold also froze every send to every chat: four false holds on 2026-10-02 while
