@@ -275,8 +275,9 @@ does not strand the workstream: the old owner is fenced, the replacement opens, 
 durable backend-archive obligation remains until the browser verifies and acknowledges it.
 ChatGPT HTTP 429 retains that exact pending obligation through `Retry-After` (or a
 conservative bounded retry delay) rather than making a new request every minute.
-An uncommitted fresh-chat receipt that nevertheless identifies a real orphan conversation
-is cleaned up under that same exact-id protocol; no title/age sweep archives user chats.
+An uncommitted fresh-chat receipt that identifies a server conversation records an archive
+candidate, but cannot archive it until a distinct successor binds: a failed ACK alone does
+not prove the message never arrived. No title/age sweep archives user chats.
 
 Scripts use the loopback bridge and its existing `state/local-token` bearer credential:
 
@@ -296,7 +297,9 @@ and emitting an assistant reply do not constitute execution. A completed turn wi
 evidence retains the `active` workstream and tool capability, reports
 `auto_continue_without_successful_tool`, and schedules no more automatic prompts.
 A steward can correct the obstruction and continue the existing chat without a new claim
-or replacement. An observed failed/stopped/interrupted turn
+or replacement. The external watchdog respects this diagnostic: it does not
+revive or replace the same chat just because the withheld automatic prompt
+made its nonpolling activity timestamp stale. An observed failed/stopped/interrupted turn
 enters the bounded recovery path. `action=start` from the model remains identity registration
 only and does not make that chat self-driving. Set `autoAdvance:false` on `/workstreams/start` for
 one-shot controller fixtures. A separate live fixture with `--no-work-loop` tests the no-tool

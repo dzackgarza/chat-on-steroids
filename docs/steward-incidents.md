@@ -1436,7 +1436,8 @@ leaving a `New chat` without a durable owner. Both cases now retain exact IDs in
 state. The extension retries only those recorded obligations, through an already open authenticated
 browser tab, and acknowledges them only after a ChatGPT backend read confirms `is_archived`
 or an authoritative 404. A retired owner cannot be cleaned up until a distinct successor is
-bound; a never-delivered bootstrap is independently certified as an orphan. Live workers and
+bound; a failed-bootstrap ACK is only a candidate, not proof it never sent a message,
+and likewise waits for a distinct bound successor. Live workers and
 unrelated conversations are never cleanup candidates by title or inactivity heuristic.
 
 Live acceptance on 2026-11-18 also exposed ChatGPT HTTP 429 responses while verifying old
@@ -1446,3 +1447,11 @@ confirms `is_archived` or an authoritative 404. The extension now honors the bac
 unacknowledged cleanup queue across restarts. The test-fixture cleanup stops at the first
 429, skips client-only provisional conversation IDs, and preserves failed fixtures for
 another verified cleanup instead of treating a successful PATCH as archival proof.
+
+The external 30-minute watchdog was a second writer of workstream recovery decisions.
+Without the matching change it would interpret the intentionally inactive no-work chat
+as stale after five minutes, revive it and eventually archive/replace it, recreating the
+unbounded continuation loop despite the corrected controller. The watchdog now recognizes
+`auto_continue_without_successful_tool` as a decision requiring steward diagnosis,
+never automatic revival; it still reports overlong in-flight tools independently.
+The negative path is covered by `test_workstream_watchdog.py`.

@@ -76,6 +76,20 @@ class WatchdogTest(unittest.TestCase):
         action, _, _ = self.decision()
         self.assertEqual(action, "recover")
 
+    def test_no_work_turn_never_restarts_or_replaces_its_healthy_tool_claim(self):
+        for age in (6, 31, 120):
+            r = row(
+                phase="active",
+                lastActivity=NOW - age * MINUTE,
+                error="auto_continue_without_successful_tool:turn-empty",
+            )
+            action, why, _ = self.decision(r)
+            self.assertIsNone(action)
+            self.assertIn("steward diagnosis", why)
+        # A later real tool call clears that diagnostic in the workstream
+        # owner, after which ordinary inactivity recovery is eligible again.
+        self.assertEqual(self.decision(row(error=None))[0], "recover")
+
     def test_recent_work_is_not_interrupted(self):
         self.assertIsNone(self.decision(row(lastActivity=NOW - 2 * MINUTE))[0])
 

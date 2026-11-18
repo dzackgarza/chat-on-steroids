@@ -83,8 +83,10 @@ void (async () => {
     assert.equal(await queueFailedBootstrapArchive('orphan', 'wrong-command', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), false);
     assert.equal(await queueFailedBootstrapArchive('orphan', 'cmd-start', 'WEB:temporary'), false);
     assert.equal(await queueFailedBootstrapArchive('orphan', 'cmd-start', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), true);
-    assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'orphan'),
-      [{ id: 'orphan', conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }]);
+    // A failed ACK does not prove that a new browser chat never started real
+    // work. Do not archive it until a different successor is bound.
+    assert.ok(!state('orphan').retiredConversations.includes('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
+    assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'orphan'), []);
 
     // A timed-out archive must release the former owner *and* preserve the
     // unconfirmed backend cleanup until a distinct successor is bound.
@@ -125,10 +127,28 @@ void (async () => {
     assert.equal(workstreamStatus().length, 0);
     initDurableStore(temp);
     await restoreWorkstreams();
+    assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'orphan'), []);
+    const orphanSuccessor = await continueWorkstream('orphan', 500000);
+    assert.equal(orphanSuccessor.ok, true);
+    if (!orphanSuccessor.ok) throw new Error('unreachable');
+    assert.equal(await bindWorkstreamConversation(orphanSuccessor.workstreamId, 'dddddddd-dddd-dddd-dddd-dddddddddddd'), 'orphan');
+    assert.ok(state('orphan').retiredConversations.includes('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'));
     assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'orphan'),
       [{ id: 'orphan', conversationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }]);
     assert.equal(await acknowledgeWorkstreamArchiveCleanup('orphan', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), true);
     assert.equal(await acknowledgeWorkstreamArchiveCleanup('orphan', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'), false);
+
+    // A late successful ACK can identify the very chat previously thought
+    // orphaned. Never retire or archive it in that case.
+    const late = await reserveWorkstream('late-ack', 'fixture', 'cmd-late', true, 510000);
+    assert.equal(late.ok, true);
+    assert.equal(await queueFailedBootstrapArchive('late-ack', 'cmd-late', 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'), true);
+    const claimedLate = await continueWorkstream('late-ack', 520000);
+    assert.equal(claimedLate.ok, true);
+    if (!claimedLate.ok) throw new Error('unreachable');
+    assert.equal(await bindWorkstreamConversation(claimedLate.workstreamId, 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'), 'late-ack');
+    assert.deepEqual(state('late-ack').pendingArchives, []);
+    assert.ok(!state('late-ack').retiredConversations.includes('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'));
 
     console.log('PASS: no-work advancement, stale-claim exclusion, archive timeout, orphan cleanup, durable ACK');
   } finally {

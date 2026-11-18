@@ -77,7 +77,7 @@ const rowSchema = z
     retiredConversations: z.array(z.string()),
     /** Exact former owner conversations whose backend archive was not acknowledged. */
     pendingArchives: z.array(z.string()).default([]),
-    /** Uncommitted fresh-chat receipts that provably never delivered a bootstrap. */
+    /** Fresh-chat receipts that failed without a committed ACK; delivery may be ambiguous. */
     orphanedBootstraps: z.array(z.string()).default([]),
     /** Chats whose recorded claim line named this row, under its current lock or a retired
      * one. Exact evidence of which workstream a chat holds, kept across reclaims. */
@@ -730,6 +730,10 @@ export async function bindWorkstreamConversation(
     for (const other of rows.values())
       if (other.id !== row.id && other.conversationId === conversationId)
         other.conversationId = null;
+    for (const candidate of row.orphanedBootstraps) {
+      if (candidate !== conversationId && !row.retiredConversations.includes(candidate))
+        row.retiredConversations.push(candidate);
+    }
     row.conversationId = conversationId;
     row.retiredConversations = row.retiredConversations.filter(
       (id) => id !== conversationId,
@@ -1322,10 +1326,11 @@ export async function retryFailedWorkstreamReplacementDelivery(
 }
 
 /**
- * A fresh-chat command may create a server conversation but fail before
- * delivering its bootstrap. Only the exact uncommitted command receipt may
- * identify that orphan; neither a timer nor a guessed chat title may do so.
- * It is a retired frontend, not a successor, and must eventually be archived.
+ * A fresh-chat command may create a server conversation before its bootstrap
+ * ACK is committed. Only the exact failed command receipt may identify this
+ * candidate, never a timer or a guessed chat title. A failed receipt is NOT
+ * proof that the message never arrived: cleanup must wait until a distinct
+ * successor has bound the workstream, or it could archive the actual worker.
  */
 export async function queueFailedBootstrapArchive(
   id: string,
@@ -1340,8 +1345,9 @@ export async function queueFailedBootstrapArchive(
       row.conversationId !== null ||
       [...rows.values()].some((other) => other.conversationId === conversationId)
     ) return false;
-    if (!row.retiredConversations.includes(conversationId))
-      row.retiredConversations.push(conversationId);
+    // A failed send ACK is ambiguous. Do NOT mark the candidate retired yet:
+    // the extension's retired-tab reaper otherwise closes a chat that might
+    // still be starting legitimate work. Wait for a distinct successor.
     if (!row.pendingArchives.includes(conversationId))
       row.pendingArchives.push(conversationId);
     if (!row.orphanedBootstraps.includes(conversationId))
@@ -1429,13 +1435,13 @@ export function pendingWorkstreamArchives(): Array<{ id: string; conversationId:
   ready();
   const current = new Set([...rows.values()].map((row) => row.conversationId));
   return [...rows.values()].flatMap((row) =>
-    // A former *owner* requires proof of a distinct successor. A failed
-    // fresh-chat send that never delivered its bootstrap is provably an orphan,
-    // so it needs no successor before it may be cleaned up.
+    // Both former owners and failed fresh-chat ACKs require a *different bound
+    // successor*. "Terminal failure" is an ACK observation, not proof that the
+    // ChatGPT page never sent a message; an orphan candidate must not be
+    // archived while it could still be the sole live implementation chat.
     row.pendingArchives
       .filter((conversationId) => !current.has(conversationId) &&
-        (row.orphanedBootstraps.includes(conversationId) ||
-          (row.conversationId && !["archiving", "opening"].includes(row.phase))) &&
+        row.conversationId !== null && !["archiving", "opening"].includes(row.phase) &&
         row.retiredConversations.includes(conversationId) &&
         SERVER_CONVERSATION_ID.test(conversationId))
       .map((conversationId) => ({ id: row.id, conversationId })),
@@ -1451,8 +1457,8 @@ export async function acknowledgeWorkstreamArchiveCleanup(
     const row = rows.get(id);
     if (
       !row?.pendingArchives.includes(conversationId) ||
-      (!row.orphanedBootstraps.includes(conversationId) &&
-        (!row.conversationId || ["archiving", "opening"].includes(row.phase))) ||
+      !row.conversationId ||
+      ["archiving", "opening"].includes(row.phase) ||
       !row.retiredConversations.includes(conversationId) ||
       [...rows.values()].some((other) => other.conversationId === conversationId)
     ) return false;
@@ -1503,6 +1509,10 @@ export async function bindWorkstreamReplacement(
       !row.retiredConversations.includes(row.conversationId)
     ) {
       row.retiredConversations.push(row.conversationId);
+    }
+    for (const candidate of row.orphanedBootstraps) {
+      if (candidate !== conversationId && !row.retiredConversations.includes(candidate))
+        row.retiredConversations.push(candidate);
     }
     row.conversationId = conversationId;
     row.retiredConversations = row.retiredConversations.filter(

@@ -278,6 +278,15 @@ def action_allowed(
             return None, "overlong worker-blocking tool requires steward diagnosis", evidence
         return None, "in-flight call inside its execution budget", evidence
 
+    # The controller deliberately withheld the next automatic send after a
+    # completed turn with no successful ordinary tool result. Treating the
+    # resulting idle time as a stalled page would undo that decision: the
+    # watchdog would revive and eventually replace the same chat forever.
+    # Preserve tool access and exact conversation ownership; a model steward
+    # can diagnose the missing work and explicitly choose a correction.
+    if str(row.get("error") or "").startswith("auto_continue_without_successful_tool:"):
+        return None, "no-work continuation requires steward diagnosis, not automatic replacement", evidence
+
     previous = state.get("lastAction")
     if isinstance(previous, dict):
         # A new substantive tool call proves the last intervention achieved activity.
