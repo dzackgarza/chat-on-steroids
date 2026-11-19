@@ -53,6 +53,7 @@ import {
   managedWorkstreamForConversation,
   pauseWorkstream,
   pendingWorkstreamArchives,
+  prepareArchivedWorkstreamRecovery,
   queueFailedBootstrapArchive,
   promoteWorkstreamConversation,
   recordWorkstreamCommand,
@@ -70,6 +71,7 @@ import {
   resumeWorkstream,
   scheduleWorkstreamAfterTurn,
   setWorkstreamAutoAdvance,
+  terminalizeUnboundWorkstreamClaimant,
   RECOVERY_BACKOFF_MS,
   ORCHESTRATOR_WORKSTREAM_ID,
   WORKSTREAM_LEASE_MS,
@@ -2231,7 +2233,8 @@ async function handle(
     const recoveryCandidates = rows.flatMap((row) => {
       const candidate = row.claimedBy.at(-1);
       if (
-        !getConfig().autoContinue || !row.autoAdvance ||
+        ((!getConfig().autoContinue || !row.autoAdvance) &&
+          row.id !== ORCHESTRATOR_WORKSTREAM_ID) ||
         !["active", "blocked"].includes(row.phase) || row.conversationId !== null ||
         row.actionId !== null || row.commandId !== null ||
         !candidate || !/^[0-9a-f-]{8,64}$/i.test(candidate) ||
@@ -2314,6 +2317,8 @@ async function handle(
     if (invalid.length === 0 && promotions.length === 0 && recoveries.length === 0)
       return json(res, 400, { error: "bad_request" }, origin);
     let recovered = 0;
+    let terminalized = 0;
+    const restoreArchived: Array<{ id: string; conversationId: string; lastActivity: number }> = [];
     for (const candidate of recoveries) {
       if (!candidate || typeof candidate !== "object") continue;
       const item = candidate as Record<string, unknown>;
@@ -2325,10 +2330,13 @@ async function handle(
         typeof id !== "string" || typeof conversation !== "string" ||
         !/^[0-9a-f-]{8,64}$/i.test(conversation) ||
         typeof lastActivity !== "number" || !Number.isSafeInteger(lastActivity) ||
-        backendState !== "unarchived"
+        backendState !== "unarchived" &&
+        backendState !== "archived" &&
+        backendState !== "terminal"
       ) continue;
       const row = workstreamStatus().find((entry) =>
-        getConfig().autoContinue && entry.id === id && entry.autoAdvance &&
+        (getConfig().autoContinue && entry.autoAdvance ||
+          entry.id === ORCHESTRATOR_WORKSTREAM_ID) && entry.id === id &&
         ["active", "blocked"].includes(entry.phase) &&
         entry.conversationId === null && entry.commandId === null &&
         entry.actionId === null && entry.claimedBy.at(-1) === conversation &&
@@ -2338,6 +2346,25 @@ async function handle(
         runningToolCallsForWorkstream(entry.id) === 0
       );
       if (!row) continue;
+      if (backendState === "terminal") {
+        // HTTP 413 with ChatGPT's typed conversation-length code is proof
+        // that the original chat cannot be resumed, even if its browser page
+        // never mounted. No English error-string match and no lease wait.
+        if (item["errorCode"] !== "conversation_length_exceeds_limit") continue;
+        if (await terminalizeUnboundWorkstreamClaimant(
+          id, conversation, lastActivity, item["errorCode"],
+        )) terminalized++;
+        continue;
+      }
+      if (!row.autoAdvance) continue;
+      if (backendState === "archived") {
+        // Do not send a continuation to an archived conversation and treat the
+        // resulting composer failure as proof that the chat is terminal.
+        // Authorize restoring this exact browser-verified claimant first.
+        if (await prepareArchivedWorkstreamRecovery(id, conversation, lastActivity))
+          restoreArchived.push({ id, conversationId: conversation, lastActivity });
+        continue;
+      }
       const expected = { conversationId: null, lastActivity };
       if (await recoverWorkstreamNow(
         id, "authenticated ChatGPT backend confirmed the last claimant is unarchived; resume this chat",
@@ -2363,9 +2390,9 @@ async function handle(
       )
         invalidated++;
     }
-    if (invalidated > 0 || promoted > 0 || recovered > 0)
+    if (invalidated > 0 || promoted > 0 || recovered > 0 || terminalized > 0)
       await sweepWorkstreams();
-    return json(res, 200, { invalidated, promoted, recovered }, origin);
+    return json(res, 200, { invalidated, promoted, recovered, terminalized, restoreArchived }, origin);
   }
   if (route === "/workstreams/archive" && req.method === "POST") {
     const body = (await readBody(req)) as Record<string, unknown>;

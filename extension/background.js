@@ -3948,6 +3948,17 @@ async function reconcileWorkstreamRoutes() {
                       signal: AbortSignal.timeout(15_000),
                     },
                   );
+                  if (response.status === 413) {
+                    // The conversation can exceed ChatGPT's own load ceiling
+                    // before any turn or error DOM exists. Only the exact
+                    // structured code certifies terminality; an ordinary
+                    // 413/404/network failure does not authorize replacement.
+                    const error = await response.json().catch(() => null);
+                    const terminalCode = error?.code || error?.detail?.code || null;
+                    return { ...item, status: 413,
+                      terminalCode: terminalCode === 'conversation_length_exceeds_limit'
+                        ? terminalCode : null };
+                  }
                   if (!response.ok) return { ...item, status: response.status };
                   const data = await response.json();
                   return { ...item, status: response.status, isArchived: data?.is_archived };
@@ -3974,20 +3985,104 @@ async function reconcileWorkstreamRoutes() {
     const recoveries = Array.isArray(probe.results)
       ? probe.results.flatMap((item) => {
           if (item?.kind !== 'recovery') return [];
-          const backendState = item.status === 404 ? 'missing'
+          const backendState = item.status === 413 &&
+            item.terminalCode === 'conversation_length_exceeds_limit' ? 'terminal'
+            : item.status === 404 ? 'missing'
             : item.status === 200 && item.isArchived === true ? 'archived'
             : item.status === 200 && item.isArchived === false ? 'unarchived'
             : null;
           return backendState ? [{
             id: item.id, conversationId: item.conversationId,
-            lastActivity: item.lastActivity, backendState
+            lastActivity: item.lastActivity, backendState,
+            ...(backendState === 'terminal' ? { errorCode: item.terminalCode } : {})
           }] : [];
         }) : [];
     if (invalid.length > 0 || recoveries.length > 0) {
-      await call('/workstreams/routes', {
+      const decision = await call('/workstreams/routes', {
         method: 'POST',
         body: JSON.stringify({ invalid, recoveries }),
       });
+      // An archived exact claimant is not a failed conversation. The bridge
+      // first checks its unchanged workstream generation and durably reserves
+      // restoration. Only that positive decision permits the browser to
+      // unarchive this particular conversation before same-chat continuation.
+      const restore = decision.ok && Array.isArray(decision.data?.restoreArchived)
+        ? decision.data.restoreArchived.filter((item) =>
+            typeof item?.id === 'string' &&
+            /^[0-9a-f-]{8,64}$/i.test(item?.conversationId || '') &&
+            Number.isSafeInteger(item.lastActivity)
+          ).slice(0, 16)
+        : [];
+      if (restore.length > 0) {
+        let verified = [];
+        for (const tab of tabs) {
+          try {
+            const execution = await chrome.scripting.executeScript({
+              target: { tabId: tab.id }, world: 'MAIN', args: [restore],
+              func: async (items) => {
+                const session = await fetch('/api/auth/session', {
+                  credentials: 'include', signal: AbortSignal.timeout(15_000),
+                });
+                if (!session.ok) return [];
+                const auth = await session.json();
+                if (typeof auth.accessToken !== 'string') return [];
+                const headers = {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${auth.accessToken}`,
+                };
+                const done = [];
+                for (const item of items) {
+                  const endpoint = `/backend-api/conversation/${item.conversationId}`;
+                  try {
+                    const before = await fetch(endpoint, {
+                      headers, credentials: 'include', signal: AbortSignal.timeout(15_000),
+                    });
+                    if (!before.ok) continue;
+                    const current = await before.json();
+                    if (current?.is_archived !== true && current?.is_archived !== false)
+                      continue;
+                    if (current.is_archived) {
+                      const patch = await fetch(endpoint, {
+                        method: 'PATCH', headers, credentials: 'include',
+                        body: JSON.stringify({ is_archived: false }),
+                        signal: AbortSignal.timeout(15_000),
+                      });
+                      if (!patch.ok) continue;
+                    }
+                    // The PATCH ACK is not the postcondition. A second backend
+                    // GET must independently confirm the chat is unarchived.
+                    const after = await fetch(endpoint, {
+                      headers, credentials: 'include', signal: AbortSignal.timeout(15_000),
+                    });
+                    if (after.ok && (await after.json())?.is_archived === false)
+                      done.push(item);
+                  } catch {
+                    // Keep the staged row and retry exact restoration in the
+                    // next browser reconciliation. Never fabricate an ACK.
+                  }
+                }
+                return done;
+              },
+            });
+            verified = Array.isArray(execution?.[0]?.result) ? execution[0].result : [];
+            break;
+          } catch {
+            // A discarded browser tab cannot certify a server mutation; try
+            // the next already-open authenticated tab.
+          }
+        }
+        if (verified.length > 0) {
+          await call('/workstreams/routes', {
+            method: 'POST',
+            body: JSON.stringify({
+              recoveries: verified.map((item) => ({
+                id: item.id, conversationId: item.conversationId,
+                lastActivity: item.lastActivity, backendState: 'unarchived',
+              })),
+            }),
+          });
+        }
+      }
     }
     // Stamp only after a successful authenticated batch. A rate-limited or inaccessible
     // browser attempt remains eligible on the next service-worker start instead of suppressing

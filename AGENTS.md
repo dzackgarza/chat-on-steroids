@@ -628,6 +628,21 @@ successful archive mutation response, and the bridge opens a replacement fronten
 context and generic steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
 
+An unbound claimant's **archive flag is not terminality**. The paired extension
+checks the last exact claimant against ChatGPT's authenticated conversation API.
+When it exists but is archived, the bridge first reserves restoration against
+the unchanged workstream claim/last-activity generation; the extension unarchives
+that exact conversation, verifies the new backend archive state with a second
+GET, and only then returns it to same-chat recovery. If the backend instead
+returns HTTP 413 with the typed code `conversation_length_exceeds_limit`, the
+claimant is terminal: the controller opens the retained workstream's successor
+(or releases the scheduled orchestrator claim) without waiting for its lease.
+The live conversation POST's SSE `error_code: conversation_too_large` is the
+other terminal signal. English error prose, a bare 404, missing browser
+bindings, an archive flag, and elapsed time alone never prove terminality.
+Every browser recovery receipt is compared against the current row's
+`lastActivity`; a newer claim invalidates it.
+
 **A replacement inherits its predecessors' execution, not just the brief.** A workstream keeps
 one recorder session across every chat that holds it, so the opening message of any replacement
 carries the inherited execution record (`workstream-inheritance.ts`):

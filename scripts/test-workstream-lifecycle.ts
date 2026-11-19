@@ -22,6 +22,7 @@ import {
   observeWorkstreamTerminalError,
   pendingWorkstreamArchives,
   pauseWorkstream,
+  prepareArchivedWorkstreamRecovery,
   queueFailedBootstrapArchive,
   recordWorkstreamCommand,
   recoverWorkstreamNow,
@@ -31,6 +32,7 @@ import {
   restoreWorkstreams,
   scheduleWorkstreamAfterTurn,
   setWorkstreamAutoAdvance,
+  terminalizeUnboundWorkstreamClaimant,
   startWorkstream,
   workstreamStatus,
 } from '../src/main/workstreams';
@@ -93,6 +95,73 @@ void (async () => {
     assert.equal(state('terminal-sse').error, 'conversation_too_large');
     await nextWorkstreamActions(2201, true);
     assert.equal(state('terminal-sse').phase, 'archiving');
+
+    // Archived is not terminal: reserve the exact previously claimed chat,
+    // wait for a browser-verified unarchive, then send recovery to that SAME
+    // conversation. No new frontend or lease-based replacement may be queued.
+    const archivedFixture = await startWorkstream('archived-recovery', path.join(temp, 'archived'), 6000);
+    assert.equal(archivedFixture.ok, true);
+    if (!archivedFixture.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('archived-recovery', true);
+    const archivedChat = '12121212-1212-1212-1212-121212121212';
+    assert.equal(await bindWorkstreamConversation(archivedFixture.workstreamId, archivedChat), 'archived-recovery');
+    const archivedClaim = await continueWorkstream('archived-recovery', 400_000);
+    assert.equal(archivedClaim.ok, true);
+    assert.equal(state('archived-recovery').conversationId, null);
+    assert.equal(await prepareArchivedWorkstreamRecovery('archived-recovery', archivedChat, 399_999), false);
+    assert.equal(await prepareArchivedWorkstreamRecovery('archived-recovery', archivedChat, 400_000), true);
+    assert.equal(state('archived-recovery').phase, 'blocked');
+    assert.equal(state('archived-recovery').error, 'archived_claimant_restoration_pending');
+    assert.ok(!(await nextWorkstreamActions(400_100, true)).some((row) => row.id === 'archived-recovery'));
+    assert.equal(await recoverWorkstreamNow('archived-recovery', 'verified unarchive', 400_200,
+      { conversationId: null, lastActivity: 400_000 }, archivedChat), true);
+    assert.equal(state('archived-recovery').conversationId, archivedChat);
+    assert.equal(state('archived-recovery').phase, 'recovering');
+
+    // A newer claim fences an older archive-restoration response even if the
+    // earlier claimant's original browser page still exists.
+    const stale = await startWorkstream('stale-archive', path.join(temp, 'stale-archive'), 7000);
+    assert.equal(stale.ok, true);
+    if (!stale.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('stale-archive', true);
+    const staleChat = '34343434-3434-3434-3434-343434343434';
+    await bindWorkstreamConversation(stale.workstreamId, staleChat);
+    assert.equal((await continueWorkstream('stale-archive', 410_000)).ok, true);
+    assert.equal(await prepareArchivedWorkstreamRecovery('stale-archive', staleChat, 410_000), true);
+    assert.equal((await continueWorkstream('stale-archive', 410_100)).ok, true);
+    assert.equal(await prepareArchivedWorkstreamRecovery('stale-archive', staleChat, 410_000), false);
+    assert.equal(await recoverWorkstreamNow('stale-archive', 'late browser receipt', 410_200,
+      { conversationId: null, lastActivity: 410_000 }, staleChat), false);
+    assert.equal(state('stale-archive').conversationId, null);
+
+    // The authenticated backend can instead prove the original chat is
+    // terminal, before the page loads. The exact error code bypasses the
+    // revive attempt and lease wait, and enters the existing fresh-chat
+    // bootstrap without ever misclassifying mere archived/404 state.
+    const terminalUnbound = await startWorkstream(
+      'terminal-unbound', path.join(temp, 'terminal-unbound'), 8500);
+    assert.equal(terminalUnbound.ok, true);
+    if (!terminalUnbound.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('terminal-unbound', true);
+    const terminalChat = '56565656-5656-5656-5656-565656565656';
+    await bindWorkstreamConversation(terminalUnbound.workstreamId, terminalChat);
+    assert.equal((await continueWorkstream('terminal-unbound', 500_000)).ok, true);
+    assert.equal(await terminalizeUnboundWorkstreamClaimant(
+      'terminal-unbound', terminalChat, 500_000, 'conversation_inaccessible'), false);
+    assert.equal(state('terminal-unbound').phase, 'active');
+    assert.equal(await terminalizeUnboundWorkstreamClaimant(
+      'terminal-unbound', terminalChat, 500_000, 'conversation_length_exceeds_limit'), true);
+    assert.equal(state('terminal-unbound').phase, 'opening');
+    assert.match(state('terminal-unbound').actionId ?? '', /^replace-wl_/);
+    assert.ok(state('terminal-unbound').retiredConversations.includes(terminalChat));
+
+    const beforeOrchestratorTerminal = state('orchestrator');
+    assert.equal(await terminalizeUnboundWorkstreamClaimant(
+      'orchestrator', beforeOrchestratorTerminal.claimedBy.at(-1)!,
+      beforeOrchestratorTerminal.lastActivity, 'conversation_length_exceeds_limit'), true);
+    assert.equal(state('orchestrator').claimReleased, true);
+    assert.equal((await continueWorkstream('orchestrator',
+      beforeOrchestratorTerminal.lastActivity + 1)).ok, true);
 
     // No-op completed turns must not create an unbounded chain of sends.
     const noOp = await startWorkstream('no-op', path.join(temp, 'one'), 1000);

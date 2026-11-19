@@ -1107,6 +1107,93 @@ export async function recoverWorkstreamNow(
   });
 }
 
+/**
+ * The authenticated browser found the latest claimant, but the conversation
+ * is archived. Reserve restoration without claiming that an ordinary tool
+ * executed or prematurely opening a replacement. The browser must unarchive
+ * and verify the exact chat, then submit its normal verified recovery.
+ *
+ * The persisted lastActivity is a compare-and-swap generation: any intervening
+ * model claim or ordinary MCP call invalidates a stale restoration receipt.
+ */
+export async function prepareArchivedWorkstreamRecovery(
+  id: string,
+  claimant: string,
+  lastActivity: number,
+): Promise<boolean> {
+  return exclusive(async () => {
+    ready();
+    const row = rows.get(id);
+    if (
+      !row || !row.autoAdvance ||
+      !["active", "blocked"].includes(row.phase) ||
+      (row.phase === "blocked" &&
+        row.error !== "archived_claimant_restoration_pending" &&
+        !row.error?.startsWith("conversation_unbound:")) ||
+      row.conversationId !== null ||
+      row.claimedBy.at(-1) !== claimant ||
+      !SERVER_CONVERSATION_ID.test(claimant) ||
+      row.lastActivity !== lastActivity ||
+      row.commandId !== null || row.actionId !== null ||
+      runningToolCallsForWorkstream(id) > 0 ||
+      [...rows.values()].some((other) => other.id !== id && other.conversationId === claimant)
+    ) return false;
+    row.phase = "blocked";
+    row.error = "archived_claimant_restoration_pending";
+    await save();
+    return true;
+  });
+}
+
+/**
+ * An authenticated backend history GET identified a terminal conversation
+ * without ever loading the ChatGPT page or producing a turn_end. The explicit
+ * machine error is sufficient to rule out another same-chat send; absence of
+ * a browser route, age, or an archived flag alone is never sufficient.
+ */
+export async function terminalizeUnboundWorkstreamClaimant(
+  id: string,
+  claimant: string,
+  lastActivity: number,
+  errorCode: string,
+): Promise<boolean> {
+  if (errorCode !== "conversation_length_exceeds_limit") return false;
+  return exclusive(async () => {
+    ready();
+    const row = rows.get(id);
+    if (
+      !row || !["active", "blocked"].includes(row.phase) ||
+      row.conversationId !== null ||
+      row.claimedBy.at(-1) !== claimant ||
+      !SERVER_CONVERSATION_ID.test(claimant) ||
+      row.lastActivity !== lastActivity ||
+      row.commandId !== null || row.actionId !== null ||
+      runningToolCallsForWorkstream(id) > 0 ||
+      [...rows.values()].some((other) => other.id !== id && other.conversationId === claimant)
+    ) return false;
+    if (row.id !== ORCHESTRATOR_WORKSTREAM_ID && !row.autoAdvance)
+      return false;
+    row.error = errorCode;
+    if (row.id === ORCHESTRATOR_WORKSTREAM_ID) {
+      // The next scheduled steward tick may acquire immediately, regardless
+      // of the old lease; it never needs another send to a terminal chat.
+      row.claimReleased = true;
+    } else if (row.autoAdvance) {
+      row.phase = "opening";
+      row.actionId = `replace-${row.lock}`;
+      row.commandId = null;
+      row.nextCheck = 0;
+      row.attempts = MAX_RECOVERY_ATTEMPTS;
+      if (!row.retiredConversations.includes(claimant))
+        row.retiredConversations.push(claimant);
+    } else {
+      return false;
+    }
+    await save();
+    return true;
+  });
+}
+
 // A fresh chat has no conversational memory, but a replacement workstream already has a durable
 // brief/handoff. Forcing every replacement to reread AGENTS.md + TODO from the top recreated the
 // exact setup loop the controller is supposed to prevent: a worker could spend successive fresh
