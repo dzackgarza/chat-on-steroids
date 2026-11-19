@@ -162,25 +162,29 @@ class WatchdogTest(unittest.TestCase):
         calls = [{"workstreamId": "other", "ageMs": 45 * MINUTE}]
         self.assertEqual(self.decision(calls=calls)[0], "recover")
 
-    def test_cooldown_then_escalate_after_unsuccessful_recovery(self):
+    def test_accepted_recovery_without_delivery_evidence_never_automatically_replaces(self):
         state = {"lastAction": {
             "kind": "recover", "at": NOW - 10 * MINUTE,
             "baselineActivity": NOW - 31 * MINUTE,
         }}
         self.assertIsNone(self.decision(state=state)[0])
         state["lastAction"]["at"] = NOW - 31 * MINUTE
-        self.assertEqual(self.decision(state=state)[0], "replace")
+        action, why, _ = self.decision(state=state)
+        self.assertIsNone(action)
+        self.assertIn("delivery/outcome diagnosis", why)
 
-    def test_replacement_failure_is_retried_after_cooldown(self):
+    def test_replacement_failure_needs_controller_delivery_diagnosis(self):
         state = {"lastAction": {
             "kind": "replace", "at": NOW - 90 * MINUTE,
             "baselineActivity": NOW - 31 * MINUTE,
         }}
-        self.assertEqual(self.decision(state=state)[0], "replace")
+        self.assertIsNone(self.decision(state=state)[0])
 
-    def test_blocked_must_be_stale_unless_recovery_failed(self):
+    def test_blocked_is_not_evidence_that_the_original_chat_cannot_resume(self):
         self.assertIsNone(self.decision(row(phase="blocked", lastActivity=NOW))[0])
-        self.assertEqual(self.decision(row(phase="blocked"))[0], "replace")
+        action, why, _ = self.decision(row(phase="blocked"))
+        self.assertIsNone(action)
+        self.assertIn("exact-chat recovery", why)
 
     def test_opening_and_archiving_trigger_controller_repair_when_stale(self):
         for phase in ("opening", "archiving"):
@@ -190,22 +194,43 @@ class WatchdogTest(unittest.TestCase):
                     self.decision(row(phase=phase, lastActivity=NOW - MINUTE))[0]
                 )
 
-    def test_no_known_claimant_goes_directly_to_replacement(self):
-        self.assertEqual(
-            self.decision(row(conversationId=None, claimedBy=[]))[0], "replace"
+    def test_unbound_claimants_are_never_replaced_without_a_failed_resume(self):
+        self.assertIsNone(
+            self.decision(row(conversationId=None, claimedBy=[]))[0]
         )
-        self.assertEqual(
-            self.decision(row(
+        action, why, _ = self.decision(row(
                 conversationId=None, claimedBy=["old-chat"],
                 retiredConversations=["old-chat"],
-            ))[0], "replace"
-        )
+            ))
+        self.assertIsNone(action)
+        self.assertIn("verified original-chat recovery", why)
         self.assertEqual(
             self.decision(row(
                 conversationId=None, claimedBy=["current-chat"],
                 retiredConversations=["old-chat"],
             ))[0], "recover"
         )
+
+    def test_sage_2026_11_19_missing_binding_does_not_spawn_replacement(self):
+        # Observed 04:30 UTC: the binding was lost on claim rotation and the
+        # newest claimant was already in retiredConversations. The watchdog
+        # issued /replace without a single /recover delivery to this chat.
+        state = {"version": 1, "streams": {}}
+        old = row(
+            id="sage-indefinite-port", conversationId=None,
+            claimedBy=["old-chat", "original-live-chat"],
+            retiredConversations=["old-chat", "original-live-chat"],
+        )
+        bridge = FakeBridge([old])
+        result = wd.run_watchdog(
+            bridge, state, sessions_dir=self.sessions, now=NOW,
+            idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+            cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+        )
+        # A missing browser identity is a real unresolved incident, not a
+        # successful watchdog pass or proof that replacement is safe.
+        self.assertEqual(result, 1)
+        self.assertEqual(bridge.posts, [])
 
     def test_recorder_polls_cannot_mask_old_nonpoll_activity(self):
         sid = "2026-10-24-aabbccdd"
@@ -258,8 +283,8 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(len(bridge.posts), 1)
         self.assertEqual(bridge.posts[0][0], "/workstreams/recover")
         self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "recover")
-        # A legitimate 409 (e.g. claimant retired) is not a crashed daemon.
-        # Escalate a still-idle, unchanged row to native fenced replacement.
+        # A legitimate 409 (e.g. claimant retired) is not a crashed daemon,
+        # and cannot prove the original chat cannot be continued.
         refusing = FakeBridge([row()])
         original_post = refusing.post
         def refused_recovery(path, body):
@@ -272,11 +297,11 @@ class WatchdogTest(unittest.TestCase):
             self.assertEqual(wd.run_watchdog(
                 refusing, {"version": 1, "streams": {}},
                 **options, dry_run=False,
-            ), 0)
+            ), 1)
         restart.assert_not_called()
         self.assertEqual(
             [p for p, _ in refusing.posts],
-            ["/workstreams/recover", "/workstreams/replace"],
+            ["/workstreams/recover"],
         )
 
     def test_overlong_tool_is_reported_without_unconditional_cancellation(self):

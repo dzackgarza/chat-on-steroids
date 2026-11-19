@@ -306,33 +306,40 @@ def action_allowed(
         return None, "controller is already opening or archiving a conversation", evidence
 
     if phase == "blocked":
-        if activity_age < idle_ms and not previous:
-            return None, "recently blocked; awaiting controller recovery", evidence
-        return "replace", "blocked workstream requires a new continuation", evidence
+        # A blocked row is not evidence that its ChatGPT conversation is dead.
+        # In particular, a failed browser binding can leave a still-usable chat
+        # unbound while the old claimant is marked retired. A new chat would
+        # merely displace it. The bridge/owner must diagnose that exact route.
+        return None, "blocked workstream requires exact-chat recovery diagnosis", evidence
 
     if phase == "recovering":
         if int(row.get("nextCheck") or 0) > now:
             return None, "controller recovery response window remains open", evidence
-        if previous or int(row.get("attempts") or 0) > 0:
-            return "replace", "failed recovery did not resume execution", evidence
-        return None, "controller is already handling recovery", evidence
+        # The bridge tracks delivery, the model-response window and exhaustion.
+        # The watchdog has no evidence that a revive was actually delivered:
+        # an accepted /recover POST alone cannot justify a replacement.
+        return None, "controller owns recovery delivery and exhaustion", evidence
 
     if phase not in ACTIVE_PHASES:
         return None, "phase not eligible for watchdog intervention", evidence
     if activity_age < idle_ms:
         return None, "recent tool activity", evidence
 
-    if previous and previous.get("kind") == "replace":
-        return "replace", "replacement failed to resume the active workstream", evidence
-    if previous and previous.get("kind") == "recover":
-        return "replace", "same-chat recovery did not produce a new tool action", evidence
+    if previous:
+        # The watchdog records only that the bridge accepted its request, not
+        # that ChatGPT received it. Never promote elapsed time or missing tools
+        # into a proof that the old conversation cannot be continued.
+        return None, "earlier intervention needs delivery/outcome diagnosis", evidence
     if row.get("conversationId"):
         return "recover", "no non-polling tool activity within inactivity horizon", evidence
     claimants = row.get("claimedBy") or []
     last_claimant = claimants[-1] if claimants else None
     if last_claimant and last_claimant not in (row.get("retiredConversations") or []):
         return "recover", "unbound idle workstream has a nonretired claimant to revive", evidence
-    return "replace", "unbound idle workstream has no eligible claimant to revive", evidence
+    # A lost binding or stale retired flag does not prove that the last chat
+    # cannot be continued. This was the Nov-19 Sage failure: replacement was
+    # requested without one attempted delivery to that still-live chat.
+    return None, "unbound workstream needs verified original-chat recovery before replacement", evidence
 
 
 def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service") -> dict:
@@ -444,7 +451,18 @@ def run_watchdog(
             cooldown_ms=cooldown_ms, calls=calls, sessions_dir=sessions_dir,
         )
         if action is None:
-            severity = "error" if evidence.get("longestCallMs", 0) >= call_limit_ms else "info"
+            # No automatic replacement does not mean recovery is complete.
+            # An unbound/retired claimant or a rejected recovery needs an
+            # externally verified browser identity before any next action.
+            # Surface that as an actionable failure, not a successful idle tick.
+            needs_recovery_diagnosis = any(text in reason for text in (
+                "exact-chat recovery diagnosis",
+                "verified original-chat recovery",
+                "delivery/outcome diagnosis",
+            ))
+            severity = "error" if (
+                evidence.get("longestCallMs", 0) >= call_limit_ms or needs_recovery_diagnosis
+            ) else "info"
             log(severity, ident, reason, **evidence)
             if severity == "error":
                 problems += 1
@@ -559,17 +577,10 @@ def run_watchdog(
                 if any(c.get("workstreamId") == ident for c in pending):
                     log("info", ident, "worker began a call during recovery; no replacement")
                     continue
-                # A refusal from the live controller is NOT proof its daemon
-                # is broken. The claimant can have retired since our sample;
-                # restart would interrupt unrelated active workers. The same
-                # observed idle row is eligible for native fenced replacement.
-                if action == "recover" and fresh.get("phase") in ACTIVE_PHASES:
-                    action = "replace"
-                    endpoint = "/workstreams/replace"
-                    payload.pop("reason", None)
-                    reply = bridge.post(endpoint, payload)
-                    accepted = reply.get("replacing")
-                    row = fresh
+                # Refusing same-chat recovery is not proof the conversation
+                # is unrevivable. In particular, the caller may have lost
+                # its browser binding or been marked retired prematurely.
+                # Do not convert a 409 into an unconditional /replace.
             except BridgeError as exc:
                 failure = f"{failure}; restart/retry failed: {exc}"
         if accepted is not True:

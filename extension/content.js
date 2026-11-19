@@ -1352,9 +1352,10 @@
    */
   const CLAIM_LINE = /Workstream claim: (wl_[A-Za-z0-9_-]{43})/g;
   const reportedClaims = new Set();
-  function reportClaimLines() {
+  function reportClaimLines(turns = CLF_DOM.turns()) {
     if (!conversationId) return;
-    for (const turn of CLF_DOM.turns()) {
+    let found = false;
+    for (const turn of turns) {
       if (turn.role !== 'assistant') continue;
       for (const node of turn.nodes) {
         const prose = CLF_DOM.messageText(node, 'assistant');
@@ -1363,9 +1364,14 @@
           if (reportedClaims.has(key)) continue;
           reportedClaims.add(key);
           emit({ kind: 'workstream_claim', text: line });
+          found = true;
         }
       }
     }
+    // A claim is a routing authorization, not incidental transcript prose.
+    // Its short-lived DOM node may disappear before the next throttled poll;
+    // hand the evidence to the durable extension journal immediately.
+    if (found) void flush();
   }
   setInterval(reportClaimLines, 10_000);
 
@@ -2405,8 +2411,29 @@
     if (typeof MutationObserver !== 'function' || !document.body) return;
     let timer = null;
     let urgentQueued = false;
+    let claimQueued = false;
     const observer = new MutationObserver((records) => {
       if (!alive || !sameChat()) return;
+      // Workstream claims are short-lived assistant text in some ChatGPT
+      // renderers. The ten-second fallback reader can miss a claim that was
+      // written and collapsed between polls, leaving its real chat unbound;
+      // the watchdog then mistook that missing route for an unrevivable chat.
+      // Inspect only mutations whose bounded text contains the claim prefix,
+      // then read the actual assistant prose in a microtask. Never bind from
+      // the tool's instruction or from a guessed active tab.
+      if (!claimQueued && records.some((record) =>
+        [record.target, ...record.addedNodes].some((node) => {
+          const text = node?.textContent;
+          return typeof text === 'string' && text.length <= 2000 &&
+            text.includes('Workstream claim: wl_');
+        })
+      )) {
+        claimQueued = true;
+        void Promise.resolve().then(() => {
+          claimQueued = false;
+          if (alive && sameChat()) reportClaimLines();
+        });
+      }
       // Stop is mounted under the composer, outside TURN_SECTION. In a background tab the final
       // prose can arrive while Stop still exists (scheduling the throttled debounce below), and
       // Stop removal can then be the *only* terminal mutation. Check the local->page generation

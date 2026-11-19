@@ -2215,6 +2215,33 @@ async function handle(
   }
   if (route === "/workstreams/routes" && req.method === "GET") {
     const rows = workstreamStatus();
+    // A claim rotates the opaque MCP lock before the browser can report the
+    // replacement claim line. It can therefore leave a *live* old frontend
+    // unbound. Neither the missing binding nor an earlier retired flag proves
+    // that ChatGPT archived that conversation. Give the authenticated browser
+    // extension the exact most-recent claimant to verify in ChatGPT itself.
+    // While verification is pending, the retired-tab reaper must not destroy
+    // that candidate. Only the original claimant is eligible; this never
+    // guesses a chat from titles, tabs, clocks or a different workstream.
+    const recoveryCandidates = rows.flatMap((row) => {
+      const candidate = row.claimedBy.at(-1);
+      if (
+        !getConfig().autoContinue || !row.autoAdvance ||
+        !["active", "blocked"].includes(row.phase) || row.conversationId !== null ||
+        row.actionId !== null || row.commandId !== null ||
+        !candidate || !/^[0-9a-f-]{8,64}$/i.test(candidate) ||
+        runningToolCallsForWorkstream(row.id) > 0 ||
+        rows.some((other) => other.id !== row.id && other.conversationId === candidate)
+      ) return [];
+      return [{ id: row.id, conversationId: candidate, lastActivity: row.lastActivity }];
+    });
+    const candidateIds = new Set(recoveryCandidates.map((row) => row.conversationId));
+    const eligibleRecoveryCandidates = recoveryCandidates.filter((candidate) => {
+      const turn = conversationTurnState(candidate.conversationId);
+      return Date.now() >= candidate.lastActivity + WORKSTREAM_LEASE_MS &&
+        !turn.generating &&
+        !(turn.observerLostAt && Date.now() - turn.observerLostAt < WORKSTREAM_LEASE_MS);
+    });
     const currentRoutes = rows
       .filter(
         (row) =>
@@ -2232,7 +2259,7 @@ async function handle(
       ...new Set(
         rows.flatMap((row) =>
           row.retiredConversations.filter(
-            (conversationId) => !currentIds.has(conversationId),
+            (conversationId) => !currentIds.has(conversationId) && !candidateIds.has(conversationId),
           ),
         ),
       ),
@@ -2242,6 +2269,7 @@ async function handle(
       200,
       {
         routes: currentRoutes,
+        recoveryCandidates: eligibleRecoveryCandidates,
         // Browser-lifecycle authority only. These ids were current controller frontends in the
         // past and have been explicitly retired by archive/replacement. The extension may close
         // matching ChatGPT tabs; unrelated tabs never appear here.
@@ -2252,6 +2280,7 @@ async function handle(
   }
   if (route === "/workstreams/routes" && req.method === "POST") {
     const body = (await readBody(req)) as Record<string, unknown>;
+    const recoveries = Array.isArray(body["recoveries"]) ? body["recoveries"].slice(0, 16) : [];
     const promotionRaw = Array.isArray(body["promotions"])
       ? body["promotions"]
       : [];
@@ -2277,8 +2306,39 @@ async function handle(
           typeof (entry as Record<string, unknown>)["conversationId"] ===
             "string",
       );
-    if (invalid.length === 0 && promotions.length === 0)
+    if (invalid.length === 0 && promotions.length === 0 && recoveries.length === 0)
       return json(res, 400, { error: "bad_request" }, origin);
+    let recovered = 0;
+    for (const candidate of recoveries) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const item = candidate as Record<string, unknown>;
+      const id = item["id"];
+      const conversation = item["conversationId"];
+      const lastActivity = item["lastActivity"];
+      const backendState = item["backendState"];
+      if (
+        typeof id !== "string" || typeof conversation !== "string" ||
+        !/^[0-9a-f-]{8,64}$/i.test(conversation) ||
+        typeof lastActivity !== "number" || !Number.isSafeInteger(lastActivity) ||
+        backendState !== "unarchived"
+      ) continue;
+      const row = workstreamStatus().find((entry) =>
+        getConfig().autoContinue && entry.id === id && entry.autoAdvance &&
+        ["active", "blocked"].includes(entry.phase) &&
+        entry.conversationId === null && entry.commandId === null &&
+        entry.actionId === null && entry.claimedBy.at(-1) === conversation &&
+        entry.lastActivity === lastActivity &&
+        Date.now() >= entry.lastActivity + WORKSTREAM_LEASE_MS &&
+        !conversationTurnState(conversation).generating &&
+        runningToolCallsForWorkstream(entry.id) === 0
+      );
+      if (!row) continue;
+      const expected = { conversationId: null, lastActivity };
+      if (await recoverWorkstreamNow(
+        id, "authenticated ChatGPT backend confirmed the last claimant is unarchived; resume this chat",
+        Date.now(), expected, conversation,
+      )) recovered++;
+    }
     let promoted = 0;
     for (const entry of promotions) {
       noteBrowserRoutePromotion(entry.from, entry.to);
@@ -2298,8 +2358,9 @@ async function handle(
       )
         invalidated++;
     }
-    if (invalidated > 0 || promoted > 0) await sweepWorkstreams();
-    return json(res, 200, { invalidated, promoted }, origin);
+    if (invalidated > 0 || promoted > 0 || recovered > 0)
+      await sweepWorkstreams();
+    return json(res, 200, { invalidated, promoted, recovered }, origin);
   }
   if (route === "/workstreams/archive" && req.method === "POST") {
     const body = (await readBody(req)) as Record<string, unknown>;

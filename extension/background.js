@@ -3473,6 +3473,7 @@ async function restoreOpenChatgptTabs() {
 
 chrome.runtime.onInstalled.addListener(() => {
   void load()
+    .then(() => reconcileWorkstreamRoutes())
     .then(() => reconcileRetiredWorkstreamTabs())
     .then(() => restoreOpenChatgptTabs())
     .then(() => recoverDeferredRevivals())
@@ -3488,6 +3489,7 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
       .then(() => drainCommandAcks())
       .then(() => drain())
       .then(() => drainCloses())
+      .then(() => reconcileWorkstreamRoutes())
       .then(() => reconcileRetiredWorkstreamTabs())
       .then(() => restoreOpenChatgptTabs())
       .then(() => recoverDeferredRevivals())
@@ -3498,7 +3500,8 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
 if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addListener === 'function') {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm?.name === WORKSTREAM_ALARM) {
-      void reconcileRetiredWorkstreamTabs()
+      void reconcileWorkstreamRoutes()
+        .then(() => reconcileRetiredWorkstreamTabs())
         .then(() => drainWorkstreamArchives())
         .catch(() => undefined);
       return;
@@ -3517,6 +3520,7 @@ if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addLi
 // workstream frontends before touching every open ChatGPT tab: otherwise a leaked retired-tab
 // backlog can exhaust Chrome while restoreOpenChatgptTabs() is trying to repair it.
 void load()
+  .then(() => reconcileWorkstreamRoutes())
   .then(() => reconcileRetiredWorkstreamTabs())
   .then(() => restoreOpenChatgptTabs())
   .then(() => recoverDeferredRevivals())
@@ -3881,13 +3885,15 @@ async function reconcileWorkstreamRoutes() {
   const work = (async () => {
     const state = await chrome.storage.local.get('workstreamRouteCheckAt');
     const last = Number(state.workstreamRouteCheckAt);
-    if (Number.isFinite(last) && Date.now() - last < WORKSTREAM_ROUTE_RECONCILE_MS) return;
+    const checkBoundRoutes = !Number.isFinite(last) || Date.now() - last >= WORKSTREAM_ROUTE_RECONCILE_MS;
 
     const current = await call('/workstreams/routes');
-    const routes = current.ok && Array.isArray(current.data?.routes)
-      ? current.data.routes
-      : [];
-    if (routes.length === 0) return;
+    if (!current.ok) return;
+    const routes = checkBoundRoutes && Array.isArray(current.data?.routes)
+      ? current.data.routes : [];
+    const candidates = Array.isArray(current.data?.recoveryCandidates)
+      ? current.data.recoveryCandidates : [];
+    if (routes.length === 0 && candidates.length === 0) return;
 
     const tabs = (await chrome.tabs.query({ url: 'https://chatgpt.com/*' }))
       .filter((tab) => typeof tab.id === 'number');
@@ -3900,8 +3906,19 @@ async function reconcileWorkstreamRoutes() {
           typeof route?.conversationId === 'string' &&
           /^[a-zA-Z0-9-]{1,200}$/.test(route.conversationId),
       )
-      .map((route) => ({ id: route.id, conversationId: route.conversationId }));
-    if (validRoutes.length === 0) return;
+      .map((route) => ({ id: route.id, conversationId: route.conversationId, kind: 'route' }));
+    const validCandidates = candidates
+      .filter((candidate) =>
+        typeof candidate?.id === 'string' &&
+        typeof candidate?.conversationId === 'string' &&
+        /^[0-9a-f-]{8,64}$/i.test(candidate.conversationId) &&
+        Number.isSafeInteger(candidate.lastActivity)
+      )
+      .map((candidate) => ({
+        id: candidate.id, conversationId: candidate.conversationId,
+        lastActivity: candidate.lastActivity, kind: 'recovery'
+      }));
+    if (validRoutes.length === 0 && validCandidates.length === 0) return;
 
     let probe = null;
     for (const tab of tabs) {
@@ -3909,7 +3926,7 @@ async function reconcileWorkstreamRoutes() {
         const result = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           world: 'MAIN',
-          args: [validRoutes],
+          args: [[...validRoutes, ...validCandidates]],
           func: async (items) => {
             const session = await fetch('/api/auth/session', {
               credentials: 'include',
@@ -3931,7 +3948,9 @@ async function reconcileWorkstreamRoutes() {
                       signal: AbortSignal.timeout(15_000),
                     },
                   );
-                  return { ...item, status: response.status };
+                  if (!response.ok) return { ...item, status: response.status };
+                  const data = await response.json();
+                  return { ...item, status: response.status, isArchived: data?.is_archived };
                 } catch {
                   return { ...item, status: null };
                 }
@@ -3949,24 +3968,38 @@ async function reconcileWorkstreamRoutes() {
     if (!probe || probe.authStatus !== 200) return;
     const invalid = Array.isArray(probe.results)
       ? probe.results
-          .filter((item) => item?.status === 404)
+          .filter((item) => item?.kind === 'route' && item?.status === 404)
           .map((item) => ({ id: item.id, conversationId: item.conversationId }))
       : [];
-    if (invalid.length > 0) {
+    const recoveries = Array.isArray(probe.results)
+      ? probe.results.flatMap((item) => {
+          if (item?.kind !== 'recovery') return [];
+          const backendState = item.status === 404 ? 'missing'
+            : item.status === 200 && item.isArchived === true ? 'archived'
+            : item.status === 200 && item.isArchived === false ? 'unarchived'
+            : null;
+          return backendState ? [{
+            id: item.id, conversationId: item.conversationId,
+            lastActivity: item.lastActivity, backendState
+          }] : [];
+        }) : [];
+    if (invalid.length > 0 || recoveries.length > 0) {
       await call('/workstreams/routes', {
         method: 'POST',
-        body: JSON.stringify({ invalid }),
+        body: JSON.stringify({ invalid, recoveries }),
       });
     }
     // Stamp only after a successful authenticated batch. A rate-limited or inaccessible
     // browser attempt remains eligible on the next service-worker start instead of suppressing
     // reconciliation for half an hour.
-    await chrome.storage.local.set({ workstreamRouteCheckAt: Date.now() });
+    if (checkBoundRoutes) await chrome.storage.local.set({ workstreamRouteCheckAt: Date.now() });
   })();
-  workstreamRouteReconcileWork = work.finally(() => {
-    if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null;
-  });
-  return workstreamRouteReconcileWork;
+  workstreamRouteReconcileWork = work;
+  void work.then(
+    () => { if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null; },
+    () => { if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null; },
+  );
+  return work;
 }
 
 async function drainWorkstreamArchives() {

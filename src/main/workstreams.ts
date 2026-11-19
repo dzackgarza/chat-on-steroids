@@ -712,22 +712,24 @@ export async function bindWorkstreamConversation(
 ): Promise<string | null> {
   return exclusive(async () => {
     ready();
-    // A claim line names its row even after the lock rotated: every reclaim nulls the row's
-    // conversation, and a slept or `chat_error` page may never store the newer claim line.
-    const claimed = [...rows.values()].find(
-      (candidate) => candidate.lock === lock || candidate.retiredKeys.includes(lock),
-    );
-    if (claimed && !claimed.claimedBy.includes(conversationId)) {
-      const previous = claimed.claimedBy[claimed.claimedBy.length - 1] ?? null;
+    // Only the CURRENT lock is an ownership claim. A historical assistant
+    // message can be re-rendered after a newer chat has reclaimed the same
+    // workstream. Letting that retired lock reorder claimedBy used to mark the
+    // real latest claimant retired and made the watchdog replace its chat.
+    const claimed = [...rows.values()].find((candidate) => candidate.lock === lock);
+    if (!claimed) return null;
+    const previous = claimed.claimedBy.at(-1) ?? null;
+    if (previous !== conversationId) {
       for (const other of rows.values())
         other.claimedBy = other.claimedBy.filter((id) => id !== conversationId);
+      // Reclaiming a workstream from a formerly recorded chat MUST move it
+      // back to the tail. Membership alone does not express claim order.
       claimed.claimedBy = [...claimed.claimedBy, conversationId].slice(-8);
       // A new chat claiming the workstream is a prime change whichever path opened it.
       if (previous && !workerOwnsWorkstream(claimed.id)) retireReplacedPrimeRuns(claimed.id, previous);
       await save();
     }
-    const row = [...rows.values()].find((candidate) => candidate.lock === lock);
-    if (!row) return null;
+    const row = claimed;
     if (row.conversationId === conversationId) return row.id;
     for (const other of rows.values())
       if (other.id !== row.id && other.conversationId === conversationId)
@@ -786,6 +788,12 @@ export async function scheduleWorkstreamAfterTurn(
             ))) &&
         (candidate.autoAdvance || candidate.id === ORCHESTRATOR_WORKSTREAM_ID) &&
         (candidate.phase === "active" ||
+          // Recovery can already be queued when ChatGPT reports that this
+          // conversation has exhausted its length. The authoritative failed
+          // turn must still retire the terminal holder immediately; otherwise
+          // a successor unnecessarily waits for its old five-minute lease.
+          (candidate.phase === "recovering" &&
+            outcome === "failed" && conversationLengthExhausted) ||
           // The advance may have reached ChatGPT but its turn can end before
           // the new worker makes a Core call.  Ignoring that terminal result
           // strands the row in `advancing` with a committed command forever.
@@ -1001,7 +1009,12 @@ export async function recoverWorkstreamNow(
         row.conversationId !== expected.conversationId ||
         row.lastActivity !== expected.lastActivity
       )) ||
-      !["active", "advancing"].includes(row.phase) ||
+      !(["active", "advancing"].includes(row.phase) ||
+        // A browser-binding failure can block a still-unarchived original
+        // conversation. Only an independently verified exact claimant may
+        // recover that state; an ordinary unverified recovery still refuses.
+        (row.phase === "blocked" && row.conversationId === null &&
+          verifiedUnarchivedClaimant === row.claimedBy.at(-1))) ||
       runningToolCallsForWorkstream(id) > 0
     )
       return false;
@@ -1249,7 +1262,10 @@ export async function recordWorkstreamCommand(
  * A controller send reached a terminal delivery failure before ChatGPT could start the
  * intended turn. Do not spend the remainder of that attempt's model-response backoff on a
  * command that can no longer make progress: release the dead command and make recovery
- * immediately eligible for its next bounded step.
+ * eligible to retry delivery to the SAME conversation. An attempted send is
+ * not a delivered revive: only noteWorkstreamRecoveryDelivered may consume a
+ * recovery attempt. Otherwise one rejected browser send exhausted the only
+ * attempt and archived a perfectly usable original chat.
  */
 export async function releaseFailedWorkstreamDelivery(
   id: string,
@@ -1272,8 +1288,15 @@ export async function releaseFailedWorkstreamDelivery(
     if (row.phase === "advancing") {
       row.phase = "recovering";
       row.attempts = 0;
+      row.nextCheck = now;
+    } else {
+      // The attempted revive never started the intended ChatGPT turn. Preserve
+      // the original chat and give its browser delivery another opportunity;
+      // do not mark the attempt as evidence that model recovery failed.
+      row.attempts = Math.max(0, row.attempts - 1);
+      row.nextCheck = now + RECOVERY_BACKOFF_MS[0];
+      row.error = "revive_delivery_failed: retry same-chat delivery before replacement";
     }
-    row.nextCheck = now;
     await save();
     return true;
   });
