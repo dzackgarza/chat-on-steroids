@@ -653,6 +653,11 @@ Authenticated recovery probes have bounded page-script waits and fall back to
 a disposable ChatGPT home tab if the currently open conversation renderer is
 hung or no conversation tab exists. A frozen unrelated tab cannot stall every
 workstream's recovery, and the temporary host is closed after use.
+The extension service worker first attempts the metadata-only conversation
+probe directly with its authenticated ChatGPT session, without depending on
+any page renderer. It does not expose tokens or conversation bodies. If that
+worker context lacks the correct session, the existing bounded page-context
+lookup remains the fallback; all-404 ambiguity never retires workstreams.
 Extension startup/injection operations are likewise bounded against frozen
 renderers, and the headless CDP opener propagates failed HTTP/timeout/no-target
 results to command delivery. An opener failure cannot become a phantom

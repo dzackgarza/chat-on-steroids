@@ -3953,6 +3953,61 @@ async function reconcileWorkstreamRoutes() {
 
     let probe = null;
     let probeHost = null;
+    // Metadata-only recovery lookup does not require ChatGPT's React
+    // renderer. The extension worker itself has chatgpt.com host permission
+    // and can fetch its own authenticated session. Prefer this path so an
+    // unrelated saturated conversation page cannot suppress EVERY claimant
+    // probe. No access token or conversation body leaves this function.
+    try {
+      const session = await fetch('https://chatgpt.com/api/auth/session', {
+        credentials: 'include', signal: AbortSignal.timeout(10_000),
+      });
+      if (session.ok) {
+        const auth = await session.json();
+        if (typeof auth.accessToken === 'string') {
+          const headers = { Authorization: `Bearer ${auth.accessToken}` };
+          const results = [];
+          const items = [...validCandidates, ...validRoutes];
+          for (let offset = 0; offset < items.length; offset += 8) {
+            const batch = await Promise.all(items.slice(offset, offset + 8).map(async (item) => {
+              try {
+                const response = await fetch(
+                  `https://chatgpt.com/backend-api/conversation/${item.conversationId}`,
+                  { headers, credentials: 'include', signal: AbortSignal.timeout(10_000) },
+                );
+                if (response.status === 413) {
+                  const error = await response.json().catch(() => null);
+                  const code = error?.code || error?.detail?.code || null;
+                  return { ...item, status: 413,
+                    terminalCode: code === 'conversation_length_exceeds_limit' ? code : null };
+                }
+                if (!response.ok) return { ...item, status: response.status };
+                const data = await response.json();
+                return { ...item, status: response.status, isArchived: data?.is_archived };
+              } catch {
+                return { ...item, status: null };
+              }
+            }));
+            results.push(...batch);
+            if (batch.some((item) => item.status === 429)) break;
+          }
+          // A same-origin session may be valid without carrying the account
+          // selected in the visible ChatGPT tab. Never use an all-404 result
+          // from that ambiguous context to invalidate current workstreams;
+          // fall back to the authenticated page-context lookup instead.
+          if (results.some((item) => item.status === 200 ||
+              item.status === 413 && item.terminalCode)) {
+            probe = { authStatus: 200, results };
+          } else if (results.some((item) => item.status === 429)) {
+            return; // Respect ChatGPT's account-wide throttle; never fan out.
+          }
+        }
+      }
+    } catch {
+      // Page-context lookup below remains available for browser profiles
+      // whose auth cookies are not accessible to the extension worker.
+    }
+    if (!probe) {
     // A genuine ChatGPT renderer can become permanently unresponsive while
     // still appearing in chrome.tabs. Do not let that unrelated tab suspend
     // every workstream's browser reconciliation. A fresh, disposable ChatGPT
@@ -4046,6 +4101,7 @@ async function reconcileWorkstreamRoutes() {
         if (tab.id !== temporaryHost?.id)
           workstreamUnresponsiveProbeTabs.set(tab.id, Date.now() + 15 * 60_000);
       }
+    }
     }
     if (!probe || probe.authStatus !== 200) return;
     const invalid = Array.isArray(probe.results)
