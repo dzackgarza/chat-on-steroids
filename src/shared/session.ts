@@ -325,7 +325,7 @@ export type SessionEvent =
       origin?: number;
     })
   | (BaseEvent & { kind: "turn_start"; sendOrigin?: SendOrigin })
-  | (BaseEvent & { kind: "turn_end"; outcome: TurnOutcome; detail?: string })
+  | (BaseEvent & { kind: "turn_end"; outcome: TurnOutcome; detail?: string; errorCode?: string })
   | (BaseEvent & { kind: "chat_error"; message: StoredText })
   | (BaseEvent & { kind: "tool_call"; call: ToolCallRecord })
   | (BaseEvent & { kind: "note"; message: StoredText })

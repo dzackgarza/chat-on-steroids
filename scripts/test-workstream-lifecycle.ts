@@ -19,6 +19,7 @@ import {
   invalidateWorkstreamConversation,
   nextWorkstreamActions,
   noteSuccessfulWorkstreamTool,
+  observeWorkstreamTerminalError,
   pendingWorkstreamArchives,
   pauseWorkstream,
   queueFailedBootstrapArchive,
@@ -61,6 +62,37 @@ void (async () => {
     assert.equal((await admitWorkstreamCall(terminal.workstreamId, 1250)).ok, false);
     const successorToTerminal = await continueWorkstream('orchestrator', 1250);
     assert.equal(successorToTerminal.ok, true);
+    // The retired chat's delayed network error cannot fence the new opaque
+    // claim while the replacement's browser conversation is still unbound.
+    assert.equal(await observeWorkstreamTerminalError(
+      'chat-terminal', 'conversation_too_large', 1300), false);
+    assert.equal(state('orchestrator').claimReleased, false);
+    if (!successorToTerminal.ok) throw new Error('unreachable');
+    assert.equal(await bindWorkstreamConversation(successorToTerminal.workstreamId,
+      'cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd'), 'orchestrator');
+    assert.equal(await observeWorkstreamTerminalError(
+      'cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd', 'conversation_too_large', 1320), true);
+    assert.equal(state('orchestrator').claimReleased, true);
+    assert.equal((await continueWorkstream('orchestrator', 1330)).ok, true);
+
+    // The backend may reject before ChatGPT renders a turn_start or turn_end.
+    // That error must enter replacement from the independent typed transport
+    // signal; a human-visible English error alone is not accepted.
+    const sse = await startWorkstream('terminal-sse', path.join(temp, 'sse'), 2000);
+    assert.equal(sse.ok, true);
+    if (!sse.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('terminal-sse', true);
+    assert.equal(await bindWorkstreamConversation(sse.workstreamId,
+      'abababab-abab-abab-abab-abababababab'), 'terminal-sse');
+    assert.equal(await observeWorkstreamTerminalError(
+      'abababab-abab-abab-abab-abababababab', 'other_error', 2100), false);
+    assert.equal(state('terminal-sse').phase, 'active');
+    assert.equal(await observeWorkstreamTerminalError(
+      'abababab-abab-abab-abab-abababababab', 'conversation_too_large', 2200), true);
+    assert.equal(state('terminal-sse').phase, 'recovering');
+    assert.equal(state('terminal-sse').error, 'conversation_too_large');
+    await nextWorkstreamActions(2201, true);
+    assert.equal(state('terminal-sse').phase, 'archiving');
 
     // No-op completed turns must not create an unbounded chain of sends.
     const noOp = await startWorkstream('no-op', path.join(temp, 'one'), 1000);

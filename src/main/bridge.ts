@@ -59,6 +59,7 @@ import {
   recoverWorkstreamNow,
   releaseFailedWorkstreamDelivery,
   noteWorkstreamRecoveryDelivered,
+  observeWorkstreamTerminalError,
   releaseFailedWorkstreamReplacementBind,
   reopenUnsentWorkstreamReplacement,
   replaceWorkstream,
@@ -1267,6 +1268,10 @@ function parseObservations(input: unknown): ChatObservation[] {
     }
     if (typeof item["detail"] === "string")
       observation.detail = item["detail"].slice(0, 500);
+    if ((item["kind"] === "turn_end" || item["kind"] === "chat_error") &&
+        (item["errorCode"] === "conversation_too_large" ||
+          item["errorCode"] === "conversation_length_exceeds_limit"))
+      observation.errorCode = item["errorCode"];
     if (Array.isArray(item["calls"]))
       observation.calls = parseCallEvidence(item["calls"]);
     out.push(observation);
@@ -2568,6 +2573,17 @@ async function handle(
         }
       }
       const result = await recordChatObservations(id, observations, agent);
+      // ChatGPT can reject the POST before mounting a turn. A typed SSE
+      // failure is an independent browser event and must not be gated on the
+      // DOM recorder producing a matching turn_end.
+      const terminalErrorObserved = observations.some((item) =>
+        item.kind === "chat_error" &&
+        (item.errorCode === "conversation_too_large" ||
+          item.errorCode === "conversation_length_exceeds_limit"));
+      const terminalRecovery = terminalErrorObserved &&
+        await observeWorkstreamTerminalError(
+          id, observations.find((item) => item.kind === "chat_error" && item.errorCode)?.errorCode ?? "",
+        );
       // How full this chat is, measured by the app's own session record rather than by
       // anything the model said about itself, and fed in before the finish reconciliation
       // below. That ordering is the whole point: a worker that crossed the context ceiling
@@ -2648,6 +2664,8 @@ async function handle(
             typeof item.turnId === "string" &&
             Boolean(item.outcome),
         );
+      if (terminalRecovery) void sweepWorkstreams().catch((err: Error) =>
+        logWarn(`workstream terminal error recovery failed: ${err.message}`));
       if (
         completedBoundary?.turnId &&
         completedBoundary.outcome &&
@@ -2659,7 +2677,8 @@ async function handle(
           completedBoundary.time,
           Date.now(),
           completedBoundary.outcome === "failed" &&
-            /maximum length for this conversation/i.test(completedBoundary.detail ?? ""),
+            (completedBoundary.errorCode === "conversation_too_large" ||
+              completedBoundary.errorCode === "conversation_length_exceeds_limit"),
         ))
       ) {
         void sweepWorkstreams().catch((err: Error) =>

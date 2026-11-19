@@ -2087,6 +2087,8 @@ export interface ChatObservation {
   fiberConversationId?: string;
   outcome?: TurnOutcome;
   detail?: string;
+  /** ChatGPT's machine-readable terminal SSE code, never inferred from message text. */
+  errorCode?: string;
   /** tool_evidence only: the connector requests this turn's message model holds. */
   calls?: PageCallEvidence[];
 }
@@ -2464,6 +2466,7 @@ async function recordChatObservationsNow(
           kind: "turn_end",
           outcome: item.outcome ?? "unknown",
           ...(item.detail ? { detail: item.detail } : {}),
+          ...(item.errorCode ? { errorCode: item.errorCode } : {}),
         });
         // As above, durable journal state owns idempotency; in-memory state follows it.
         if (live) {

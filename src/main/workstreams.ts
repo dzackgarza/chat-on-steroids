@@ -888,6 +888,47 @@ export async function scheduleWorkstreamAfterTurn(
   });
 }
 
+/**
+ * ChatGPT's own conversation SSE reported a typed terminal error. Unlike a
+ * rendered turn_end, this also arrives when the backend rejected the request
+ * before the page ever mounted a generation. The exact conversation route must
+ * be the CURRENT binding. A retained historical claimant is insufficient: a
+ * successor's new opaque lock may be issued before its own browser route binds,
+ * and a delayed error from the previous chat must never fence that new claim.
+ */
+export async function observeWorkstreamTerminalError(
+  conversationId: string,
+  errorCode: string,
+  now = Date.now(),
+): Promise<boolean> {
+  if (errorCode !== "conversation_too_large" &&
+      errorCode !== "conversation_length_exceeds_limit") return false;
+  return exclusive(async () => {
+    ready();
+    const row = [...rows.values()].find((candidate) =>
+      candidate.conversationId === conversationId &&
+      !["paused", "opening", "archiving"].includes(candidate.phase) &&
+      ![...rows.values()].some((other) =>
+        other.id !== candidate.id && other.conversationId === conversationId));
+    if (!row || row.claimReleased) return false;
+    row.error = errorCode;
+    if (row.id === ORCHESTRATOR_WORKSTREAM_ID) {
+      // The old model cannot be sent another request, but already-admitted
+      // connector calls must still settle before its opaque claim is fenced.
+      if (runningToolCallsForWorkstream(row.id) === 0)
+        row.claimReleased = true;
+    } else {
+      row.phase = "recovering";
+      row.attempts = MAX_RECOVERY_ATTEMPTS;
+      row.nextCheck = now;
+      row.actionId = null;
+      row.commandId = null;
+    }
+    await save();
+    return true;
+  });
+}
+
 export async function configureWorkstream(
   id: string,
   context: string,
@@ -1113,6 +1154,12 @@ export async function nextWorkstreamActions(
     ready();
     retireEndedWorkerRows();
     for (const row of rows.values()) {
+      if (row.id === ORCHESTRATOR_WORKSTREAM_ID &&
+          (row.error === "conversation_too_large" ||
+            row.error === "conversation_length_exceeds_limit") &&
+          !row.claimReleased && runningToolCallsForWorkstream(row.id) === 0) {
+        row.claimReleased = true;
+      }
       // Swarm workers are driven by agents.ts alone (see workerOwnsWorkstream).
       if (workerOwnsWorkstream(row.id)) continue;
       // An archive is performed by the extension, which is offered none while auto-continuation

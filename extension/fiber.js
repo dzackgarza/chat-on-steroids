@@ -141,6 +141,83 @@
   const post = window.postMessage.bind(window);
   const own = Object.prototype.hasOwnProperty;
 
+  // The conversation POST returns application failures inside HTTP-200 SSE,
+  // while an oversized stored conversation may reject its GET with HTTP 413.
+  // Both have machine-readable codes; neither requires inspecting error prose.
+  // Never consume the page's response body: inspect only a clone.
+  if (!window.__clfConversationErrorObserver?.version && typeof window.fetch === 'function') {
+    const nativeFetch = window.fetch;
+    const uuid = /^[0-9a-f-]{8,64}$/i;
+    const endpoint = (input, options) => {
+      try {
+        const url = new URL(input instanceof Request ? input.url : input, location.href);
+        const method = String(options?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+        if (url.origin !== location.origin) return null;
+        if (method === 'POST' && url.pathname === '/backend-api/f/conversation') return 'stream';
+        if (method === 'GET' && /^\/backend-api\/conversation\/[0-9a-f-]{8,64}$/i.test(url.pathname))
+          return 'history';
+        return null;
+      } catch { return null; }
+    };
+    const state = { version: 1, last: null };
+    const report = (code, conversationId) => {
+      if (!uuid.test(conversationId || '')) return;
+      const route = /^\/c\/([0-9a-f-]{8,64})/i.exec(location.pathname);
+      if (!route || route[1] !== conversationId) return;
+      state.last = { conversationId, errorCode: code, at: Date.now() };
+      post({ source: 'clf-conversation-error', v: 1,
+        conversationId, errorCode: code }, location.origin);
+    };
+    async function inspect(response, kind) {
+      if (kind === 'history') {
+        if (response.status !== 413) return;
+        const data = await response.json();
+        if (data?.code === 'conversation_length_exceeds_limit' ||
+            data?.detail?.code === 'conversation_length_exceeds_limit') {
+          const route = /^\/backend-api\/conversation\/([0-9a-f-]{8,64})/i.exec(new URL(response.url).pathname);
+          if (route) report('conversation_length_exceeds_limit', route[1]);
+        }
+        return;
+      }
+      if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      const line = (value) => {
+        if (!value.startsWith('data:') || value.length > 8192) return;
+        try {
+          const event = JSON.parse(value.slice(5).trim());
+          if (event?.error_code !== 'conversation_too_large' || !uuid.test(event.conversation_id || '')) return;
+          report(event.error_code, event.conversation_id);
+        } catch { /* Other SSE events are not errors and are never forwarded. */ }
+      };
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          let end;
+          while ((end = pending.indexOf('\n')) !== -1) {
+            line(pending.slice(0, end).replace(/\r$/, ''));
+            pending = pending.slice(end + 1);
+          }
+          if (pending.length > 8192) pending = '';
+        }
+        if (pending) line(pending);
+      } finally { reader.releaseLock(); }
+    }
+    window.fetch = function (...args) {
+      const watch = endpoint(args[0], args[1]);
+      const request = nativeFetch.apply(this, args);
+      if (!watch) return request;
+      return request.then((response) => {
+        try { void inspect(response.clone(), watch).catch(() => {}); } catch { /* preserve the response */ }
+        return response;
+      });
+    };
+    window.__clfConversationErrorObserver = state;
+  }
+
   /** A short, plain string or null. Never a number, object, or anything with a toString. */
   function str(value) {
     return typeof value === 'string' && value.length > 0 ? value.slice(0, MAX_TEXT) : null;
@@ -1379,6 +1456,14 @@
     // Only this window, only our own request shape. Anything else is not ours to answer.
     if (event.source !== window) return;
     const data = event.data;
+    if (data && data.source === 'clf-conversation-error-check') {
+      const recent = window.__clfConversationErrorObserver?.last;
+      if (recent && Date.now() - recent.at < 5 * 60_000) {
+        post({ source: 'clf-conversation-error', v: 1,
+          conversationId: recent.conversationId, errorCode: recent.errorCode }, location.origin);
+      }
+      return;
+    }
     if (!data || typeof data !== 'object' || data.source !== ASK) return;
     const nonce = typeof data.nonce === 'string' ? data.nonce.slice(0, 64) : '';
     if (!nonce) return;
