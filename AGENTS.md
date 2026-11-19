@@ -646,6 +646,10 @@ Authenticated recovery probes have bounded page-script waits and fall back to
 a disposable ChatGPT home tab if the currently open conversation renderer is
 hung or no conversation tab exists. A frozen unrelated tab cannot stall every
 workstream's recovery, and the temporary host is closed after use.
+One browser delivery failure is not evidence that the original chat is dead.
+Two separately failed same-chat browser commands trigger the bounded
+archive/replacement fallback. Lost receipts, account-wide usage holds, and
+other unverified transport failures do not count as proof of a dead page.
 
 **A replacement inherits its predecessors' execution, not just the brief.** A workstream keeps
 one recorder session across every chat that holds it, so the opening message of any replacement

@@ -6422,6 +6422,13 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
             actionId,
             row.commandId,
             now,
+            Boolean(
+              receipt && !receipt.committed && receipt.error &&
+              browserPresent() &&
+              (["expired", "no_live_composer_tab"].includes(
+                classifySendFailure(receipt.error).state,
+              ) || receipt.error.includes("native-insert-no-text")),
+            ),
           );
         } else if (receipt?.committed && row.phase === "recovering") {
           await noteWorkstreamRecoveryDelivered(

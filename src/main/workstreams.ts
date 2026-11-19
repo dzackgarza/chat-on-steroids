@@ -1407,16 +1407,18 @@ export async function recordWorkstreamCommand(
  * A controller send reached a terminal delivery failure before ChatGPT could start the
  * intended turn. Do not spend the remainder of that attempt's model-response backoff on a
  * command that can no longer make progress: release the dead command and make recovery
- * eligible to retry delivery to the SAME conversation. An attempted send is
- * not a delivered revive: only noteWorkstreamRecoveryDelivered may consume a
- * recovery attempt. Otherwise one rejected browser send exhausted the only
- * attempt and archived a perfectly usable original chat.
+ * eligible to retry delivery to the SAME conversation. One failed delivery
+ * never proves the old chat is unusable; two independently failed browser
+ * commands to that exact chat establish that this frontend cannot currently
+ * receive a continuation and authorize the bounded replacement fallback.
+ * A missing/lost receipt is ambiguous, not another browser failure.
  */
 export async function releaseFailedWorkstreamDelivery(
   id: string,
   actionId: string,
   commandId: string,
   now = Date.now(),
+  confirmedPageDeliveryFailure = false,
 ): Promise<boolean> {
   return exclusive(async () => {
     const row = rows.get(id);
@@ -1427,20 +1429,31 @@ export async function releaseFailedWorkstreamDelivery(
       !["advancing", "recovering"].includes(row.phase)
     )
       return false;
+    const previouslyFailedOnPage =
+      row.error === "revive_browser_delivery_failed_once" ||
+      row.error?.startsWith("revive_delivery_failed:") === true;
     row.commandId = null;
     row.actionId = null;
-    if (!row.error?.startsWith("five_minute_")) row.error = null;
     if (row.phase === "advancing") {
       row.phase = "recovering";
       row.attempts = 0;
       row.nextCheck = now;
+      row.error = null;
+    } else if (confirmedPageDeliveryFailure && previouslyFailedOnPage) {
+      // Both independent browser commands reached a terminal delivery
+      // failure. They did not start a model turn, so do not miscount them as
+      // failed model revives. Escalate on this proof of unavailable frontend.
+      row.attempts = MAX_RECOVERY_ATTEMPTS;
+      row.nextCheck = now;
+      row.error = "revive_browser_delivery_exhausted: two failed same-chat deliveries";
     } else {
-      // The attempted revive never started the intended ChatGPT turn. Preserve
-      // the original chat and give its browser delivery another opportunity;
-      // do not mark the attempt as evidence that model recovery failed.
+      // First failed page delivery gets one independent retry. A missing
+      // receipt or transport ambiguity does not accumulate terminal evidence.
       row.attempts = Math.max(0, row.attempts - 1);
       row.nextCheck = now + RECOVERY_BACKOFF_MS[0];
-      row.error = "revive_delivery_failed: retry same-chat delivery before replacement";
+      row.error = confirmedPageDeliveryFailure
+        ? "revive_browser_delivery_failed_once"
+        : "revive_transport_uncertain: retry same-chat delivery";
     }
     await save();
     return true;
@@ -1473,6 +1486,7 @@ export async function noteWorkstreamRecoveryDelivered(
     // the same row on the very next sweep and queues another stop-first send,
     // interrupting the newly restarted ChatGPT turn before it can re-attach.
     row.actionId = null;
+    row.error = null;
     row.nextCheck = deliveredAt + REVIVE_RESPONSE_MS;
     await save();
     return true;

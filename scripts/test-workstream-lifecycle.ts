@@ -25,6 +25,7 @@ import {
   prepareArchivedWorkstreamRecovery,
   queueFailedBootstrapArchive,
   recordWorkstreamCommand,
+  releaseFailedWorkstreamDelivery,
   recoverWorkstreamNow,
   replaceWorkstream,
   reserveWorkstream,
@@ -162,6 +163,56 @@ void (async () => {
     assert.equal(state('orchestrator').claimReleased, true);
     assert.equal((await continueWorkstream('orchestrator',
       beforeOrchestratorTerminal.lastActivity + 1)).ok, true);
+
+    // One failed page delivery is not proof of an unusable original chat.
+    // Two distinct failed command receipts do establish the same-chat
+    // browser route cannot currently accept work. This must not loop forever
+    // by decrementing the only recovery-attempt counter each time.
+    const unavailable = await startWorkstream('unavailable-chat', path.join(temp, 'unavailable'), 9000);
+    assert.equal(unavailable.ok, true);
+    if (!unavailable.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('unavailable-chat', true);
+    assert.equal(await bindWorkstreamConversation(unavailable.workstreamId,
+      '78787878-7878-7878-7878-787878787878'), 'unavailable-chat');
+    assert.equal(await recoverWorkstreamNow('unavailable-chat', 'stalled browser', 10000), true);
+    await nextWorkstreamActions(10000, true);
+    const firstAction = state('unavailable-chat').actionId!;
+    assert.equal(await recordWorkstreamCommand('unavailable-chat', firstAction, 'command-one'), true);
+    assert.equal(await releaseFailedWorkstreamDelivery('unavailable-chat', firstAction,
+      'command-one', 10100, true), true);
+    assert.equal(state('unavailable-chat').error, 'revive_browser_delivery_failed_once');
+    assert.equal(state('unavailable-chat').phase, 'recovering');
+    await nextWorkstreamActions(10100 + 30000, true);
+    const secondAction = state('unavailable-chat').actionId!;
+    // The logical revive nonce may stay the same across a delivery retry;
+    // the two independent browser commands have distinct command IDs.
+    assert.equal(firstAction, secondAction);
+    assert.equal(await recordWorkstreamCommand('unavailable-chat', secondAction, 'command-two'), true);
+    assert.equal(await releaseFailedWorkstreamDelivery('unavailable-chat', secondAction,
+      'command-two', 40200, true), true);
+    assert.match(state('unavailable-chat').error ?? '', /^revive_browser_delivery_exhausted:/);
+    await nextWorkstreamActions(40201, true);
+    assert.equal(state('unavailable-chat').phase, 'archiving');
+
+    // A lost command/receipt is not a second failed browser observation.
+    const uncertain = await startWorkstream('uncertain-chat', path.join(temp, 'uncertain'), 11000);
+    assert.equal(uncertain.ok, true);
+    if (!uncertain.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('uncertain-chat', true);
+    await bindWorkstreamConversation(uncertain.workstreamId, '90909090-9090-9090-9090-909090909090');
+    await recoverWorkstreamNow('uncertain-chat', 'stalled browser', 12000);
+    await nextWorkstreamActions(12000, true);
+    const uncertainFirstAction = state('uncertain-chat').actionId!;
+    await recordWorkstreamCommand('uncertain-chat', uncertainFirstAction, 'uncertain-first');
+    await releaseFailedWorkstreamDelivery('uncertain-chat', uncertainFirstAction,
+      'uncertain-first', 12100, true);
+    await nextWorkstreamActions(42101, true);
+    const uncertainNextAction = state('uncertain-chat').actionId!;
+    await recordWorkstreamCommand('uncertain-chat', uncertainNextAction, 'uncertain-next');
+    await releaseFailedWorkstreamDelivery('uncertain-chat', uncertainNextAction,
+      'uncertain-next', 42200, false);
+    assert.equal(state('uncertain-chat').phase, 'recovering');
+    assert.match(state('uncertain-chat').error ?? '', /^revive_transport_uncertain:/);
 
     // No-op completed turns must not create an unbounded chain of sends.
     const noOp = await startWorkstream('no-op', path.join(temp, 'one'), 1000);
