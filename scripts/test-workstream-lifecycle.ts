@@ -13,6 +13,7 @@ import {
   admitWorkstreamCall,
   acknowledgeWorkstreamArchiveCleanup,
   bindWorkstreamConversation,
+  completeWorkstreamReplacementReceipt,
   continueWorkstream,
   finishWorkstreamArchive,
   invalidateWorkstreamConversation,
@@ -137,6 +138,43 @@ void (async () => {
     assert.equal(await acknowledgeWorkstreamArchiveCleanup('replace', 'cccccccc-cccc-cccc-cccc-cccccccccccc'), false);
     assert.equal(await acknowledgeWorkstreamArchiveCleanup('replace', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'), true);
     assert.deepEqual(state('replace').pendingArchives, []);
+
+    // A successor can finish its first *successful* turn before the browser
+    // acknowledges its opening send. The exact opening command must survive
+    // that turn and become ACK-able; only then may the queued advance run.
+    const overlapping = await startWorkstream('overlapping-ack', path.join(temp, 'overlap'), 100_000);
+    assert.equal(overlapping.ok, true);
+    if (!overlapping.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('overlapping-ack', true);
+    assert.equal(await bindWorkstreamConversation(overlapping.workstreamId, '11111111-1111-1111-1111-111111111111'), 'overlapping-ack');
+    assert.equal(await replaceWorkstream('overlapping-ack'), true);
+    const archiveAction = state('overlapping-ack').actionId;
+    assert.ok(archiveAction);
+    assert.equal(await finishWorkstreamArchive('overlapping-ack', archiveAction, null), true);
+    const bootstrapAction = state('overlapping-ack').actionId;
+    assert.ok(bootstrapAction);
+    assert.equal(await recordWorkstreamCommand('overlapping-ack', bootstrapAction, 'cmd-overlap'), true);
+    const attached = await continueWorkstream('overlapping-ack', 120_000);
+    assert.equal(attached.ok, true);
+    if (!attached.ok) throw new Error('unreachable');
+    assert.equal(state('overlapping-ack').commandId, 'cmd-overlap');
+    assert.equal(state('overlapping-ack').conversationId, null);
+    assert.equal(await scheduleWorkstreamAfterTurn(
+      '11111111-1111-1111-1111-111111111111', 'old-turn', 'completed', 120_010, 120_010,
+    ), false);
+    assert.equal(state('overlapping-ack').commandId, 'cmd-overlap');
+    const successorChat = '22222222-2222-2222-2222-222222222222';
+    assert.equal(await bindWorkstreamConversation(attached.workstreamId, successorChat), 'overlapping-ack');
+    await noteSuccessfulWorkstreamTool('overlapping-ack', attached.workstreamId, 120_020);
+    assert.equal(await scheduleWorkstreamAfterTurn(
+      successorChat, 'new-turn', 'completed', 120_030, 120_030,
+    ), true);
+    assert.equal(state('overlapping-ack').phase, 'advancing');
+    assert.equal(state('overlapping-ack').commandId, 'cmd-overlap');
+    assert.equal(await completeWorkstreamReplacementReceipt('cmd-overlap', successorChat), true);
+    assert.equal(state('overlapping-ack').commandId, null);
+    assert.equal(state('overlapping-ack').phase, 'advancing');
+    assert.ok(state('overlapping-ack').actionId?.startsWith('advance-'));
     assert.deepEqual(pendingWorkstreamArchives().filter((item) => item.id === 'replace'), []);
 
     // The browser ACK belongs to the exact orphan and is idempotent. Persist

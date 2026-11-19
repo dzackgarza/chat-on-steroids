@@ -807,6 +807,14 @@ export async function scheduleWorkstreamAfterTurn(
     )
       return false;
     if (["stalled", "observer_lost", "unknown"].includes(outcome)) return false;
+    // A replacement can claim its workstream, run its first tools and finish
+    // the turn before Chrome acknowledges the opening send. The claim moved
+    // opening -> active, leaving commandId with no actionId as the exact ACK
+    // rendezvous. An old claimant's late turn must NEVER rebind that unbound
+    // row while its successor's opening command is still awaiting receipt.
+    const awaitingReplacementReceipt =
+      row.phase === "active" && row.commandId !== null && row.actionId === null;
+    if (awaitingReplacementReceipt && row.conversationId === null) return false;
 
     // The unbound last claimant was authenticated by its existing claim-line
     // provenance plus fresh Core tool execution; it is not a new worker claim.
@@ -837,7 +845,10 @@ export async function scheduleWorkstreamAfterTurn(
       row.lastSuccessfulToolAt <= row.lastAdvancedTurnTime;
     row.lastAdvancedTurnId = turnId;
     row.lastAdvancedTurnTime = time;
-    row.commandId = null;
+    // This command is still the browser's property until its exact receipt.
+    // Clearing it here made workstreamCommandCurrent() revoke a successfully
+    // typed fresh-chat bootstrap and close the new chat as "superseded".
+    if (!awaitingReplacementReceipt) row.commandId = null;
     row.error = null;
     if (outcome === "failed" && conversationLengthExhausted) {
       // ChatGPT explicitly rejected this *conversation*, not just this turn. Reviving
@@ -1595,7 +1606,11 @@ export async function completeWorkstreamReplacementReceipt(
         (candidate.commandId === commandId || candidate.lateCommandId === commandId) &&
         candidate.conversationId === conversationId &&
         (candidate.phase === "opening" ||
-          (candidate.phase === "active" && candidate.actionId === null)),
+          (candidate.phase === "active" && candidate.actionId === null) ||
+          // Its first turn may have already completed while Chrome was
+          // committing the send receipt. The queued advance still belongs
+          // to this same chat; clearing this exact old command admits it.
+          candidate.phase === "advancing" || candidate.phase === "recovering"),
     );
     if (!row) return false;
     row.contextReceivedBy = conversationId;
