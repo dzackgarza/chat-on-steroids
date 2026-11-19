@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../extension/fiber.js', import.meta.url), 'utf8');
-const conversation = '6ace8754-672c-83ee-acd0-967ddc99db21';
+const conversation = '11111111-1111-1111-1111-111111111111';
 
 async function browserCase(error, route = conversation, method = 'POST', status = 200) {
   const observed = [];
