@@ -53,6 +53,8 @@ const WORKSTREAM_ALARM = 'clf-workstream-recovery';
 const WORKSTREAM_ROUTE_RECONCILE_MS = 30 * 60 * 1000;
 let archivingWorkstreams = false;
 let workstreamRouteReconcileWork = null;
+/** Browser renders that ignored an archive/recovery probe, not failed conversations. */
+const workstreamUnresponsiveProbeTabs = new Map();
 let retryAlarmScheduled = false;
 
 let port = null;
@@ -3897,7 +3899,8 @@ async function reconcileWorkstreamRoutes() {
 
     const tabs = (await chrome.tabs.query({ url: 'https://chatgpt.com/*' }))
       .filter((tab) => typeof tab.id === 'number');
-    if (tabs.length === 0) return;
+    let temporaryHost = null;
+    try {
 
     const validRoutes = routes
       .filter(
@@ -3921,9 +3924,36 @@ async function reconcileWorkstreamRoutes() {
     if (validRoutes.length === 0 && validCandidates.length === 0) return;
 
     let probe = null;
-    for (const tab of tabs) {
+    let probeHost = null;
+    // A genuine ChatGPT renderer can become permanently unresponsive while
+    // still appearing in chrome.tabs. Do not let that unrelated tab suspend
+    // every workstream's browser reconciliation. A fresh, disposable ChatGPT
+    // home tab is a fallback authenticated fetch host, not a replacement chat.
+    for (const candidate of [
+      ...tabs.filter((tab) =>
+        Date.now() >= (workstreamUnresponsiveProbeTabs.get(tab.id) ?? 0)),
+      null,
+    ]) {
+      let tab = candidate;
+      if (!tab) {
+        try {
+          temporaryHost = await chrome.tabs.create({
+            url: 'https://chatgpt.com/', active: false,
+          });
+          if (typeof temporaryHost.id !== 'number') return;
+          const until = Date.now() + 20_000;
+          tab = await chrome.tabs.get(temporaryHost.id);
+          while (tab.status !== 'complete' && Date.now() < until) {
+            await sleep(250);
+            tab = await chrome.tabs.get(temporaryHost.id);
+          }
+          if (tab.status !== 'complete') return;
+        } catch {
+          return;
+        }
+      }
       try {
-        const result = await chrome.scripting.executeScript({
+        const execution = chrome.scripting.executeScript({
           target: { tabId: tab.id },
           world: 'MAIN',
           args: [[...validRoutes, ...validCandidates]],
@@ -3970,10 +4000,23 @@ async function reconcileWorkstreamRoutes() {
             return { authStatus: 200, results };
           },
         });
-        probe = result[0]?.result ?? null;
-        if (probe) break;
+        // The fetch inside the page has its own network timeout, but Chrome
+        // does not bound executeScript when the entire renderer is wedged.
+        const result = await Promise.race([
+          execution, sleep(9_000).then(() => null),
+        ]);
+        probe = result?.[0]?.result ?? null;
+        if (probe) {
+          workstreamUnresponsiveProbeTabs.delete(tab.id);
+          probeHost = tab;
+          break;
+        }
+        if (tab.id !== temporaryHost?.id)
+          workstreamUnresponsiveProbeTabs.set(tab.id, Date.now() + 15 * 60_000);
       } catch {
         // Try another already-open ChatGPT tab; do not create tabs merely for hygiene.
+        if (tab.id !== temporaryHost?.id)
+          workstreamUnresponsiveProbeTabs.set(tab.id, Date.now() + 15 * 60_000);
       }
     }
     if (!probe || probe.authStatus !== 200) return;
@@ -4015,9 +4058,11 @@ async function reconcileWorkstreamRoutes() {
         : [];
       if (restore.length > 0) {
         let verified = [];
-        for (const tab of tabs) {
+        for (const tab of [probeHost, ...tabs.filter((item) =>
+          item.id !== probeHost?.id)].filter(Boolean)) {
           try {
-            const execution = await chrome.scripting.executeScript({
+            const execution = await Promise.race([
+              chrome.scripting.executeScript({
               target: { tabId: tab.id }, world: 'MAIN', args: [restore],
               func: async (items) => {
                 const session = await fetch('/api/auth/session', {
@@ -4063,7 +4108,10 @@ async function reconcileWorkstreamRoutes() {
                 }
                 return done;
               },
-            });
+              }),
+              sleep(20_000).then(() => null),
+            ]);
+            if (!execution) continue;
             verified = Array.isArray(execution?.[0]?.result) ? execution[0].result : [];
             break;
           } catch {
@@ -4088,6 +4136,11 @@ async function reconcileWorkstreamRoutes() {
     // browser attempt remains eligible on the next service-worker start instead of suppressing
     // reconciliation for half an hour.
     if (checkBoundRoutes) await chrome.storage.local.set({ workstreamRouteCheckAt: Date.now() });
+    } finally {
+      if (typeof temporaryHost?.id === 'number') {
+        await removeTabKeepingBrowser(temporaryHost.id).catch(() => undefined);
+      }
+    }
   })();
   workstreamRouteReconcileWork = work;
   void work.then(

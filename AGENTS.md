@@ -642,6 +642,10 @@ other terminal signal. English error prose, a bare 404, missing browser
 bindings, an archive flag, and elapsed time alone never prove terminality.
 Every browser recovery receipt is compared against the current row's
 `lastActivity`; a newer claim invalidates it.
+Authenticated recovery probes have bounded page-script waits and fall back to
+a disposable ChatGPT home tab if the currently open conversation renderer is
+hung or no conversation tab exists. A frozen unrelated tab cannot stall every
+workstream's recovery, and the temporary host is closed after use.
 
 **A replacement inherits its predecessors' execution, not just the brief.** A workstream keeps
 one recorder session across every chat that holds it, so the opening message of any replacement
