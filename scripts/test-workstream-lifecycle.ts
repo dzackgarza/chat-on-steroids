@@ -44,6 +44,23 @@ void (async () => {
       return row;
     };
 
+    // A terminal, exhausted ChatGPT conversation must not keep its workstream
+    // lease merely because its controller entered same-chat recovery first.
+    const terminal = await startWorkstream('orchestrator', path.join(temp, 'terminal'), 1000);
+    assert.equal(terminal.ok, true);
+    if (!terminal.ok) throw new Error('unreachable');
+    assert.equal(await bindWorkstreamConversation(terminal.workstreamId, 'chat-terminal'), 'orchestrator');
+    assert.equal((await continueWorkstream('orchestrator', 1050)).ok, false);
+    assert.equal(await recoverWorkstreamNow('orchestrator', 'attempt same-chat recovery', 1100), true);
+    assert.equal(state('orchestrator').phase, 'recovering');
+    assert.equal(await scheduleWorkstreamAfterTurn(
+      'chat-terminal', 'turn-context-max', 'failed', 1150, 1200, true,
+    ), true);
+    assert.equal(state('orchestrator').claimReleased, true);
+    assert.equal((await admitWorkstreamCall(terminal.workstreamId, 1250)).ok, false);
+    const successorToTerminal = await continueWorkstream('orchestrator', 1250);
+    assert.equal(successorToTerminal.ok, true);
+
     // No-op completed turns must not create an unbounded chain of sends.
     const noOp = await startWorkstream('no-op', path.join(temp, 'one'), 1000);
     assert.equal(noOp.ok, true);
