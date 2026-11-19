@@ -152,17 +152,21 @@ async function main(): Promise<void> {
     const devtoolsPort = process.env.CHROME_DEVTOOLS_PORT || '9222';
     try {
       const res = await fetch(`http://127.0.0.1:${devtoolsPort}/json/new?${encodeURIComponent(url)}`, {
-        method: 'PUT'
+        method: 'PUT',
+        signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) {
-        console.warn(`Failed to open URL in headless browser via CDP: ${res.statusText}`);
-        return;
-      }
+      if (!res.ok)
+        throw new Error(`CDP returned HTTP ${res.status}: ${res.statusText}`);
       // /json/new answers with the new target; its id is how the app tracks this exact tab.
       const opened = (await res.json().catch(() => null)) as { id?: unknown } | null;
-      return typeof opened?.id === 'string' ? opened.id : undefined;
+      if (typeof opened?.id !== 'string' || !opened.id)
+        throw new Error('CDP did not return the newly opened tab id');
+      return opened.id;
     } catch (err) {
-      console.warn(`CDP opener failed on port ${devtoolsPort}: ${err instanceof Error ? err.message : String(err)}`);
+      // deliverOne() must receive the failure. Returning undefined falsely
+      // reports a successful browser-open attempt and leaves its workstream
+      // waiting for an ACK from a tab that was never created.
+      throw new Error(`CDP browser opener on port ${devtoolsPort} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 

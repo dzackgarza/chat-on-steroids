@@ -2663,6 +2663,21 @@ const PING_TIMEOUT_MS = 3_000;
 const PING_TIMED_OUT = Symbol('clf-ping-timeout');
 
 /**
+ * Bounds browser scripting and tab operations against a renderer that stops
+ * answering Chrome altogether. An unresponsive *other* tab must not prevent
+ * registration or recovery of managed commands in healthy tabs behind it.
+ * Returning a timeout as success would be worse: callers must not record
+ * successful reinjection or a successful reload that Chrome never ACKed.
+ */
+async function boundedManagedBrowserOperation(operation) {
+  const result = await Promise.race([
+    Promise.resolve().then(operation).then(() => true),
+    sleep(PING_TIMEOUT_MS).then(() => false),
+  ]);
+  if (!result) throw new Error('managed_browser_operation_timeout');
+}
+
+/**
  * One tab's content-document health: `'live'`, `'dead'`, or `'frozen'`.
  *
  * `tabs.sendMessage` to a frozen renderer can *hang* rather than reject — Chromium freezes
@@ -2706,17 +2721,24 @@ async function ensureManagedTabScripts(tabId) {
   // point restarts/cancels the very navigation that must create one. onUpdated(status=complete)
   // already re-offers durable command custody, so leave loading tabs entirely alone here.
   try {
-    const initial = await chrome.tabs.get(tabId);
+    const initial = await Promise.race([
+      chrome.tabs.get(tabId), sleep(PING_TIMEOUT_MS).then(() => null),
+    ]);
+    if (!initial) return false;
     if (initial.status !== 'complete') return false;
   } catch {
     return false;
   }
 
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['chatgpt-dom.js'] });
-    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['fiber.js'] });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    await chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] });
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.executeScript({ target: { tabId }, files: ['chatgpt-dom.js'] }));
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['fiber.js'] }));
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }));
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] }));
     if (await pingTab(tabId)) return true;
   } catch {
     // A restored pre-extension document can reject scripting despite the origin permission.
@@ -2724,10 +2746,13 @@ async function ensureManagedTabScripts(tabId) {
   }
 
   try {
-    await chrome.tabs.reload(tabId);
+    await boundedManagedBrowserOperation(() => chrome.tabs.reload(tabId));
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
-      const tab = await chrome.tabs.get(tabId);
+      const tab = await Promise.race([
+        chrome.tabs.get(tabId), sleep(PING_TIMEOUT_MS).then(() => null),
+      ]);
+      if (!tab) break;
       if (tab.status === 'complete' && (await pingTab(tabId))) return true;
       await sleep(250);
     }
@@ -3436,18 +3461,17 @@ async function restoreOpenChatgptTabs() {
     const id = tab && typeof tab.id === 'number' ? tab.id : null;
     if (id === null) continue;
     try {
-      // Bounded like every other liveness probe: one frozen tab must not stall the
-      // restoration of every tab behind it.
-      const live = await Promise.race([
-        chrome.tabs.sendMessage(id, { type: 'clf-recorder-ping' }),
-        new Promise((resolve) => setTimeout(() => resolve(null), PING_TIMEOUT_MS))
-      ]);
-      if (live && live.ok === true && live.recorderVersion === PAGE_RECORDER_VERSION) {
+      // A frozen renderer is neither an absent content script nor a reason to
+      // reload every conversation. Skip it and restore the remaining tabs.
+      const health = await probeTab(id);
+      if (health === 'frozen') continue;
+      if (health === 'live') {
         // Healthy content.js does not prove the independently running MAIN-world helper is
         // still present. Request-id ownership depends on fiber.js, and re-executing it is
         // idempotent because the helper keeps one listener per protocol version.
         try {
-          await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] });
+          await boundedManagedBrowserOperation(() =>
+            chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] }));
         } catch {
           // The tab can navigate between the ping and repair. Static injection covers it.
         }
@@ -3459,13 +3483,17 @@ async function restoreOpenChatgptTabs() {
     }
     try {
       // Rebuild the isolated-world DOM adapter before the recorder that consumes it.
-      await chrome.scripting.executeScript({ target: { tabId: id }, files: ['chatgpt-dom.js'] });
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, files: ['chatgpt-dom.js'] }));
       // Keep the React/Fiber reader in ChatGPT's own world, exactly like the static manifest
       // declaration. An older helper may still answer too; the nonce/version gate in
       // content.js makes those replies harmless, and a future version bump rejects them.
-      await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] });
-      await chrome.scripting.executeScript({ target: { tabId: id }, files: ['content.js'] });
-      await chrome.scripting.insertCSS({ target: { tabId: id }, files: ['overlay.css'] });
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] }));
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, files: ['content.js'] }));
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.insertCSS({ target: { tabId: id }, files: ['overlay.css'] }));
     } catch {
       // The tab can close or navigate between query and injection. Static content scripts
       // cover the next eligible document, so there is nothing useful to retry here.

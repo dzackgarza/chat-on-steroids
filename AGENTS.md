@@ -642,10 +642,21 @@ other terminal signal. English error prose, a bare 404, missing browser
 bindings, an archive flag, and elapsed time alone never prove terminality.
 Every browser recovery receipt is compared against the current row's
 `lastActivity`; a newer claim invalidates it.
+The controller additionally records which conversation displayed the CURRENT
+opaque claim token. Historical `claimedBy` membership alone cannot authorize
+a pre-lease terminal takeover: a newly rotated claim may not yet have published
+its claim line, and an old chat's late HTTP 413 must not fence the successor.
+Browser terminality probes may precede lease expiry only for the independently
+proven current claimant; nonterminal recovery still observes the lease and
+turn-liveness gates.
 Authenticated recovery probes have bounded page-script waits and fall back to
 a disposable ChatGPT home tab if the currently open conversation renderer is
 hung or no conversation tab exists. A frozen unrelated tab cannot stall every
 workstream's recovery, and the temporary host is closed after use.
+Extension startup/injection operations are likewise bounded against frozen
+renderers, and the headless CDP opener propagates failed HTTP/timeout/no-target
+results to command delivery. An opener failure cannot become a phantom
+successful bootstrap waiting indefinitely for a nonexistent page ACK.
 One browser delivery failure is not evidence that the original chat is dead.
 Two separately failed same-chat browser commands trigger the bounded
 archive/replacement fallback. Lost receipts, account-wide usage holds, and

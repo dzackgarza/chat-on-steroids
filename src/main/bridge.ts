@@ -2241,14 +2241,27 @@ async function handle(
         runningToolCallsForWorkstream(row.id) > 0 ||
         rows.some((other) => other.id !== row.id && other.conversationId === candidate)
       ) return [];
-      return [{ id: row.id, conversationId: candidate, lastActivity: row.lastActivity }];
+      return [{
+        id: row.id, conversationId: candidate, lastActivity: row.lastActivity,
+        // claimedBy alone can name an OLD chat after the opaque token was
+        // rotated. Only a claim line carrying the current token authorizes
+        // terminality inspection before the ordinary lease expires.
+        currentClaimProven: row.currentClaimant === candidate,
+      }];
     });
     const candidateIds = new Set(recoveryCandidates.map((row) => row.conversationId));
     const eligibleRecoveryCandidates = recoveryCandidates.filter((candidate) => {
       const turn = conversationTurnState(candidate.conversationId);
-      return Date.now() >= candidate.lastActivity + WORKSTREAM_LEASE_MS &&
-        !turn.generating &&
-        !(turn.observerLostAt && Date.now() - turn.observerLostAt < WORKSTREAM_LEASE_MS);
+      // The authenticated browser must be allowed to inspect a terminal
+      // error code even while the previous lease is still fresh. Waiting for
+      // lease expiry before *detecting* an already-terminal chat is exactly
+      // what stranded the scheduled orchestrator after context exhaustion.
+      // The separate POST transition below still requires lease expiry for
+      // any nonterminal same-chat recovery.
+      const leaseElapsed = Date.now() >= candidate.lastActivity + WORKSTREAM_LEASE_MS;
+      return candidate.currentClaimProven ||
+        (leaseElapsed && !turn.generating &&
+          !(turn.observerLostAt && Date.now() - turn.observerLostAt < WORKSTREAM_LEASE_MS));
     });
     const currentRoutes = rows
       .filter(
@@ -2277,7 +2290,9 @@ async function handle(
       200,
       {
         routes: currentRoutes,
-        recoveryCandidates: eligibleRecoveryCandidates,
+        recoveryCandidates: eligibleRecoveryCandidates.map(
+          ({ currentClaimProven: _proven, ...candidate }) => candidate,
+        ),
         // Browser-lifecycle authority only. These ids were current controller frontends in the
         // past and have been explicitly retired by archive/replacement. The extension may close
         // matching ChatGPT tabs; unrelated tabs never appear here.
@@ -2341,8 +2356,11 @@ async function handle(
         entry.conversationId === null && entry.commandId === null &&
         entry.actionId === null && entry.claimedBy.at(-1) === conversation &&
         entry.lastActivity === lastActivity &&
-        Date.now() >= entry.lastActivity + WORKSTREAM_LEASE_MS &&
-        !conversationTurnState(conversation).generating &&
+        (Date.now() >= entry.lastActivity + WORKSTREAM_LEASE_MS ||
+          (backendState === "terminal" &&
+            entry.currentClaimant === conversation)) &&
+        (backendState === "terminal" ||
+          !conversationTurnState(conversation).generating) &&
         runningToolCallsForWorkstream(entry.id) === 0
       );
       if (!row) continue;
@@ -2356,7 +2374,11 @@ async function handle(
         )) terminalized++;
         continue;
       }
-      if (!row.autoAdvance) continue;
+      // The scheduled orchestrator does not auto-advance on completed turns,
+      // but an authenticated *unarchived* incumbent is still the first chat
+      // to recover before a replacement may be considered. Ignoring it here
+      // left orchestrator active+unbound with an unreachable old claimant.
+      if (!row.autoAdvance && id !== ORCHESTRATOR_WORKSTREAM_ID) continue;
       if (backendState === "archived") {
         // Do not send a continuation to an archived conversation and treat the
         // resulting composer failure as proof that the chat is terminal.

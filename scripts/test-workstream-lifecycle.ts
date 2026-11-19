@@ -34,6 +34,7 @@ import {
   scheduleWorkstreamAfterTurn,
   setWorkstreamAutoAdvance,
   terminalizeUnboundWorkstreamClaimant,
+  WORKSTREAM_LEASE_MS,
   startWorkstream,
   workstreamStatus,
 } from '../src/main/workstreams';
@@ -213,6 +214,41 @@ void (async () => {
       'uncertain-next', 42200, false);
     assert.equal(state('uncertain-chat').phase, 'recovering');
     assert.match(state('uncertain-chat').error ?? '', /^revive_transport_uncertain:/);
+
+    // The claim-line provenance belongs to ONE opaque lock, not merely the
+    // historic tail of claimedBy. Typed terminality must be actionable before
+    // lease expiry for that current claimant, but a newly rotated lock must
+    // never be retired by the previous chat's delayed HTTP 413.
+    const realNow = Date.now();
+    const proven = await startWorkstream('early-terminal', path.join(temp, 'early-terminal'), realNow);
+    assert.equal(proven.ok, true);
+    if (!proven.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('early-terminal', true);
+    const provenChat = '10101010-1010-1010-1010-101010101010';
+    await bindWorkstreamConversation(proven.workstreamId, provenChat);
+    assert.equal(state('early-terminal').currentClaimant, provenChat);
+    await pauseWorkstream('early-terminal');
+    assert.equal(await invalidateWorkstreamConversation('early-terminal', provenChat), true);
+    await resumeWorkstream('early-terminal');
+    assert.equal(state('early-terminal').conversationId, null);
+    assert.equal(await terminalizeUnboundWorkstreamClaimant(
+      'early-terminal', provenChat, realNow, 'conversation_length_exceeds_limit'), true);
+    assert.equal(state('early-terminal').phase, 'opening');
+
+    const rotated = await startWorkstream('rotated-claim', path.join(temp, 'rotated'), realNow);
+    assert.equal(rotated.ok, true);
+    if (!rotated.ok) throw new Error('unreachable');
+    await setWorkstreamAutoAdvance('rotated-claim', true);
+    const oldChat = '20202020-2020-2020-2020-202020202020';
+    await bindWorkstreamConversation(rotated.workstreamId, oldChat);
+    const newClaim = await continueWorkstream('rotated-claim', realNow + WORKSTREAM_LEASE_MS + 1);
+    assert.equal(newClaim.ok, true);
+    assert.equal(state('rotated-claim').currentClaimant, null);
+    assert.equal(state('rotated-claim').claimedBy.at(-1), oldChat);
+    assert.equal(await terminalizeUnboundWorkstreamClaimant(
+      'rotated-claim', oldChat, realNow + WORKSTREAM_LEASE_MS + 1,
+      'conversation_length_exceeds_limit'), false);
+    assert.equal(state('rotated-claim').phase, 'active');
 
     // No-op completed turns must not create an unbounded chain of sends.
     const noOp = await startWorkstream('no-op', path.join(temp, 'one'), 1000);

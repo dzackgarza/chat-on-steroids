@@ -83,6 +83,12 @@ const rowSchema = z
      * one. Exact evidence of which workstream a chat holds, kept across reclaims. */
     claimedBy: z.array(z.string()).default([]),
     /**
+     * Only a conversation that displayed the CURRENT opaque lock. The history
+     * in claimedBy survives lock rotation, but it is never enough to preempt a
+     * fresh claim before that claimant has had its ordinary lease.
+     */
+    currentClaimant: z.string().nullable().default(null),
+    /**
      * The conversation that demonstrably received the current `context`: the bind ACK of the
      * opening message that carried it, or the first call a carrying send started. `context` is
      * the steward's steering channel, so it reaches each conversation once per revision.
@@ -309,6 +315,8 @@ export async function promoteWorkstreamConversation(
     if (!row.retiredConversations.includes(previousConversationId))
       row.retiredConversations.push(previousConversationId);
     row.conversationId = conversationId;
+    if (row.currentClaimant === previousConversationId)
+      row.currentClaimant = conversationId;
     row.retiredConversations = row.retiredConversations.filter(
       (id) => id !== conversationId,
     );
@@ -405,6 +413,7 @@ export async function startWorkstream(
       pendingArchives: [],
       orphanedBootstraps: [],
       claimedBy: [],
+      currentClaimant: null,
       contextReceivedBy: null,
     });
     await save();
@@ -477,6 +486,7 @@ export async function continueWorkstream(
       pendingArchives: [...prior.pendingArchives],
       orphanedBootstraps: [...prior.orphanedBootstraps],
       claimedBy: [...prior.claimedBy],
+      currentClaimant: null,
       contextReceivedBy: prior.contextReceivedBy,
     });
     await save();
@@ -531,6 +541,7 @@ export async function reserveWorkstream(
       pendingArchives: [...(prior?.pendingArchives ?? [])],
       orphanedBootstraps: [...(prior?.orphanedBootstraps ?? [])],
       claimedBy: [...(prior?.claimedBy ?? [])],
+      currentClaimant: null,
       contextReceivedBy: context === prior?.context ? prior.contextReceivedBy : null,
     });
     await save();
@@ -718,10 +729,17 @@ export async function bindWorkstreamConversation(
     // real latest claimant retired and made the watchdog replace its chat.
     const claimed = [...rows.values()].find((candidate) => candidate.lock === lock);
     if (!claimed) return null;
+    // The exact current lock, not historical claimedBy membership, permits
+    // terminality probes to bypass the ordinary lease. Persist this even if
+    // the browser route was already bound before the claim line rendered.
+    claimed.currentClaimant = conversationId;
     const previous = claimed.claimedBy.at(-1) ?? null;
     if (previous !== conversationId) {
-      for (const other of rows.values())
+      for (const other of rows.values()) {
         other.claimedBy = other.claimedBy.filter((id) => id !== conversationId);
+        if (other !== claimed && other.currentClaimant === conversationId)
+          other.currentClaimant = null;
+      }
       // Reclaiming a workstream from a formerly recorded chat MUST move it
       // back to the tail. Membership alone does not express claim order.
       claimed.claimedBy = [...claimed.claimedBy, conversationId].slice(-8);
@@ -730,7 +748,10 @@ export async function bindWorkstreamConversation(
       await save();
     }
     const row = claimed;
-    if (row.conversationId === conversationId) return row.id;
+    if (row.conversationId === conversationId) {
+      await save();
+      return row.id;
+    }
     for (const other of rows.values())
       if (other.id !== row.id && other.conversationId === conversationId)
         other.conversationId = null;
@@ -1125,7 +1146,7 @@ export async function prepareArchivedWorkstreamRecovery(
     ready();
     const row = rows.get(id);
     if (
-      !row || !row.autoAdvance ||
+      !row || (!row.autoAdvance && row.id !== ORCHESTRATOR_WORKSTREAM_ID) ||
       !["active", "blocked"].includes(row.phase) ||
       (row.phase === "blocked" &&
         row.error !== "archived_claimant_restoration_pending" &&
@@ -1134,6 +1155,8 @@ export async function prepareArchivedWorkstreamRecovery(
       row.claimedBy.at(-1) !== claimant ||
       !SERVER_CONVERSATION_ID.test(claimant) ||
       row.lastActivity !== lastActivity ||
+      (Date.now() < row.lastActivity + WORKSTREAM_LEASE_MS &&
+        row.currentClaimant !== claimant) ||
       row.commandId !== null || row.actionId !== null ||
       runningToolCallsForWorkstream(id) > 0 ||
       [...rows.values()].some((other) => other.id !== id && other.conversationId === claimant)
@@ -1167,6 +1190,11 @@ export async function terminalizeUnboundWorkstreamClaimant(
       row.claimedBy.at(-1) !== claimant ||
       !SERVER_CONVERSATION_ID.test(claimant) ||
       row.lastActivity !== lastActivity ||
+      // A successor can rotate the lock before its claim line is visible.
+      // The old claimant remains in claimedBy, but cannot authorize early
+      // retirement of the successor's brand-new lease.
+      (Date.now() < row.lastActivity + WORKSTREAM_LEASE_MS &&
+        row.currentClaimant !== claimant) ||
       row.commandId !== null || row.actionId !== null ||
       runningToolCallsForWorkstream(id) > 0 ||
       [...rows.values()].some((other) => other.id !== id && other.conversationId === claimant)
@@ -1620,6 +1648,7 @@ export async function finishWorkstreamArchive(
       retireReplacedPrimeRuns(row.id, row.conversationId);
       row.conversationId = null;
     }
+    row.currentClaimant = null;
     row.actionId = `replace-${row.lock}`;
     row.commandId = null;
     row.nextCheck = 0;
