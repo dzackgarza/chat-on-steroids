@@ -270,8 +270,14 @@ accepts the successful archive mutation response, and the app opens a fresh fron
 same logical workstream.
 The opening message includes the saved project context and generic instructions to read
 AGENTS.md, TODOs and vault plans as needed, then begin the next unblocked DAG work.
-Delivery or archival errors are exposed in workstream status; an unconfirmed archive never
-authorizes a replacement.
+Delivery or archival errors are exposed in workstream status. A bounded, unconfirmed archive
+does not strand the workstream: the old owner is fenced, the replacement opens, and an exact
+durable backend-archive obligation remains until the browser verifies and acknowledges it.
+ChatGPT HTTP 429 retains that exact pending obligation through `Retry-After` (or a
+conservative bounded retry delay) rather than making a new request every minute.
+An uncommitted fresh-chat receipt that identifies a server conversation records an archive
+candidate, but cannot archive it until a distinct successor binds: a failed ACK alone does
+not prove the message never arrived. No title/age sweep archives user chats.
 
 Scripts use the loopback bridge and its existing `state/local-token` bearer credential:
 
@@ -282,13 +288,23 @@ Scripts use the loopback bridge and its existing `state/local-token` bearer cred
 | `GET /workstreams` | Owner conversation, phase, activity/expiry times, recovery attempts, pending command and error |
 | `POST /workstreams/pause` | `{ "id": "research" }`; stops recovery and refuses its tool calls |
 | `POST /workstreams/resume` | `{ "id": "research" }`; resumes a paused owner |
+| `POST /workstreams/recover` | `{ "id": "research", "reason": "steward diagnosis" }`; same-chat recovery; an independently verified unarchived former claimant may also be identified exactly by `verifiedUnarchivedClaimant`, with the existing expected-row CAS fields |
 | `POST /workstreams/replace` | `{ "id": "research" }`; immediately fences the current owner and enters the same archive/replacement path used after failed automatic recovery |
 
-Controller-started workstreams auto-advance by default: an observed `completed` turn queues the
-next workstream prompt immediately, while an observed failed/stopped/interrupted turn enters the
-bounded recovery path immediately. `action=start` from the model remains identity registration
+Controller-started workstreams auto-advance by default. A `completed` turn queues the next
+workstream prompt **only if that workstream completed a successful ordinary connector call
+since the previous turn boundary**. Claiming a workstream, receiving a rejected tool response,
+and emitting an assistant reply do not constitute execution. A completed turn without that
+evidence retains the `active` workstream and tool capability, reports
+`auto_continue_without_successful_tool`, and schedules no more automatic prompts.
+A steward can correct the obstruction and continue the existing chat without a new claim
+or replacement. The external watchdog respects this diagnostic: it does not
+revive or replace the same chat just because the withheld automatic prompt
+made its nonpolling activity timestamp stale. An observed failed/stopped/interrupted turn
+enters the bounded recovery path. `action=start` from the model remains identity registration
 only and does not make that chat self-driving. Set `autoAdvance:false` on `/workstreams/start` for
-one-shot controller fixtures. Auto-advancing workstreams are kept page-mounted rather than enrolled
+one-shot controller fixtures. A separate live fixture with `--no-work-loop` tests the no-tool
+boundary in ChatGPT itself. Auto-advancing workstreams are kept page-mounted rather than enrolled
 in tabless sleep, because their observed turn boundary is the scheduler signal; restart recovery
 also remounts any such conversation that had previously been persisted as slept.
 

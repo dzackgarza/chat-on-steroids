@@ -628,6 +628,45 @@ successful archive mutation response, and the bridge opens a replacement fronten
 context and generic steward instructions. Action identities and attempt counts survive restart. A takeover
 cancels the old action; stale acknowledgements cannot install a replacement owner.
 
+An unbound claimant's **archive flag is not terminality**. The paired extension
+checks the last exact claimant against ChatGPT's authenticated conversation API.
+When it exists but is archived, the bridge first reserves restoration against
+the unchanged workstream claim/last-activity generation; the extension unarchives
+that exact conversation, verifies the new backend archive state with a second
+GET, and only then returns it to same-chat recovery. If the backend instead
+returns HTTP 413 with the typed code `conversation_length_exceeds_limit`, the
+claimant is terminal: the controller opens the retained workstream's successor
+(or releases the scheduled orchestrator claim) without waiting for its lease.
+The live conversation POST's SSE `error_code: conversation_too_large` is the
+other terminal signal. English error prose, a bare 404, missing browser
+bindings, an archive flag, and elapsed time alone never prove terminality.
+Every browser recovery receipt is compared against the current row's
+`lastActivity`; a newer claim invalidates it.
+The controller additionally records which conversation displayed the CURRENT
+opaque claim token. Historical `claimedBy` membership alone cannot authorize
+a pre-lease terminal takeover: a newly rotated claim may not yet have published
+its claim line, and an old chat's late HTTP 413 must not fence the successor.
+Browser terminality probes may precede lease expiry only for the independently
+proven current claimant; nonterminal recovery still observes the lease and
+turn-liveness gates.
+Authenticated recovery probes have bounded page-script waits and fall back to
+a disposable ChatGPT home tab if the currently open conversation renderer is
+hung or no conversation tab exists. A frozen unrelated tab cannot stall every
+workstream's recovery, and the temporary host is closed after use.
+The extension service worker first attempts the metadata-only conversation
+probe directly with its authenticated ChatGPT session, without depending on
+any page renderer. It does not expose tokens or conversation bodies. If that
+worker context lacks the correct session, the existing bounded page-context
+lookup remains the fallback; all-404 ambiguity never retires workstreams.
+Extension startup/injection operations are likewise bounded against frozen
+renderers, and the headless CDP opener propagates failed HTTP/timeout/no-target
+results to command delivery. An opener failure cannot become a phantom
+successful bootstrap waiting indefinitely for a nonexistent page ACK.
+One browser delivery failure is not evidence that the original chat is dead.
+Two separately failed same-chat browser commands trigger the bounded
+archive/replacement fallback. Lost receipts, account-wide usage holds, and
+other unverified transport failures do not count as proof of a dead page.
+
 **A replacement inherits its predecessors' execution, not just the brief.** A workstream keeps
 one recorder session across every chat that holds it, so the opening message of any replacement
 carries the inherited execution record (`workstream-inheritance.ts`):

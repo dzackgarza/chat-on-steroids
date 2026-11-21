@@ -77,15 +77,21 @@ function workstreamRefusal(
       const held =
         "WORKSTREAM_HELD: this workstream's lock is held, either by another chat or by this chat's own earlier claim. " +
         "If this chat was already given a workstream_id for it (in a claim result or in the message that started this turn), keep using that id on your calls and do not call this tool again. " +
-        "Otherwise do not work on it here; the lock frees five minutes after its holder's last tool call. " +
-        "The `sleep` named below is this connector's own tool, which is how a chat waits for a lock; it is not the forbidden foreground shell sleep. ";
+        "Otherwise do not work on it here; the ordinary lease expires five minutes after its holder's last call, " +
+        "but the controller can release a terminal chat immediately after observing ChatGPT's typed error. " +
+        "The `sleep` named below is this connector's own tool, not a shell command. ";
+      // Do not tell a successor to sleep through the ENTIRE five-minute lease
+      // while the paired browser is checking a known terminal conversation.
+      // The old instruction caused an exhausted claimant to block the scheduled
+      // orchestrator even after an early release had become available.
+      const recheckSeconds = Math.min(SLEEP_MAX_SECONDS, 20);
       if (refusal.freesAt == null)
         return (
           held +
-          `A tool call under it is running now. Call \`sleep\` with seconds=${SLEEP_MAX_SECONDS}, then call this tool with action="continue" again. Do not end your turn.`
+          `A tool call under it is running now. Call \`sleep\` with seconds=${recheckSeconds}, then call this tool with action="continue" again. Do not end your turn.`
         );
       const seconds = Math.min(
-        SLEEP_MAX_SECONDS,
+        recheckSeconds,
         Math.max(1, Math.ceil((refusal.freesAt - Date.now()) / 1000) + 1),
       );
       return (
@@ -98,8 +104,9 @@ function workstreamRefusal(
       return 'No workstream has that name. Check the name you were given; to create a new one, call this tool with action="start".';
     case "WORKSTREAM_UNAVAILABLE":
       return (
-        "WORKSTREAM_UNAVAILABLE: this workstream is being moved to a fresh chat right now, and that chat carries " +
-        "the work on. Stop working on it in this chat and make no further tool calls for it here."
+        "WORKSTREAM_UNAVAILABLE: the controller has fenced this workstream for an archive/recovery transition. " +
+        "This does NOT prove a successor chat has opened, claimed the workstream, or performed any work. " +
+        "Do not edit its repository under a different claim; retry the normal workstream claim once the transition has completed."
       );
     case "WORKSTREAM_PAUSED":
       return (

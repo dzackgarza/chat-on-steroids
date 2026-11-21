@@ -53,6 +53,8 @@ const WORKSTREAM_ALARM = 'clf-workstream-recovery';
 const WORKSTREAM_ROUTE_RECONCILE_MS = 30 * 60 * 1000;
 let archivingWorkstreams = false;
 let workstreamRouteReconcileWork = null;
+/** Browser renders that ignored an archive/recovery probe, not failed conversations. */
+const workstreamUnresponsiveProbeTabs = new Map();
 let retryAlarmScheduled = false;
 
 let port = null;
@@ -2661,6 +2663,21 @@ const PING_TIMEOUT_MS = 3_000;
 const PING_TIMED_OUT = Symbol('clf-ping-timeout');
 
 /**
+ * Bounds browser scripting and tab operations against a renderer that stops
+ * answering Chrome altogether. An unresponsive *other* tab must not prevent
+ * registration or recovery of managed commands in healthy tabs behind it.
+ * Returning a timeout as success would be worse: callers must not record
+ * successful reinjection or a successful reload that Chrome never ACKed.
+ */
+async function boundedManagedBrowserOperation(operation) {
+  const result = await Promise.race([
+    Promise.resolve().then(operation).then(() => true),
+    sleep(PING_TIMEOUT_MS).then(() => false),
+  ]);
+  if (!result) throw new Error('managed_browser_operation_timeout');
+}
+
+/**
  * One tab's content-document health: `'live'`, `'dead'`, or `'frozen'`.
  *
  * `tabs.sendMessage` to a frozen renderer can *hang* rather than reject — Chromium freezes
@@ -2704,17 +2721,24 @@ async function ensureManagedTabScripts(tabId) {
   // point restarts/cancels the very navigation that must create one. onUpdated(status=complete)
   // already re-offers durable command custody, so leave loading tabs entirely alone here.
   try {
-    const initial = await chrome.tabs.get(tabId);
+    const initial = await Promise.race([
+      chrome.tabs.get(tabId), sleep(PING_TIMEOUT_MS).then(() => null),
+    ]);
+    if (!initial) return false;
     if (initial.status !== 'complete') return false;
   } catch {
     return false;
   }
 
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['chatgpt-dom.js'] });
-    await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['fiber.js'] });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    await chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] });
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.executeScript({ target: { tabId }, files: ['chatgpt-dom.js'] }));
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['fiber.js'] }));
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }));
+    await boundedManagedBrowserOperation(() =>
+      chrome.scripting.insertCSS({ target: { tabId }, files: ['overlay.css'] }));
     if (await pingTab(tabId)) return true;
   } catch {
     // A restored pre-extension document can reject scripting despite the origin permission.
@@ -2722,10 +2746,13 @@ async function ensureManagedTabScripts(tabId) {
   }
 
   try {
-    await chrome.tabs.reload(tabId);
+    await boundedManagedBrowserOperation(() => chrome.tabs.reload(tabId));
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
-      const tab = await chrome.tabs.get(tabId);
+      const tab = await Promise.race([
+        chrome.tabs.get(tabId), sleep(PING_TIMEOUT_MS).then(() => null),
+      ]);
+      if (!tab) break;
       if (tab.status === 'complete' && (await pingTab(tabId))) return true;
       await sleep(250);
     }
@@ -3434,18 +3461,17 @@ async function restoreOpenChatgptTabs() {
     const id = tab && typeof tab.id === 'number' ? tab.id : null;
     if (id === null) continue;
     try {
-      // Bounded like every other liveness probe: one frozen tab must not stall the
-      // restoration of every tab behind it.
-      const live = await Promise.race([
-        chrome.tabs.sendMessage(id, { type: 'clf-recorder-ping' }),
-        new Promise((resolve) => setTimeout(() => resolve(null), PING_TIMEOUT_MS))
-      ]);
-      if (live && live.ok === true && live.recorderVersion === PAGE_RECORDER_VERSION) {
+      // A frozen renderer is neither an absent content script nor a reason to
+      // reload every conversation. Skip it and restore the remaining tabs.
+      const health = await probeTab(id);
+      if (health === 'frozen') continue;
+      if (health === 'live') {
         // Healthy content.js does not prove the independently running MAIN-world helper is
         // still present. Request-id ownership depends on fiber.js, and re-executing it is
         // idempotent because the helper keeps one listener per protocol version.
         try {
-          await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] });
+          await boundedManagedBrowserOperation(() =>
+            chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] }));
         } catch {
           // The tab can navigate between the ping and repair. Static injection covers it.
         }
@@ -3457,13 +3483,17 @@ async function restoreOpenChatgptTabs() {
     }
     try {
       // Rebuild the isolated-world DOM adapter before the recorder that consumes it.
-      await chrome.scripting.executeScript({ target: { tabId: id }, files: ['chatgpt-dom.js'] });
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, files: ['chatgpt-dom.js'] }));
       // Keep the React/Fiber reader in ChatGPT's own world, exactly like the static manifest
       // declaration. An older helper may still answer too; the nonce/version gate in
       // content.js makes those replies harmless, and a future version bump rejects them.
-      await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] });
-      await chrome.scripting.executeScript({ target: { tabId: id }, files: ['content.js'] });
-      await chrome.scripting.insertCSS({ target: { tabId: id }, files: ['overlay.css'] });
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: ['fiber.js'] }));
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.executeScript({ target: { tabId: id }, files: ['content.js'] }));
+      await boundedManagedBrowserOperation(() =>
+        chrome.scripting.insertCSS({ target: { tabId: id }, files: ['overlay.css'] }));
     } catch {
       // The tab can close or navigate between query and injection. Static content scripts
       // cover the next eligible document, so there is nothing useful to retry here.
@@ -3473,6 +3503,7 @@ async function restoreOpenChatgptTabs() {
 
 chrome.runtime.onInstalled.addListener(() => {
   void load()
+    .then(() => reconcileWorkstreamRoutes())
     .then(() => reconcileRetiredWorkstreamTabs())
     .then(() => restoreOpenChatgptTabs())
     .then(() => recoverDeferredRevivals())
@@ -3488,6 +3519,7 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
       .then(() => drainCommandAcks())
       .then(() => drain())
       .then(() => drainCloses())
+      .then(() => reconcileWorkstreamRoutes())
       .then(() => reconcileRetiredWorkstreamTabs())
       .then(() => restoreOpenChatgptTabs())
       .then(() => recoverDeferredRevivals())
@@ -3498,7 +3530,8 @@ if (chrome.runtime.onStartup && typeof chrome.runtime.onStartup.addListener === 
 if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addListener === 'function') {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm?.name === WORKSTREAM_ALARM) {
-      void reconcileRetiredWorkstreamTabs()
+      void reconcileWorkstreamRoutes()
+        .then(() => reconcileRetiredWorkstreamTabs())
         .then(() => drainWorkstreamArchives())
         .catch(() => undefined);
       return;
@@ -3517,6 +3550,7 @@ if (chrome.alarms && chrome.alarms.onAlarm && typeof chrome.alarms.onAlarm.addLi
 // workstream frontends before touching every open ChatGPT tab: otherwise a leaked retired-tab
 // backlog can exhaust Chrome while restoreOpenChatgptTabs() is trying to repair it.
 void load()
+  .then(() => reconcileWorkstreamRoutes())
   .then(() => reconcileRetiredWorkstreamTabs())
   .then(() => restoreOpenChatgptTabs())
   .then(() => recoverDeferredRevivals())
@@ -3525,6 +3559,84 @@ void load().then(() => {
   if (journal.length > 0 || closeOutbox.length > 0 || commandAckOutbox.length > 0 || commandTabs.size > 0) scheduleRetry();
   void reconcileWorkstreamRoutes().catch(() => undefined);
 });
+
+/**
+ * One authenticated, idempotent backend archive operation shared by the
+ * immediate handoff and later retry of an unconfirmed archive. The PATCH must
+ * be followed by a GET: HTTP 200 alone has not proved inbox retirement.
+ */
+async function archiveChatThroughHost(conversationId, host) {
+  if (typeof host?.id !== 'number') return { error: 'archive_host_missing' };
+  try {
+    const execution = chrome.scripting.executeScript({
+      target: { tabId: host.id }, world: 'MAIN', args: [conversationId],
+      func: async (id) => {
+        const rateLimit = (response, error) => {
+          const header = response.headers.get('Retry-After');
+          const delta = !header ? NaN : /^\d+(?:\.\d+)?$/.test(header)
+            ? Number(header) * 1000 : Date.parse(header) - Date.now();
+          const retryAfterMs = Number.isFinite(delta)
+            ? Math.max(60_000, Math.min(60 * 60_000, delta))
+            : 15 * 60_000;
+          return { error, retryAfterMs };
+        };
+        const session = await fetch('/api/auth/session', {
+          credentials: 'include', signal: AbortSignal.timeout(15_000)
+        });
+        if (!session.ok) return session.status === 429
+          ? rateLimit(session, 'archive_session_http_429')
+          : { error: `archive_session_http_${session.status}` };
+        const auth = await session.json();
+        if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
+        const endpoint = `/backend-api/conversation/${id}`;
+        // A previous attempt may already have archived the chat but lost its
+        // browser ACK. Avoid another mutation when the backend already says
+        // that the desired postcondition holds.
+        const earlier = await fetch(endpoint, {
+          headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
+        });
+        if (earlier.status === 404) return { archived: true, alreadyGone: true };
+        if (earlier.status === 429) return rateLimit(earlier, 'archive_probe_http_429');
+        if (!earlier.ok) return { error: `archive_probe_http_${earlier.status}` };
+        if ((await earlier.json())?.is_archived === true) return { archived: true, alreadyArchived: true };
+        const response = await fetch(endpoint, {
+          method: 'PATCH', headers, credentials: 'include',
+          signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
+        });
+        // Gone/removed already meets the desired inbox invariant.
+        if (response.status === 404) return { archived: true, alreadyGone: true };
+        if (!response.ok) return response.status === 429
+          ? rateLimit(response, 'archive_http_429')
+          : { error: `archive_http_${response.status}` };
+        const verified = await fetch(endpoint, {
+          headers, credentials: 'include', signal: AbortSignal.timeout(15_000)
+        });
+        if (verified.status === 404) return { archived: true, alreadyGone: true };
+        if (!verified.ok) return verified.status === 429
+          ? rateLimit(verified, 'archive_verify_http_429')
+          : { error: `archive_verify_http_${verified.status}` };
+        const body = await verified.json();
+        return body?.is_archived === true
+          ? { archived: true }
+          : { error: 'archive_not_visible_in_backend' };
+      }
+    });
+    // Both page fetches and the extension RPC must have finite deadlines.
+    let timeoutId;
+    try {
+      const timeout = new Promise((resolve) => {
+        timeoutId = setTimeout(() => resolve(null), 35_000);
+      });
+      const result = await Promise.race([execution, timeout]);
+      return result?.[0]?.result ?? { error: 'archive_host_timeout' };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /** The app fences the old lease before asking the browser to stop and archive it. */
 async function archiveWorkstreamChat(action) {
@@ -3629,48 +3741,13 @@ async function archiveWorkstreamChat(action) {
   let archivedResult = null;
   let lastError = 'archive_host_unavailable';
   const archiveThroughHost = async (host) => {
-    if (typeof host?.id !== 'number') return false;
-    try {
-      const archiveExecution = chrome.scripting.executeScript({
-        target: { tabId: host.id }, world: 'MAIN', args: [conversationId],
-        func: async (id) => {
-          const session = await fetch('/api/auth/session', { credentials: 'include', signal: AbortSignal.timeout(15_000) });
-          if (!session.ok) return { error: `archive_session_http_${session.status}` };
-          const auth = await session.json();
-          if (typeof auth.accessToken !== 'string') return { error: 'archive_session_token_missing' };
-          const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` };
-          const response = await fetch(`/backend-api/conversation/${id}`, {
-            method: 'PATCH', headers, credentials: 'include', signal: AbortSignal.timeout(15_000), body: JSON.stringify({ is_archived: true })
-          });
-          // Idempotent retirement: a route ChatGPT no longer has is already unavailable for
-          // reinjection, which is exactly the state archiving is meant to establish.
-          if (response.status === 404) return { archived: true, alreadyGone: true };
-          if (!response.ok) return { error: `archive_http_${response.status}` };
-          return { archived: true };
-        }
-      });
-      // executeScript itself can stay pending after the page-side fetch has timed out if the
-      // renderer freezes. Bound the browser RPC separately so one dead tab cannot hold the
-      // global archive drain latch forever.
-      const archived = await Promise.race([
-        archiveExecution,
-        new Promise((resolve) => setTimeout(() => resolve(null), 20_000))
-      ]);
-      if (!archived) {
-        lastError = 'archive_host_timeout';
-        return false;
-      }
-      const result = archived[0]?.result ?? null;
-      if (result?.archived === true) {
-        archivedResult = result;
-        return true;
-      }
-      lastError = result?.error ?? 'archive_no_result';
-      return false;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      return false;
+    const result = await archiveChatThroughHost(conversationId, host);
+    if (result?.archived === true) {
+      archivedResult = result;
+      return true;
     }
+    lastError = result?.error ?? 'archive_no_result';
+    return false;
   };
   try {
     for (const host of candidates) {
@@ -3701,6 +3778,59 @@ async function acknowledgeWorkstreamArchive(action, matches) {
     if (matches(open) && typeof open.id === 'number') await removeTabKeepingBrowser(open.id);
   }
   await chrome.storage.local.remove('workstreamArchiveReceipt');
+}
+
+/**
+ * Retry only archived-but-unconfirmed former workstream owners. The app's
+ * durable queue is the sole source of targets; titles, age, and unrelated tabs
+ * never confer permission to archive a conversation. A newly bound successor
+ * supplies an existing authenticated browser tab, so cleanup opens no chats.
+ */
+async function cleanupRetiredWorkstreamArchives() {
+  // ChatGPT can rate-limit archive reads and writes. Preserve the exact durable
+  // queue and observe Retry-After instead of retrying on every minute alarm.
+  const retry = (await chrome.storage.local.get('workstreamArchiveCleanupAfter'))
+    .workstreamArchiveCleanupAfter;
+  if (Number.isFinite(retry) && retry > Date.now()) return;
+  const pending = await call('/workstreams/archive-cleanup');
+  if (!pending.ok || !Array.isArray(pending.data?.actions)) return;
+  const routes = await call('/workstreams/routes');
+  if (!routes.ok) return;
+  const live = new Set((routes.data?.routes ?? [])
+    .map((route) => cleanConversationId(route.conversationId)).filter(Boolean));
+  const tabs = (await chrome.tabs.query({ url: 'https://chatgpt.com/*' }))
+    .filter((tab) => typeof tab.id === 'number' && live.has(conversationForTab(tab)));
+  if (!tabs.length) return;
+  // A bounded pass avoids multiplying a ChatGPT 429 into a fleet-wide request storm.
+  for (const action of pending.data.actions.slice(0, 3)) {
+    const conversationId = cleanConversationId(action?.conversationId);
+    if (!conversationId || !action?.id || live.has(conversationId)) continue;
+    // An old claimant may have been revived since the first listing; the
+    // producer must still explicitly authorize this exact retired route.
+    const check = await call('/workstreams/archive-cleanup');
+    if (!check.ok || !check.data?.actions?.some((entry) =>
+      entry.id === action.id && entry.conversationId === conversationId)) continue;
+    let done = false;
+    for (const host of tabs.slice(0, 2)) {
+      const result = await archiveChatThroughHost(conversationId, host);
+      if (result.archived === true) {
+        const ack = await call('/workstreams/archive-cleanup', {
+          method: 'POST', body: JSON.stringify({ id: action.id, conversationId })
+        });
+        done = ack.ok;
+        break;
+      }
+      // No more browser attempts on this tick after a rate-limit/authentication failure.
+      if (/429/.test(result.error ?? '')) {
+        await chrome.storage.local.set({
+          workstreamArchiveCleanupAfter: Date.now() + (result.retryAfterMs ?? 15 * 60_000)
+        });
+        return;
+      }
+      if (/401|403|session_token|session_http/.test(result.error ?? '')) return;
+    }
+    if (!done) return; // exact queue entry stays durable for the next browser alarm
+  }
 }
 
 /**
@@ -3785,17 +3915,20 @@ async function reconcileWorkstreamRoutes() {
   const work = (async () => {
     const state = await chrome.storage.local.get('workstreamRouteCheckAt');
     const last = Number(state.workstreamRouteCheckAt);
-    if (Number.isFinite(last) && Date.now() - last < WORKSTREAM_ROUTE_RECONCILE_MS) return;
+    const checkBoundRoutes = !Number.isFinite(last) || Date.now() - last >= WORKSTREAM_ROUTE_RECONCILE_MS;
 
     const current = await call('/workstreams/routes');
-    const routes = current.ok && Array.isArray(current.data?.routes)
-      ? current.data.routes
-      : [];
-    if (routes.length === 0) return;
+    if (!current.ok) return;
+    const routes = checkBoundRoutes && Array.isArray(current.data?.routes)
+      ? current.data.routes : [];
+    const candidates = Array.isArray(current.data?.recoveryCandidates)
+      ? current.data.recoveryCandidates : [];
+    if (routes.length === 0 && candidates.length === 0) return;
 
     const tabs = (await chrome.tabs.query({ url: 'https://chatgpt.com/*' }))
       .filter((tab) => typeof tab.id === 'number');
-    if (tabs.length === 0) return;
+    let temporaryHost = null;
+    try {
 
     const validRoutes = routes
       .filter(
@@ -3804,16 +3937,109 @@ async function reconcileWorkstreamRoutes() {
           typeof route?.conversationId === 'string' &&
           /^[a-zA-Z0-9-]{1,200}$/.test(route.conversationId),
       )
-      .map((route) => ({ id: route.id, conversationId: route.conversationId }));
-    if (validRoutes.length === 0) return;
+      .map((route) => ({ id: route.id, conversationId: route.conversationId, kind: 'route' }));
+    const validCandidates = candidates
+      .filter((candidate) =>
+        typeof candidate?.id === 'string' &&
+        typeof candidate?.conversationId === 'string' &&
+        /^[0-9a-f-]{8,64}$/i.test(candidate.conversationId) &&
+        Number.isSafeInteger(candidate.lastActivity)
+      )
+      .map((candidate) => ({
+        id: candidate.id, conversationId: candidate.conversationId,
+        lastActivity: candidate.lastActivity, kind: 'recovery'
+      }));
+    if (validRoutes.length === 0 && validCandidates.length === 0) return;
 
     let probe = null;
-    for (const tab of tabs) {
+    let probeHost = null;
+    // Metadata-only recovery lookup does not require ChatGPT's React
+    // renderer. The extension worker itself has chatgpt.com host permission
+    // and can fetch its own authenticated session. Prefer this path so an
+    // unrelated saturated conversation page cannot suppress EVERY claimant
+    // probe. No access token or conversation body leaves this function.
+    try {
+      const session = await fetch('https://chatgpt.com/api/auth/session', {
+        credentials: 'include', signal: AbortSignal.timeout(10_000),
+      });
+      if (session.ok) {
+        const auth = await session.json();
+        if (typeof auth.accessToken === 'string') {
+          const headers = { Authorization: `Bearer ${auth.accessToken}` };
+          const results = [];
+          const items = [...validCandidates, ...validRoutes];
+          for (let offset = 0; offset < items.length; offset += 8) {
+            const batch = await Promise.all(items.slice(offset, offset + 8).map(async (item) => {
+              try {
+                const response = await fetch(
+                  `https://chatgpt.com/backend-api/conversation/${item.conversationId}`,
+                  { headers, credentials: 'include', signal: AbortSignal.timeout(10_000) },
+                );
+                if (response.status === 413) {
+                  const error = await response.json().catch(() => null);
+                  const code = error?.code || error?.detail?.code || null;
+                  return { ...item, status: 413,
+                    terminalCode: code === 'conversation_length_exceeds_limit' ? code : null };
+                }
+                if (!response.ok) return { ...item, status: response.status };
+                const data = await response.json();
+                return { ...item, status: response.status, isArchived: data?.is_archived };
+              } catch {
+                return { ...item, status: null };
+              }
+            }));
+            results.push(...batch);
+            if (batch.some((item) => item.status === 429)) break;
+          }
+          // A same-origin session may be valid without carrying the account
+          // selected in the visible ChatGPT tab. Never use an all-404 result
+          // from that ambiguous context to invalidate current workstreams;
+          // fall back to the authenticated page-context lookup instead.
+          if (results.some((item) => item.status === 200 ||
+              item.status === 413 && item.terminalCode)) {
+            probe = { authStatus: 200, results };
+          } else if (results.some((item) => item.status === 429)) {
+            return; // Respect ChatGPT's account-wide throttle; never fan out.
+          }
+        }
+      }
+    } catch {
+      // Page-context lookup below remains available for browser profiles
+      // whose auth cookies are not accessible to the extension worker.
+    }
+    if (!probe) {
+    // A genuine ChatGPT renderer can become permanently unresponsive while
+    // still appearing in chrome.tabs. Do not let that unrelated tab suspend
+    // every workstream's browser reconciliation. A fresh, disposable ChatGPT
+    // home tab is a fallback authenticated fetch host, not a replacement chat.
+    for (const candidate of [
+      ...tabs.filter((tab) =>
+        Date.now() >= (workstreamUnresponsiveProbeTabs.get(tab.id) ?? 0)),
+      null,
+    ]) {
+      let tab = candidate;
+      if (!tab) {
+        try {
+          temporaryHost = await chrome.tabs.create({
+            url: 'https://chatgpt.com/', active: false,
+          });
+          if (typeof temporaryHost.id !== 'number') return;
+          const until = Date.now() + 20_000;
+          tab = await chrome.tabs.get(temporaryHost.id);
+          while (tab.status !== 'complete' && Date.now() < until) {
+            await sleep(250);
+            tab = await chrome.tabs.get(temporaryHost.id);
+          }
+          if (tab.status !== 'complete') return;
+        } catch {
+          return;
+        }
+      }
       try {
-        const result = await chrome.scripting.executeScript({
+        const execution = chrome.scripting.executeScript({
           target: { tabId: tab.id },
           world: 'MAIN',
-          args: [validRoutes],
+          args: [[...validRoutes, ...validCandidates]],
           func: async (items) => {
             const session = await fetch('/api/auth/session', {
               credentials: 'include',
@@ -3835,7 +4061,20 @@ async function reconcileWorkstreamRoutes() {
                       signal: AbortSignal.timeout(15_000),
                     },
                   );
-                  return { ...item, status: response.status };
+                  if (response.status === 413) {
+                    // The conversation can exceed ChatGPT's own load ceiling
+                    // before any turn or error DOM exists. Only the exact
+                    // structured code certifies terminality; an ordinary
+                    // 413/404/network failure does not authorize replacement.
+                    const error = await response.json().catch(() => null);
+                    const terminalCode = error?.code || error?.detail?.code || null;
+                    return { ...item, status: 413,
+                      terminalCode: terminalCode === 'conversation_length_exceeds_limit'
+                        ? terminalCode : null };
+                  }
+                  if (!response.ok) return { ...item, status: response.status };
+                  const data = await response.json();
+                  return { ...item, status: response.status, isArchived: data?.is_archived };
                 } catch {
                   return { ...item, status: null };
                 }
@@ -3844,33 +4083,155 @@ async function reconcileWorkstreamRoutes() {
             return { authStatus: 200, results };
           },
         });
-        probe = result[0]?.result ?? null;
-        if (probe) break;
+        // The fetch inside the page has its own network timeout, but Chrome
+        // does not bound executeScript when the entire renderer is wedged.
+        const result = await Promise.race([
+          execution, sleep(9_000).then(() => null),
+        ]);
+        probe = result?.[0]?.result ?? null;
+        if (probe) {
+          workstreamUnresponsiveProbeTabs.delete(tab.id);
+          probeHost = tab;
+          break;
+        }
+        if (tab.id !== temporaryHost?.id)
+          workstreamUnresponsiveProbeTabs.set(tab.id, Date.now() + 15 * 60_000);
       } catch {
         // Try another already-open ChatGPT tab; do not create tabs merely for hygiene.
+        if (tab.id !== temporaryHost?.id)
+          workstreamUnresponsiveProbeTabs.set(tab.id, Date.now() + 15 * 60_000);
       }
+    }
     }
     if (!probe || probe.authStatus !== 200) return;
     const invalid = Array.isArray(probe.results)
       ? probe.results
-          .filter((item) => item?.status === 404)
+          .filter((item) => item?.kind === 'route' && item?.status === 404)
           .map((item) => ({ id: item.id, conversationId: item.conversationId }))
       : [];
-    if (invalid.length > 0) {
-      await call('/workstreams/routes', {
+    const recoveries = Array.isArray(probe.results)
+      ? probe.results.flatMap((item) => {
+          if (item?.kind !== 'recovery') return [];
+          const backendState = item.status === 413 &&
+            item.terminalCode === 'conversation_length_exceeds_limit' ? 'terminal'
+            : item.status === 404 ? 'missing'
+            : item.status === 200 && item.isArchived === true ? 'archived'
+            : item.status === 200 && item.isArchived === false ? 'unarchived'
+            : null;
+          return backendState ? [{
+            id: item.id, conversationId: item.conversationId,
+            lastActivity: item.lastActivity, backendState,
+            ...(backendState === 'terminal' ? { errorCode: item.terminalCode } : {})
+          }] : [];
+        }) : [];
+    if (invalid.length > 0 || recoveries.length > 0) {
+      const decision = await call('/workstreams/routes', {
         method: 'POST',
-        body: JSON.stringify({ invalid }),
+        body: JSON.stringify({ invalid, recoveries }),
       });
+      // An archived exact claimant is not a failed conversation. The bridge
+      // first checks its unchanged workstream generation and durably reserves
+      // restoration. Only that positive decision permits the browser to
+      // unarchive this particular conversation before same-chat continuation.
+      const restore = decision.ok && Array.isArray(decision.data?.restoreArchived)
+        ? decision.data.restoreArchived.filter((item) =>
+            typeof item?.id === 'string' &&
+            /^[0-9a-f-]{8,64}$/i.test(item?.conversationId || '') &&
+            Number.isSafeInteger(item.lastActivity)
+          ).slice(0, 16)
+        : [];
+      if (restore.length > 0) {
+        let verified = [];
+        for (const tab of [probeHost, ...tabs.filter((item) =>
+          item.id !== probeHost?.id)].filter(Boolean)) {
+          try {
+            const execution = await Promise.race([
+              chrome.scripting.executeScript({
+              target: { tabId: tab.id }, world: 'MAIN', args: [restore],
+              func: async (items) => {
+                const session = await fetch('/api/auth/session', {
+                  credentials: 'include', signal: AbortSignal.timeout(15_000),
+                });
+                if (!session.ok) return [];
+                const auth = await session.json();
+                if (typeof auth.accessToken !== 'string') return [];
+                const headers = {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${auth.accessToken}`,
+                };
+                const done = [];
+                for (const item of items) {
+                  const endpoint = `/backend-api/conversation/${item.conversationId}`;
+                  try {
+                    const before = await fetch(endpoint, {
+                      headers, credentials: 'include', signal: AbortSignal.timeout(15_000),
+                    });
+                    if (!before.ok) continue;
+                    const current = await before.json();
+                    if (current?.is_archived !== true && current?.is_archived !== false)
+                      continue;
+                    if (current.is_archived) {
+                      const patch = await fetch(endpoint, {
+                        method: 'PATCH', headers, credentials: 'include',
+                        body: JSON.stringify({ is_archived: false }),
+                        signal: AbortSignal.timeout(15_000),
+                      });
+                      if (!patch.ok) continue;
+                    }
+                    // The PATCH ACK is not the postcondition. A second backend
+                    // GET must independently confirm the chat is unarchived.
+                    const after = await fetch(endpoint, {
+                      headers, credentials: 'include', signal: AbortSignal.timeout(15_000),
+                    });
+                    if (after.ok && (await after.json())?.is_archived === false)
+                      done.push(item);
+                  } catch {
+                    // Keep the staged row and retry exact restoration in the
+                    // next browser reconciliation. Never fabricate an ACK.
+                  }
+                }
+                return done;
+              },
+              }),
+              sleep(20_000).then(() => null),
+            ]);
+            if (!execution) continue;
+            verified = Array.isArray(execution?.[0]?.result) ? execution[0].result : [];
+            break;
+          } catch {
+            // A discarded browser tab cannot certify a server mutation; try
+            // the next already-open authenticated tab.
+          }
+        }
+        if (verified.length > 0) {
+          await call('/workstreams/routes', {
+            method: 'POST',
+            body: JSON.stringify({
+              recoveries: verified.map((item) => ({
+                id: item.id, conversationId: item.conversationId,
+                lastActivity: item.lastActivity, backendState: 'unarchived',
+              })),
+            }),
+          });
+        }
+      }
     }
     // Stamp only after a successful authenticated batch. A rate-limited or inaccessible
     // browser attempt remains eligible on the next service-worker start instead of suppressing
     // reconciliation for half an hour.
-    await chrome.storage.local.set({ workstreamRouteCheckAt: Date.now() });
+    if (checkBoundRoutes) await chrome.storage.local.set({ workstreamRouteCheckAt: Date.now() });
+    } finally {
+      if (typeof temporaryHost?.id === 'number') {
+        await removeTabKeepingBrowser(temporaryHost.id).catch(() => undefined);
+      }
+    }
   })();
-  workstreamRouteReconcileWork = work.finally(() => {
-    if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null;
-  });
-  return workstreamRouteReconcileWork;
+  workstreamRouteReconcileWork = work;
+  void work.then(
+    () => { if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null; },
+    () => { if (workstreamRouteReconcileWork === work) workstreamRouteReconcileWork = null; },
+  );
+  return work;
 }
 
 async function drainWorkstreamArchives() {
@@ -3887,14 +4248,16 @@ async function drainWorkstreamArchives() {
       if ((await chrome.storage.local.get('workstreamArchiveReceipt')).workstreamArchiveReceipt) return;
     }
     const response = await call('/workstreams/archive');
-    if (!response.ok || !Array.isArray(response.data?.actions)) return;
-    for (const action of response.data.actions) {
-      await archiveWorkstreamChat(action).catch(async (error) => {
-        await call('/workstreams/archive', { method: 'POST', body: JSON.stringify({
-          id: action.id, actionId: action.actionId, error: String(error.message).slice(0, 500)
-        }) });
-      });
+    if (response.ok && Array.isArray(response.data?.actions)) {
+      for (const action of response.data.actions) {
+        await archiveWorkstreamChat(action).catch(async (error) => {
+          await call('/workstreams/archive', { method: 'POST', body: JSON.stringify({
+            id: action.id, actionId: action.actionId, error: String(error.message).slice(0, 500)
+          }) });
+        });
+      }
     }
+    await cleanupRetiredWorkstreamArchives();
   } finally {
     archivingWorkstreams = false;
   }

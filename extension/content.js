@@ -560,6 +560,29 @@
     }
   })();
   let turnId = null;
+  // Transport-level error tied to the current generation, not to an alert's
+  // localized prose. MAIN-world fiber.js reads the server's SSE error_code
+  // without forwarding any message body or user content.
+  let conversationTransportFailure = null;
+  let transportProbeFor = null;
+  let lastTransportError = null;
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || data.source !== 'clf-conversation-error' || data.v !== 1 ||
+        !['conversation_too_large', 'conversation_length_exceeds_limit'].includes(data.errorCode) ||
+        !conversationId ||
+        data.conversationId !== conversationId) return;
+    if (lastTransportError === `${conversationId}:${data.errorCode}`) return;
+    lastTransportError = `${conversationId}:${data.errorCode}`;
+    if (generating && turnId)
+      conversationTransportFailure = { turnId, conversationId, errorCode: data.errorCode };
+    // The backend can reject before ChatGPT ever mounts a turn/Stop control.
+    // The server's typed error is an independent event, not an inference from
+    // whether the page happened to start rendering a generation.
+    emit({ kind: 'chat_error', text: `ChatGPT transport error: ${data.errorCode}`,
+      errorCode: data.errorCode });
+  });
   let genCount = 0;
   /**
    * What the last activity pull said this chat has open in the app.
@@ -1135,6 +1158,7 @@
     generating = true;
     resumedFirstObservation = true;
     turnId = open;
+    conversationTransportFailure = null;
     genNode = null;
     priorSections = new WeakSet(baselineSections);
     priorMarks = baselineMarks;
@@ -1301,6 +1325,9 @@
     completionActionBaselineSections = new WeakSet();
     resumedFirstObservation = false;
     turnId = null;
+    conversationTransportFailure = null;
+    transportProbeFor = null;
+    lastTransportError = null;
     genNode = null;
     priorSections = new WeakSet();
     priorMarks = [];
@@ -1352,9 +1379,10 @@
    */
   const CLAIM_LINE = /Workstream claim: (wl_[A-Za-z0-9_-]{43})/g;
   const reportedClaims = new Set();
-  function reportClaimLines() {
+  function reportClaimLines(turns = CLF_DOM.turns()) {
     if (!conversationId) return;
-    for (const turn of CLF_DOM.turns()) {
+    let found = false;
+    for (const turn of turns) {
       if (turn.role !== 'assistant') continue;
       for (const node of turn.nodes) {
         const prose = CLF_DOM.messageText(node, 'assistant');
@@ -1363,9 +1391,14 @@
           if (reportedClaims.has(key)) continue;
           reportedClaims.add(key);
           emit({ kind: 'workstream_claim', text: line });
+          found = true;
         }
       }
     }
+    // A claim is a routing authorization, not incidental transcript prose.
+    // Its short-lived DOM node may disappear before the next throttled poll;
+    // hand the evidence to the durable extension journal immediately.
+    if (found) void flush();
   }
   setInterval(reportClaimLines, 10_000);
 
@@ -1516,6 +1549,9 @@
    */
   function endOutcome(turn) {
     if (userStopped) return { outcome: 'stopped' };
+    if (conversationTransportFailure?.turnId === turnId &&
+        conversationTransportFailure.conversationId === conversationId)
+      return { outcome: 'failed', errorCode: conversationTransportFailure.errorCode };
     // ChatGPT's own turn status, where the thread layout exposes it (CLF_DOM.turnLifecycle).
     // It is the page's statement that the exchange is over, which the transient
     // `data-interrupted` marker below is not, so it is read first.
@@ -1772,6 +1808,7 @@
       });
     }
     if (endedTurnId) emit({ kind: 'turn_end', turnId: endedTurnId, ...result });
+    conversationTransportFailure = null;
     // The compaction turn settling is the moment the brief exists. Read here, from this
     // generation's own section, while `ended` still names it — a tick later the page is just
     // a transcript again and this answer is indistinguishable from any other.
@@ -1885,6 +1922,10 @@
       void flush();
       return;
     }
+    if (conversationId && transportProbeFor !== conversationId) {
+      transportProbeFor = conversationId;
+      window.postMessage({ source: 'clf-conversation-error-check' }, location.origin);
+    }
 
     // Every section on screen, not just the assistant's: this is the record of what this
     // script watched while on this conversation, and it is the whole basis on which
@@ -1954,6 +1995,8 @@
       completionActionBaselineSections = new WeakSet(baselineCompletionSections);
       genCount++;
       turnId = `g-${RUN_ID}-${epoch}-${genCount}`;
+      conversationTransportFailure = null;
+      lastTransportError = null;
       bindResumeGoalTurn(turnId);
       genNode = null;
       // What was already there is what this generation must not adopt — as it stood at the
@@ -2405,8 +2448,29 @@
     if (typeof MutationObserver !== 'function' || !document.body) return;
     let timer = null;
     let urgentQueued = false;
+    let claimQueued = false;
     const observer = new MutationObserver((records) => {
       if (!alive || !sameChat()) return;
+      // Workstream claims are short-lived assistant text in some ChatGPT
+      // renderers. The ten-second fallback reader can miss a claim that was
+      // written and collapsed between polls, leaving its real chat unbound;
+      // the watchdog then mistook that missing route for an unrevivable chat.
+      // Inspect only mutations whose bounded text contains the claim prefix,
+      // then read the actual assistant prose in a microtask. Never bind from
+      // the tool's instruction or from a guessed active tab.
+      if (!claimQueued && records.some((record) =>
+        [record.target, ...record.addedNodes].some((node) => {
+          const text = node?.textContent;
+          return typeof text === 'string' && text.length <= 2000 &&
+            text.includes('Workstream claim: wl_');
+        })
+      )) {
+        claimQueued = true;
+        void Promise.resolve().then(() => {
+          claimQueued = false;
+          if (alive && sameChat()) reportClaimLines();
+        });
+      }
       // Stop is mounted under the composer, outside TURN_SECTION. In a background tab the final
       // prose can arrive while Stop still exists (scheduling the throttled debounce below), and
       // Stop removal can then be the *only* terminal mutation. Check the local->page generation

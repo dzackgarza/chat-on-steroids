@@ -87,6 +87,7 @@ import { classifySendOrigin, recordOutOfBandSend } from "./send-origin.js";
 import { resumeOpeningChat } from "./resume-gate.js";
 import { summarizeToolCall } from "./summarize.js";
 import {
+  repairMissingWorkstreamRecordingSession,
   setWorkstreamRecordingSession,
   workstreamForConversation,
   workstreamRecordingSession,
@@ -1810,8 +1811,11 @@ async function ensureWorkstreamRecordingSession(
   workstreamId: string,
   admittedSessionId: string | null,
 ): Promise<string | null> {
+  // An in-flight call may retain the recorder id admitted before a concurrent
+  // repair. The current durable workstream pointer is the sole authority for
+  // subsequent writes; preferring a stale admitted id would lose every new call.
   const remembered =
-    admittedSessionId ?? workstreamRecordingSession(workstreamId);
+    workstreamRecordingSession(workstreamId) ?? admittedSessionId;
   if (remembered) {
     const summary = await getSession(remembered);
     if (summary) {
@@ -1832,6 +1836,23 @@ async function ensureWorkstreamRecordingSession(
     logWarn(
       `workstream ${workstreamId} references missing recorder session ${remembered}`,
     );
+    // The old directory/history cannot be reconstructed. Create a *new* recorder,
+    // explicitly identifying the unavailable predecessor: never silently claim the
+    // new session contains its history, and never erase the old session identifier.
+    // A concurrent first-call repair wins by exact old-id CAS; the loser discards only
+    // its unused candidate and files the call in the winner's canonical new session.
+    const recovered = await createSession({
+      title: `Workstream · ${workstreamId} (recording recovered; missing predecessor ${remembered})`,
+    });
+    if (await repairMissingWorkstreamRecordingSession(workstreamId, remembered, recovered.id)) {
+      logWarn(
+        `workstream ${workstreamId}: replaced unrecoverable recorder ${remembered} with ${recovered.id}; prior history is unavailable and was not reconstructed`,
+      );
+      return recovered.id;
+    }
+    const current = workstreamRecordingSession(workstreamId);
+    await deleteSession(recovered.id).catch(() => undefined);
+    if (current && (await getSession(current))) return current;
     return null;
   }
 
@@ -2066,6 +2087,8 @@ export interface ChatObservation {
   fiberConversationId?: string;
   outcome?: TurnOutcome;
   detail?: string;
+  /** ChatGPT's machine-readable terminal SSE code, never inferred from message text. */
+  errorCode?: string;
   /** tool_evidence only: the connector requests this turn's message model holds. */
   calls?: PageCallEvidence[];
 }
@@ -2443,6 +2466,7 @@ async function recordChatObservationsNow(
           kind: "turn_end",
           outcome: item.outcome ?? "unknown",
           ...(item.detail ? { detail: item.detail } : {}),
+          ...(item.errorCode ? { errorCode: item.errorCode } : {}),
         });
         // As above, durable journal state owns idempotency; in-memory state follows it.
         if (live) {

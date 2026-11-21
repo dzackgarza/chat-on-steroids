@@ -1363,3 +1363,104 @@ git -C <repo> log --all --since='<last tick>' --author='dzackgarza@gmail.com' --
 The same caution applies to any surface the steward writes: a ledger count moved by a filing, a
 queue entry closed by a steward's own commit, a dirty count changed by a doc edit. Measure the
 worker by what the worker did.
+
+## 2026-11-17: archive ACK deadlock, premature replacement-command retirement, and unbound claim
+
+The `sage-indefinite-port` workstream lost all execution at a failed replacement transition.
+Its row was `archiving` with a retired/old browser conversation, no replacement command,
+and a fenced lock. The paired Chrome extension had been inactive (the separately enabled
+`chat-on-steroids-browser.service` was stopped). Only that extension could acknowledge
+`/workstreams/archive`, so neither an owner reclaim nor the replacement driver could proceed.
+This was **not** evidence that a successor ChatGPT conversation existed.
+
+Three independent lifecycle violations followed during live recovery:
+
+1. `archiving` had no durable ACK deadline or absence-of-extension transition. Now the
+   controller uses the *existing* guarded `finishWorkstreamArchive` to retire an unconfirmed
+   browser route, explicitly records `archive_unconfirmed`, and proceeds to `opening`; a
+   connected but unresponsive extension also has a bounded ACK deadline (`1bbc9e9d`).
+2. The browser may identify a replacement conversation before the bootstrap `send` receipt
+   commits. `bindWorkstreamReplacement` discarded `commandId` at that earlier boundary; an
+   early model `continue` then made the still-live command look superseded and its tab could
+   be closed. The command ID now remains until the durable send receipt commits, with
+   crash-replay and late-ACK guards; stale-command cleanup preserves an actually owned tab
+   (`0b1e46ea`).
+3. A browser failure explicitly stating **nothing was sent** could leave a provisional
+   claimant `active`, with neither bound conversation nor pending command. This is not a
+   working owner. Such a row now returns, using the failed command's *actual receipt*, to the
+   existing `opening` retry/backoff. A missing or ambiguous receipt cannot create a duplicate
+   (`4265c1cc`).
+
+The same workstream referred to an already missing recorder session
+`2026-10-16-6ba3012a`; `ensureWorkstreamRecordingSession` returned `null` on every new
+call, silently losing subsequent call history. The recorder now proves the old session
+unrecoverable, atomically installs a fresh recorder for the same logical workstream, and
+names the unavailable predecessor in its durable title. It **does not** pretend that lost
+prior history was reconstructed (`b2b3f51f`). In-flight calls carry the current durable
+recorder ID rather than repeatedly trusting their stale admission snapshot.
+
+**Live acceptance:** after restarting the daemon and the separately stopped browser service,
+a real `live-acceptance` workstream successfully archived its original ChatGPT conversation
+and bound a distinct successor. The corrected acceptance script verifies the actual recorded
+connector `read`, not the unrelated workspace-inference field; its CDP waits are bounded.
+After an owner-authorized, single-stream watchdog replacement, `sage-indefinite-port` recovered
+from its last unsent-bootstrap receipt and at 2026-11-17 08:54:28 UTC was `active` in the new
+ChatGPT conversation `6afc1627-9490-83e9-89c6-d9ff87367a09`, with an open managed Chrome
+tab and successful `exec_command` tool calls written to its new recorder. This is actual
+successor execution, not a scheduled action or a commit-clock proxy. The original missing
+recorder history remains unavailable and is explicitly disclosed by its successor's title.
+
+## 2026-11-18: completed model turns without execution, and lost cleanup after archive fallback
+
+The controller used a ChatGPT `completed` turn as unconditional authorization to send another
+prompt. During the broken `/research` filesystem grant, the workstream recorder held two
+rejected reads and **88 completed turns** without successful tool execution. Each reply that
+said work was blocked triggered another model turn, creating an unbounded no-work loop.
+The missing identity was a *successful ordinary connector result since the previous completed
+turn*, not a claim/lease timestamp or an assistant message.
+
+The admitted tool now records a durable success witness once per turn, tied to its current
+opaque claim and recorded only after the real result is known. The scheduler still reports
+terminal turns, but a `completed` turn without the witness suppresses the next automatic
+send while retaining ordinary tool access in the same `active` chat. The first implementation
+instead entered `blocked`, revoking tools; a live sage-indefinite-port turn exposed the
+second lockout, so restore now repairs any already-blocked rows. Failed tool calls and
+detached old claims cannot manufacture progress. The actual
+cross-turn and restart transitions are tested against the workstream store, independently of
+the live ChatGPT acceptance surface.
+
+The second gap was that `finishWorkstreamArchive(error)` correctly allowed a replacement to
+open, but discarded the old ChatGPT conversation's remaining backend-archive obligation.
+An uncommitted fresh-chat send could likewise allocate a server conversation before failing,
+leaving a `New chat` without a durable owner. Both cases now retain exact IDs in the workstream
+state. The extension retries only those recorded obligations, through an already open authenticated
+browser tab, and acknowledges them only after a ChatGPT backend read confirms `is_archived`
+or an authoritative 404. A retired owner cannot be cleaned up until a distinct successor is
+bound; a failed-bootstrap ACK is only a candidate, not proof it never sent a message,
+and likewise waits for a distinct bound successor. Live workers and
+unrelated conversations are never cleanup candidates by title or inactivity heuristic.
+
+Live acceptance on 2026-11-18 also exposed ChatGPT HTTP 429 responses while verifying old
+fixture archives. An archive mutation is not accepted as completed until the backend read
+confirms `is_archived` or an authoritative 404. The extension now honors the backend's
+`Retry-After` (or a conservative cooldown) instead of retrying each minute, and retains the
+unacknowledged cleanup queue across restarts. The test-fixture cleanup stops at the first
+429, skips client-only provisional conversation IDs, and preserves failed fixtures for
+another verified cleanup instead of treating a successful PATCH as archival proof.
+
+The external 30-minute watchdog was a second writer of workstream recovery decisions.
+Without the matching change it would interpret the intentionally inactive no-work chat
+as stale after five minutes, revive it and eventually archive/replace it, recreating the
+unbounded continuation loop despite the corrected controller. The watchdog now recognizes
+`auto_continue_without_successful_tool` as a decision requiring steward diagnosis,
+never automatic revival; it still reports overlong in-flight tools independently.
+The negative path is covered by `test_workstream_watchdog.py`.
+
+A follow-up runtime restart found that the browser route-invalidating path
+removed the Sage worker's active conversation and put it in the retired tab
+list, even though a fresh ChatGPT account listing still showed that conversation
+unarchived. A single backend lookup can be an inconsistent signal; it is not
+authority to revoke the active model claim. Active/advancing/recovering workstream
+routes therefore no longer accept background invalidation. The controller's
+explicit fenced replacement and the owner's paused/blocked cleanup retain their
+separate semantics; the lifecycle test covers both positive and negative paths.
