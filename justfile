@@ -971,3 +971,11 @@ install:
 # Refresh the read-only steward workstream dashboard from live repository state.
 steward-dashboard *args:
     python3 scripts/generate-steward-dashboard.py {{args}}
+
+# Run the fast commit check; the commit hook runs this
+test-commit:
+    @just -f ~/ai-review-ci/justfiles/bun.just -d . test-commit
+
+# Run the fast push check; the push hook runs this
+test-push:
+    @just -f ~/ai-review-ci/justfiles/bun.just -d . test-push
