@@ -1421,7 +1421,7 @@ missed, and raising `candidates` covers more at a small cost per chat. `~tok` is
 assistant and tool text at four characters per token, not ChatGPT's context counter. It needs
 Chromium on port 9222 signed in to ChatGPT. Details: `scripts/chat-list.py`.
 The endpoints it calls, their response shapes, and the rate limits are specified in
-`docs/chatgpt-backend-api.md`.
+`docs/chatgpt-backend-api.md` and `docs/chatgpt-backend-api.openapi.json`.
 
 A chat that `new` opens is an ordinary chat: it is not a worker, it belongs to no run, and
 it appears in `just sessions` like any other.
