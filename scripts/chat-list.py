@@ -183,6 +183,10 @@ def recorded_states(root):
 
 
 TAB_STATE_JS = """(() => {
+  // A failed send ("Message delivery timed out") never reaches the server, so only the page
+  // knows: it shows an alert banner while the server keeps answering COMPLETE.
+  const alert = document.querySelector('aside[role=alert]');
+  if (alert && alert.innerText.trim()) return 'alert:' + alert.innerText.trim();
   const els = [...document.querySelectorAll('[data-talvt-turn-state]')];
   return els.length ? els[els.length - 1].getAttribute('data-talvt-turn-state') : null;
 })()"""
@@ -192,7 +196,8 @@ def tab_turn_states(endpoint):
     """Turn state of each open ChatGPT conversation tab: {conversation id: state}.
 
     ChatGPT's own page marks the newest turn `in_progress` while the model works, then
-    `complete` or `cancelled`. A chat with no open tab has no entry."""
+    `complete` or `cancelled`; a tab showing an error banner reports `alert:<banner text>`.
+    A chat with no open tab has no entry."""
     states = {}
     for target in cdp_targets(endpoint):
         url = target.get("url") or ""
@@ -394,7 +399,11 @@ def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
         state = recorded
         last_at = max(epoch(seen.get("update_time")), when / 1000)
         fresh = minutes <= 0 or now - last_at <= minutes * 60
-        if tabs.get(chat) == "in_progress":
+        if tabs.get(chat, "").startswith("alert:"):
+            # The page shows an error banner (e.g. "Message delivery timed out"); the server
+            # still answers COMPLETE because the message never arrived.
+            state, action = "alert", tabs[chat].removeprefix("alert:")
+        elif tabs.get(chat) == "in_progress":
             state = "busy"
         elif stream == "IS_STREAMING":
             # ChatGPT keeps IS_STREAMING on some chats for weeks after their last update
@@ -407,7 +416,7 @@ def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
         elif state == "-" and (chat in tabs or stream == "COMPLETE"):
             state = "idle"
         failed = "batch_status" in seen or not seen
-        if not failed and state not in ("busy", "stream") and not fresh:
+        if not failed and state not in ("busy", "stream", "alert") and not fresh:
             continue
         row = {"id": chat, "title": titles[chat], "state": state, "action": action,
                "last_at": last_at}
