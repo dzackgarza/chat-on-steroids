@@ -1382,8 +1382,8 @@ just sessions                    # recorded chats, newest first
 just transcript <part-of-an-id>  # print one chat; defaults to the newest
 just search <term>               # which chats mention a term
 
-just chats [minutes]             # ACTIVE chats (default: changed in the last 10 min): id, state, model, ~tokens
-just chats 0                     # the whole account, active and inactive
+just chats [minutes]             # ACTIVE chats (generating, or a message in the last 10 min): id, state, model, ~tokens
+just chats 0                     # every chat it reads, active or not (see `candidates`)
 just state <conversation-id>     # what that one chat's turn is doing, from the live recorder
 just say <conversation-id> "..."  # send that message to that chat
 just new "..."                    # open a new chat with that opening message
@@ -1396,17 +1396,22 @@ just revive <conversation-id> "..."     # reload its page, then send
 turn event was a start, so ChatGPT is generating — send when it is `idle`. A chat whose tab
 was closed mid-turn keeps a stale `busy`, so read the clock column with it.
 
-`just chats` reads the account's conversations, not only the ones this app recorded, so it
-covers chats that never used the connector. `minutes=N` keeps chats changed in the last N minutes.
-`idle` is the time since the chat last changed in the account index, which can lag a streaming
-turn. `state` is `busy` when the chat's open tab marks the turn `in_progress` or the recorder
-says so (such a chat is listed outside the window too), else the recorder's state, `idle` for an
-open tab with no running turn, or `-` for a chat with neither a tab nor a recording: its
-generating state is unknown to this command. The account index carries no model; the model
-(`model_slug` on assistant messages) exists only in each conversation's detail, so rows come
-from the exported corpus, a summary cache, or a bounded number of live detail fetches. `~tok`
-is visible user, assistant and tool text at four characters per token, not ChatGPT's context
-counter. It needs Chromium on port 9222 signed in to ChatGPT. Details: `scripts/chat-list.py`.
+`just chats` reads ChatGPT conversations, not only the ones this app recorded, so it covers
+chats that never used the connector. `last msg` is the age of the newest message in the
+conversation itself. `state` is `busy` when the chat's open tab marks the turn `in_progress` or
+the recorder says so (such a chat is listed outside the `minutes` window too), else the
+recorder's state, `idle` for an open tab with no running turn, or `-` for a chat with neither a
+tab nor a recording: its running state is unknown to this command, so read `last msg`.
+
+The sidebar chat list (`/backend-api/conversations`) only enumerates ids and titles. Its
+`update_time` equals the conversation's own at rest but stays frozen while a long turn runs
+(measured: list 20:04, conversation 20:38), so it never decides what is active. The command
+reads the conversation of the `candidates` (default 10) newest chats by list time, plus every
+open tab and recorder-busy chat; a chat outside those that is generating with no tab and no
+recording is missed, and raising `candidates` covers more at one conversation read each. The
+model (`metadata.model_slug`) and size come from the same read. `~tok` is visible user,
+assistant and tool text at four characters per token, not ChatGPT's context counter. It needs
+Chromium on port 9222 signed in to ChatGPT. Details: `scripts/chat-list.py`.
 
 A chat that `new` opens is an ordinary chat: it is not a worker, it belongs to no run, and
 it appears in `just sessions` like any other.

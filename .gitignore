@@ -37,3 +37,4 @@ smoke-switch.txt
 
 # Local output refreshed by the scheduled steward; derived from managed repositories.
 steward-dashboard/
+__pycache__/

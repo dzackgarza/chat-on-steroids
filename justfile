@@ -159,33 +159,29 @@ state_dir := if os() == "macos" {
     env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/state"
 }
 
-# The ACTIVE ChatGPT chats (changed in the last `minutes`, default 10): idle, state, model, size, id
+# The ACTIVE ChatGPT chats: generating now, or a message in the last `minutes` (default 10)
 #
-# Every chat on the account appears, whether or not it ever used the connector, newest first.
-# Columns: `idle` is time since the chat last changed in the account index, which can lag a
-# turn still streaming. `state` is `busy` when the chat's open tab marks its turn in progress
-# or this app's recorder says so (a busy chat is listed even outside `minutes`); otherwise the
-# recorder's idle/stalled/wedged, `idle` for an open tab with no running turn, and `-` for a
-# chat with no open tab and no recording, whose generating state this does not know.
-# `model` is the model that answered last, `msgs` and `tools` count messages, and `~tok`
-# sizes the chat. The last column is the newest recorded action. The id is what `say` wants.
+# Covers every chat on the account, whether or not it ever used the connector. Columns:
+# `last msg` is the age of the newest message in the conversation itself. `state` is `busy`
+# when the chat's open tab marks its turn in progress or this app's recorder says so;
+# otherwise the recorder's idle/stalled/wedged, `idle` for an open tab with no running turn,
+# and `-` for a chat with no open tab and no recording, whose running state this does not
+# know (read `last msg` for those). `model` is the model that answered last, `msgs` and
+# `tools` count messages, `~tok` sizes the chat, and the last column is the newest action
+# this app recorded. The id is what `say` wants.
 #
-# `minutes` is the activity window: a chat appears only if it changed in the last N minutes.
-# `just chats 0` lists the whole account, active and inactive; `just chats 1440` adds the
-# day's quieter chats. `match` filters on the title. `limit` caps rows after both filters.
-# archived="true" lists archived chats. `fresh` bounds how many live detail fetches this run
-# may make for model and size.
+# The sidebar list's times are not trusted: they freeze while a long turn runs. So this reads
+# the conversation of the `candidates` newest chats by list time, plus every open tab and
+# every recorder-busy chat. A chat outside those that is generating with no tab and no
+# recording is missed; raise `candidates` to cover more (each is one conversation read).
+# `minutes=0` lists every chat read, active or not. `match` filters on the title.
 #
-# The account index carries no model; `model_slug` exists only on each conversation's detail.
-# So model and size come from the exported corpus when current, else a summary cache keyed by
-# update time, else a live fetch. `*` marks a corpus value older than the live chat; `?` means
-# none was available (raise `fresh`); `!n` is the status of a failed fetch; `model+N` means N
-# other models answered earlier turns. `~tok` counts user, assistant and tool text at four
-# characters per token. Hidden reasoning, system prompts and tool schemas are invisible from
-# here, so it sizes a chat rather than reproducing ChatGPT's context counter.
+# `~tok` counts user, assistant and tool text at four characters per token. Hidden reasoning,
+# system prompts and tool schemas are invisible from here, so it sizes a chat rather than
+# reproducing ChatGPT's context counter.
 #
 # Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
-chats minutes="10" match="" limit="100" archived="false" fresh="20" json="false":
+chats minutes="10" match="" candidates="10" archived="false" json="false":
     #!/usr/bin/env bash
     set -euo pipefail
     extra=()
@@ -200,7 +196,7 @@ chats minutes="10" match="" limit="100" archived="false" fresh="20" json="false"
         *) echo 'archived must be true or false' >&2; exit 2 ;;
     esac
     exec python3 "{{justfile_directory()}}/scripts/chat-list.py" --sessions "{{sessions_dir}}" \
-        --minutes "{{minutes}}" --match "{{match}}" --limit "{{limit}}" --fresh "{{fresh}}" "${extra[@]}"
+        --minutes "{{minutes}}" --match "{{match}}" --candidates "{{candidates}}" "${extra[@]}"
 
 # ---------------------------------------------------------------------------
 # The browser's actual tabs.
