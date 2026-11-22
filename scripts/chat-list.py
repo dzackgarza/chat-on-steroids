@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""List ChatGPT conversations with the model that answered them and their length.
+"""List the account's ChatGPT conversations with idle time, answering model and length.
+(`just gpt` runs this.)
 
 The account's own conversation index is the only complete list, and it carries no
 model: `default_model_slug` and per-message `metadata.model_slug` exist only on
@@ -99,6 +100,15 @@ def epoch(value):
         return datetime.fromisoformat(text).timestamp()
     except ValueError:
         return 0.0
+
+
+def idle_text(seconds):
+    minutes = int(max(seconds, 0) // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    if minutes < 48 * 60:
+        return f"{minutes // 60}h{minutes % 60:02d}"
+    return f"{minutes // 1440}d"
 
 
 def content_chars(content):
@@ -206,13 +216,15 @@ SUMMARY_JS = r"""
 """
 
 
-def index_expression(limit, archived):
+def index_expression(archived):
+    """The whole index: its paging order is not strictly by update time (pinned and
+    project chats come first), so a prefix of it is not the newest chats."""
     return f"""(async () => {{
   const s = await (await fetch('/api/auth/session', {{credentials: 'include'}})).json();
   if (typeof s.accessToken !== 'string') return JSON.stringify({{error: 'no_access_token'}});
   const headers = {{Authorization: 'Bearer ' + s.accessToken}};
   const out = []; let offset = 0;
-  while (out.length < {limit}) {{
+  while (true) {{
     const response = await fetch('/backend-api/conversations?order=updated&is_archived={archived}&offset='
       + offset + '&limit=100', {{headers, credentials: 'include'}});
     if (response.status !== 200) return JSON.stringify({{error: response.status, items: out}});
@@ -223,7 +235,7 @@ def index_expression(limit, archived):
       title: item.title, archived: !!item.is_archived}});
     offset += items.length;
   }}
-  return JSON.stringify({{items: out.slice(0, {limit})}});
+  return JSON.stringify({{items: out}});
 }})()"""
 
 
@@ -273,7 +285,14 @@ def main():
         "--limit",
         type=int,
         default=30,
-        help="How many conversations to list, newest first (default 30).",
+        help="How many conversations to list, newest first (default 30), after "
+        "--match and --hours have filtered the whole index.",
+    )
+    parser.add_argument(
+        "--hours",
+        type=float,
+        default=0,
+        help="Only conversations updated within this many hours (0 = no age limit).",
     )
     parser.add_argument(
         "--match", default="", help="Only rows whose title contains this text."
@@ -309,7 +328,7 @@ def main():
 
     listing = evaluate(
         websocket,
-        index_expression(args.limit, "true" if args.archived else "false"),
+        index_expression("true" if args.archived else "false"),
         timeout="90",
     )
     try:
@@ -328,11 +347,15 @@ def main():
     cache_path = Path(args.cache).expanduser()
     cache = load_json(cache_path, {})
 
+    cutoff = time.time() - args.hours * 3600 if args.hours > 0 else 0.0
     wanted = [
         item
         for item in items
-        if not args.match or args.match.lower() in (item.get("title") or "").lower()
+        if (not args.match or args.match.lower() in (item.get("title") or "").lower())
+        and epoch(item.get("update_time")) >= cutoff
     ]
+    wanted.sort(key=lambda item: epoch(item.get("update_time")), reverse=True)
+    wanted = wanted[: args.limit]
 
     rows = []
     to_fetch = []
@@ -370,6 +393,8 @@ def main():
             row.update(summary)
             row["source"] = "live"
             cache[row["id"]] = {**summary, "update_time": row["update_time"]}
+        elif isinstance(summary, dict) and "status" in summary:
+            row["status"] = summary["status"]
         elif entry:
             detail = load_json(corpus_root / entry["json_path"], None)
             if detail:
@@ -409,6 +434,7 @@ def main():
                             "source",
                             "stale",
                             "archived",
+                            "status",
                         )
                     }
                     for row in rows
@@ -419,10 +445,12 @@ def main():
         return
 
     print(
-        f"{'updated':<12} {'id':<38} {'model':<18} {'msgs':>5} {'tools':>5} {'~tok':>7}  title"
+        f"{'updated':<12} {'idle':>6} {'id':<38} {'model':<18} {'msgs':>5} {'tools':>5} {'~tok':>7}  title"
     )
     for row in rows:
-        model = row.get("model") or "?"
+        model = row.get("model") or (
+            f"!{row['status']}" if row.get("status") is not None else "?"
+        )
         if len(row.get("models") or {}) > 1:
             model += f"+{len(row['models']) - 1}"
         if row["stale"]:
@@ -440,15 +468,24 @@ def main():
             if row["update_time"]
             else "?"
         )
+        idle = idle_text(time.time() - row["update_time"]) if row["update_time"] else "?"
         title = " ".join((row.get("title") or "").split())[:60]
         print(
-            f"{when:<12} {row['id']:<38} {model:<18} {messages:>5} {row.get('tool') or 0:>5} "
+            f"{when:<12} {idle:>6} {row['id']:<38} {model:<18} {messages:>5} {row.get('tool') or 0:>5} "
             f"{tokens:>7}  {title}"
         )
     if any(row["stale"] for row in rows):
         print(
             "\n* corpus export predates the live conversation; run the chatgpt-web-export "
             "sync or raise --fresh for current values.",
+            file=sys.stderr,
+        )
+    unresolved = [row for row in rows if not row.get("model")]
+    if unresolved:
+        print(
+            "\n!n is the HTTP status of a detail fetch that failed; ? means no fetch was "
+            "attempted (raise --fresh) and no current corpus or cache entry exists. Run "
+            "again: the cache keeps every row that did resolve.",
             file=sys.stderr,
         )
 

@@ -273,74 +273,27 @@ devtools := "http://127.0.0.1:9222"
 
 # Your ChatGPT conversations themselves, newest first — not just the ones this app recorded
 #
-# Read from ChatGPT through a tab's own session, so it sees every conversation on the account
-# rather than the subset this app happens to have observed. `match` filters on the title.
-# Pass archived="true" to list what has already been archived instead.
-gpt limit="100" match="" archived="false":
-    #!/usr/bin/env python3
-    import json, subprocess, time, calendar
-
-    targets = json.loads(subprocess.run(
-        ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
-    ws = next((t["webSocketDebuggerUrl"] for t in targets
-               if t.get("type") == "page" and "chatgpt.com" in (t.get("url") or "")), None)
-    if not ws:
-        raise SystemExit("no ChatGPT tab is open — the account's own session is what lists these")
-
-    expr = (
-        "(async () => {"
-        ' const s = await (await fetch("/api/auth/session", {credentials:"include"})).json();'
-        ' const out = []; let offset = 0;'
-        " while (out.length < " + "{{limit}}" + ") {"
-        '   const r = await fetch("/backend-api/conversations?order=updated&is_archived={{archived}}&offset=" + offset + "&limit=100",'
-        '     {headers: {"Authorization": "Bearer " + s.accessToken}, credentials: "include"});'
-        "   if (r.status !== 200) return JSON.stringify({error: r.status});"
-        "   const j = await r.json();"
-        "   const items = j.items || [];"
-        "   if (!items.length) break;"
-        "   for (const i of items) out.push([i.id, i.update_time, i.title]);"
-        "   offset += items.length;"
-        # The response carries a `total` and it does not agree with what paging returns: it
-        # reported 2 for an account whose pages yield hundreds. An empty page is the only
-        # honest end of the list.
-        " }"
-        " return JSON.stringify({items: out});"
-        "})()"
-    )
-    payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
-                          "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws], input=payload, capture_output=True, text=True).stdout
-    value = json.loads(raw)["result"]["result"].get("value")
-    if not value:
-        raise SystemExit("ChatGPT did not answer: " + raw[:300])
-    body = json.loads(value)
-    if "error" in body:
-        raise SystemExit(f"ChatGPT refused the listing with status {body['error']}")
-
-    match = "{{match}}".lower()
-    for chat, updated, title in body["items"]:
-        title = " ".join((title or "").split())
-        if match and match not in title.lower():
-            continue
-        # Some rows carry fractional seconds and some do not, so both the fraction and the
-        # trailing zone marker have to go before this is a fixed-width timestamp.
-        stamp = calendar.timegm(time.strptime(updated.split(".")[0].rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
-        print(f"{time.strftime('%m-%d %H:%M', time.localtime(stamp))}\t{chat}\t{title[:60]}")
-
-# Every ChatGPT conversation with the model that answered it and its length
+# Read from ChatGPT through a tab's own session, so it sees every conversation on the account,
+# including chats that never touched the connector. Each row: when it last changed, how long
+# it has been idle, the model that answered it, message and tool counts, and `~tok`.
 #
-# `chats` lists what this app recorded. This lists what the account holds: the live
-# index through a signed-in tab, then each conversation's `model_slug` and text size
-# from the exported corpus when current, the summary cache, or one live detail fetch.
+# `hours` keeps only chats updated in the last N hours (0 = no age limit). `limit` caps rows
+# after that filter. `match` filters on the title. archived="true" lists archived chats.
+# `fresh` bounds how many live detail fetches this run may make for model and size.
 #
-# ~tok counts user, assistant and tool text at four characters per token; hidden
-# reasoning, system prompts and tool schemas are not visible from here, so it sizes a
-# chat rather than reproducing ChatGPT's context counter. `model+N` means the chat
-# used N other models besides the one that answered last; `*` means the corpus export
-# predates the live conversation.
+# The account index carries no model; `model_slug` exists only on each conversation's detail.
+# So model and size come from the exported corpus when current, else a summary cache keyed by
+# update time, else a live fetch. `*` marks a corpus value older than the live chat; `?` means
+# none was available (raise `fresh`). `model+N` means N other models answered earlier turns.
+# `~tok` counts user, assistant and tool text at four characters per token. Hidden reasoning,
+# system prompts and tool schemas are invisible from here, so it sizes a chat rather than
+# reproducing ChatGPT's context counter.
+#
+# "Idle" is the time since the conversation last changed. The index cannot say whether a turn
+# is generating now; `just chats` and `just state` report that for chats this app records.
 #
 # Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
-models limit="30" match="" fresh="20" json="false":
+gpt limit="100" match="" archived="false" hours="0" fresh="20" json="false":
     #!/usr/bin/env bash
     set -euo pipefail
     extra=()
@@ -349,8 +302,13 @@ models limit="30" match="" fresh="20" json="false":
         false) ;;
         *) echo 'json must be true or false' >&2; exit 2 ;;
     esac
-    exec python3 "{{justfile_directory()}}/scripts/chat-models.py" \
-        --limit "{{limit}}" --match "{{match}}" --fresh "{{fresh}}" "${extra[@]}"
+    case "{{archived}}" in
+        true) extra+=(--archived) ;;
+        false) ;;
+        *) echo 'archived must be true or false' >&2; exit 2 ;;
+    esac
+    exec python3 "{{justfile_directory()}}/scripts/chat-list.py" \
+        --limit "{{limit}}" --match "{{match}}" --fresh "{{fresh}}" --hours "{{hours}}" "${extra[@]}"
 
 # Archive one conversation in ChatGPT, whether or not it has a tab open
 archive chat:
