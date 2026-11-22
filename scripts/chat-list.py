@@ -282,7 +282,7 @@ def index_expression(archived, max_items):
 
 
 def fetch_summaries(websocket, ids):
-    """Read each conversation, four at a time; {id: summary} or {id: {status: http}}."""
+    """Read each conversation, one at a time, backing off on 429; {id: summary} or {id: {status: http}}."""
     if not ids:
         return {}
     expression = (
@@ -293,14 +293,43 @@ def fetch_summaries(websocket, ids):
   if (typeof s.accessToken !== 'string') return JSON.stringify({error: 'no_access_token'});
   const headers = {Authorization: 'Bearer ' + s.accessToken};
   const out = {};
+  // One read at a time: a burst of full-conversation reads is what trips HTTP 429. After one
+  // retry a persistent 429 stops every further full read (the limit lasts minutes, and each
+  // further attempt only prolongs it); those rows report !429 but keep their stream state.
+  let limited = false;
   async function one(id) {
-    try {
-      const response = await fetch('/backend-api/conversation/' + id,
-        {headers, credentials: 'include', signal: AbortSignal.timeout(60000)});
-      out[id] = response.ok ? summarize(await response.json()) : {status: response.status};
-    } catch (error) { out[id] = {status: null}; }
+    if (limited) { out[id] = {status: 429}; return; }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await fetch('/backend-api/conversation/' + id,
+          {headers, credentials: 'include', signal: AbortSignal.timeout(60000)});
+        if (response.status === 429) {
+          if (attempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve,
+              (Number(response.headers.get('retry-after')) || 5) * 1000));
+            continue;
+          }
+          limited = true;
+        }
+        out[id] = response.ok ? summarize(await response.json()) : {status: response.status};
+        return;
+      } catch (error) { out[id] = {status: null}; return; }
+    }
   }
-  for (let i = 0; i < ids.length; i += 4) await Promise.all(ids.slice(i, i + 4).map(one));
+  // The page itself polls /conversation/<id>/stream_status (a ~20-byte reply) to know whether a
+  // turn is generating; it is cheap and answers for chats with no open tab and no recording.
+  async function stream(id) {
+    try {
+      const response = await fetch('/backend-api/conversation/' + id + '/stream_status',
+        {headers, credentials: 'include', signal: AbortSignal.timeout(20000)});
+      return response.ok ? (await response.json()).status : 'HTTP_' + response.status;
+    } catch (error) { return 'ERROR'; }
+  }
+  for (const id of ids) {
+    const generating = await stream(id);
+    await one(id);
+    out[id] = {...out[id], stream: generating};
+  }
   return JSON.stringify(out);
 })()"""
     )
@@ -401,7 +430,7 @@ def main():
         summary = summaries.get(chat) or {"status": None}
         when, recorded, action = states.get(chat, (0, "-", ""))
         state = recorded
-        if tabs.get(chat) == "in_progress":
+        if tabs.get(chat) == "in_progress" or summary.get("stream") not in (None, "COMPLETE", "ERROR") and not str(summary.get("stream")).startswith("HTTP_"):
             state = "busy"
         elif state == "-" and chat in tabs:
             state = "idle"

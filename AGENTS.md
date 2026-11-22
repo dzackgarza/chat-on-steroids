@@ -1400,10 +1400,17 @@ was closed mid-turn keeps a stale `busy`, so read the clock column with it.
 
 `just chats` reads ChatGPT conversations, not only the ones this app recorded, so it covers
 chats that never used the connector. `last msg` is the age of the newest message in the
-conversation itself. `state` is `busy` when the chat's open tab marks the turn `in_progress` or
-the recorder says so (such a chat is listed outside the `minutes` window too), else the
-recorder's state, `idle` for an open tab with no running turn, or `-` for a chat with neither a
-tab nor a recording: its running state is unknown to this command, so read `last msg`.
+conversation itself. `state` is `busy` when ChatGPT's own `/backend-api/conversation/<id>/stream_status`
+(the call the page polls; a 20-byte reply) reports anything but `COMPLETE`, when the chat's open
+tab marks the turn `in_progress`, or when the recorder says so (such a chat is listed outside the
+`minutes` window too). Otherwise it is the recorder's state, `idle` for an open tab with no
+running turn, or `-`. The `stream_status` call is cheap and is not blocked while full
+conversation reads return HTTP 429; the `IN_PROGRESS` spelling of a running turn is not yet
+confirmed, so any reply other than `COMPLETE` counts as running.
+
+Conversation reads go one at a time. After one 429 and one retry, the command stops reading
+conversations (the limit lasts minutes) and lists the remaining rows as `!429` with their
+`state`, so a rate-limited run still answers "which chats are generating".
 
 The sidebar chat list (`/backend-api/conversations`) only enumerates ids and titles. Its
 `update_time` equals the conversation's own at rest but stays frozen while a long turn runs
