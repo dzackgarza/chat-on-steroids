@@ -871,7 +871,7 @@ steward-dashboard *args:
 # Python tests for the scripts/ CLIs (chat-list.py, chatgpt-openapi.py).
 [private]
 _test-scripts:
-    uvx --with openapi-spec-validator pytest -q scripts/tests
+    uvx --with openapi-spec-validator --with tree-sitter --with tree-sitter-javascript pytest -q scripts/tests
 
 # Run the fast commit check; the commit hook runs this
 test-commit: _test-scripts

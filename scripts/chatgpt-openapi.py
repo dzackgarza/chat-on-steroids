@@ -1,22 +1,33 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["tree-sitter>=0.25", "tree-sitter-javascript>=0.25"]
+# ///
 """Generate docs/chatgpt-backend-api.openapi.json, an OpenAPI 3.1 description of the ChatGPT web
 backend API, from the chatgpt.com page build.
 
-Mining: every `.safeGet/.safePost/...("/path", {parameters: {query: {...}}, requestBody: {...}})`
-call site in the page's JavaScript (entry chunks listed in the page HTML plus every lazy chunk
-named in the webpack runtime) becomes one operation, with the query keys and body keys the call
-site writes. Static CDN files only; no account request is made.
+Mining: the page's JavaScript is parsed with tree-sitter (https://tree-sitter.github.io), and every
+call `<client>.safeGet|safePost|safePut|safePatch|safeDelete("/path", {parameters: {query: {...}},
+requestBody: {...}})` (and the plain get/post/... spellings) becomes one operation, with the keys
+the call site writes in `query` and `requestBody`. The entry chunks are listed in the page HTML;
+the webpack runtime maps every lazy chunk id to a hash. Static CDN files only; no account request.
 
-Observed overlay: OBSERVED below holds types, enums and response schemas confirmed by live
-requests or by archived conversation bodies; those operations carry x-evidence naming the source.
-Everything else is `x-evidence: ["bundle"]`: the client calls it, nothing more is known.
+Types come from two committed inputs, never from the bundle:
+  * SCHEMAS and OBSERVED below: confirmed by live requests or archived conversation bodies;
+  * docs/chatgpt-backend-api-live-schemas.json: response schemas inferred by
+    scripts/chatgpt-live-schemas.py from live requests (types only, no values).
+Every other operation is `x-evidence: ["bundle"]`: the client calls it, nothing more is known.
 
-Usage: chatgpt-openapi.py --cache DIR [--out FILE]
-`--cache` holds the page HTML and entry chunks. The 8,900 lazy chunks (hundreds of MB) are
-streamed and not kept, so a rerun downloads them again.
+Chunk URLs carry a content hash, so the extracted calls of each chunk are cached by URL in
+`--cache`; a rerun downloads only chunks that are new.
+
+Usage:
+  chatgpt-openapi.py --cache DIR           regenerate the OpenAPI file
+  chatgpt-openapi.py --cache DIR --check   exit 1 if the committed file differs from a regeneration
 """
 
 import argparse
+import datetime
 import json
 import re
 import sys
@@ -25,120 +36,181 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import tree_sitter as ts
+import tree_sitter_javascript as tsjs
+
 ORIGIN = "https://chatgpt.com"
+DOCS = Path(__file__).resolve().parent.parent / "docs"
+OUT = DOCS / "chatgpt-backend-api.openapi.json"
+LIVE_SCHEMAS = DOCS / "chatgpt-backend-api-live-schemas.json"
 ASSET = re.compile(r"[A-Za-z0-9_.~-]+\.[0-9a-f]{10}\.js")
-CALL = re.compile(
-    r'\.(?:safe)?(Get|Post|Put|Patch|Delete|get|post|put|patch|delete)\(\s*(["`])(/[A-Za-z_][^"`]{1,200}?)\2',
-    re.S,
-)
 CHUNK_PAIR = re.compile(r'(\d+):"([0-9a-f]{10,})"')
-CALL_WINDOW = 900
+HTTP_VERBS = {"get", "post", "put", "patch", "delete"}
+LANGUAGE = ts.Language(tsjs.language())
+CALLS = ts.Query(
+    LANGUAGE,
+    "(call_expression function: (member_expression property: (property_identifier) @via) "
+    "arguments: (arguments) @args) @call",
+)
 
 
-def fetch(url, cache, keep=True):
-    target = cache / re.sub(r"[^A-Za-z0-9_.-]", "_", url.removeprefix(ORIGIN))
+def fetch(url, cache, keep):
+    """Body of `url` (b"" on 404). `keep` stores it in the cache."""
+    target = cache / "raw" / re.sub(r"[^A-Za-z0-9_.-]", "_", url.removeprefix(ORIGIN))
     if target.exists():
-        return target.read_text(errors="replace")
+        return target.read_bytes()
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     for _ in range(3):
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                text = response.read().decode("utf-8", "replace")
-            if keep:
-                target.write_text(text)
-            return text
+                body = response.read()
         except urllib.error.HTTPError as error:
             if error.code == 404:
-                return ""
+                return b""
         except OSError:
             continue
-    return ""
+        else:
+            if keep:
+                target.write_bytes(body)
+            return body
+    sys.exit(f"could not download {url}")
 
 
 def lazy_chunk_urls(entry_texts):
     """The webpack runtime maps lazy chunk ids to hashes: n.u=a=>"assets/async/"+a+"."+({id:"hash",...})[a]+".js"."""
     for text in entry_texts:
-        marker = text.find('n.miniCssF')
+        marker = text.find("n.miniCssF")
         start = text.rfind("n.u=", 0, marker) if marker >= 0 else -1
-        if start < 0:
-            continue
-        return [
-            f"{ORIGIN}/cdn/assets/async/{chunk}.{digest}.js"
-            for chunk, digest in CHUNK_PAIR.findall(text[start:marker])
-        ]
+        if start >= 0:
+            return [
+                f"{ORIGIN}/cdn/assets/async/{chunk}.{digest}.js"
+                for chunk, digest in CHUNK_PAIR.findall(text[start:marker])
+            ]
     sys.exit("no webpack runtime chunk map found in the entry chunks")
 
 
-def call_arguments(window):
-    """The call's own argument text, cut at its closing parenthesis."""
-    depth, quote = 0, None
-    for index, char in enumerate(window):
-        if quote:
-            if char == quote and window[index - 1] != "\\":
-                quote = None
-        elif char in "\"'`":
-            quote = char
-        elif char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0:
-                return window[:index]
-    return window
+def text_of(node):
+    return node.text.decode("utf-8", "replace")
 
 
-def object_keys(text, key):
-    """Top-level keys of the object literal after `key:{`, or None."""
-    start = text.find(key + ":{")
-    if start < 0:
+def string_value(node):
+    """The value of a plain string or substitution-free template literal, else None."""
+    if node.type == "string":
+        return text_of(node)[1:-1]
+    if node.type == "template_string" and not any(c.type == "template_substitution" for c in node.children):
+        return text_of(node)[1:-1]
+    return None
+
+
+def object_keys(node):
+    """Top-level key names of an object literal; "...spread" for a spread; None if not an object."""
+    if node is None or node.type != "object":
         return None
-    depth, keys, current = 1, [], ""
-    for char in text[start + len(key) + 2 :]:
-        if char in "{[(":
-            depth += 1
-        elif char in "}])":
-            depth -= 1
-            if depth == 0:
-                break
-        if depth == 1 and char == ",":
-            keys.append(current)
-            current = ""
-        else:
-            current += char
-    keys.append(current)
-    names = []
-    for item in keys:
-        if item.strip().startswith("..."):
-            names.append("...spread")
+    keys = []
+    for child in node.named_children:
+        if child.type == "spread_element":
+            keys.append("...spread")
+        elif child.type == "shorthand_property_identifier":
+            keys.append(text_of(child))
+        elif child.type in ("pair", "method_definition"):
+            name = child.child_by_field_name("key") if child.type == "pair" else child.child_by_field_name("name")
+            if name is not None and name.type in ("property_identifier", "identifier"):
+                keys.append(text_of(name))
+            elif name is not None and name.type == "string":
+                keys.append(text_of(name)[1:-1])
+            else:
+                keys.append("...computed")
+    return keys
+
+
+def member(obj, name):
+    """Value node of key `name` in an object literal, or None."""
+    for child in obj.named_children:
+        if child.type == "pair":
+            key = child.child_by_field_name("key")
+            if key is not None and text_of(key).strip("\"'") == name:
+                return child.child_by_field_name("value")
+        elif child.type == "shorthand_property_identifier" and text_of(child) == name:
+            return child
+    return None
+
+
+def calls_in(data):
+    """Backend call sites in one JavaScript file: [{via, path, query, body}].
+
+    `query` and `body` are key lists, or None when the call site passes no such object, or a
+    value that is not an object literal (then "dynamic" names which)."""
+    root = LANGUAGE and ts.Parser(LANGUAGE).parse(data).root_node
+    found = []
+    for _, captured in ts.QueryCursor(CALLS).matches(root):
+        via = text_of(captured["via"][0])
+        if via.removeprefix("safe").lower() not in HTTP_VERBS:
             continue
-        match = re.match(r"\s*([A-Za-z_$][\w$]*|\"[^\"]+\")\s*(?::|$)", item)
-        if match:
-            names.append(match.group(1).strip('"'))
-    return names
+        arguments = captured["args"][0].named_children
+        path = string_value(arguments[0]) if arguments else None
+        if path is None or not re.match(r"^/[A-Za-z_]", path):
+            continue
+        options = arguments[1] if len(arguments) > 1 and arguments[1].type == "object" else None
+        parameters = member(options, "parameters") if options else None
+        query_node = member(parameters, "query") if parameters is not None and parameters.type == "object" else None
+        body_node = member(options, "requestBody") if options else None
+        dynamic = [
+            name
+            for name, node in (("query", query_node), ("body", body_node))
+            if node is not None and node.type != "object"
+        ]
+        found.append(
+            {
+                "via": via,
+                "path": path,
+                "query": object_keys(query_node),
+                "body": object_keys(body_node),
+                "dynamic": dynamic,
+            }
+        )
+    return found
+
+
+def chunk_calls(url, cache, keep):
+    """Calls of one chunk, cached by its content-hashed URL."""
+    target = cache / "calls" / (re.sub(r"[^A-Za-z0-9_.-]", "_", url.removeprefix(ORIGIN)) + ".json")
+    if target.exists():
+        return json.loads(target.read_text())
+    found = calls_in(fetch(url, cache, keep))
+    target.write_text(json.dumps(found))
+    return found
 
 
 def mine(cache):
-    cache.mkdir(parents=True, exist_ok=True)
-    home = fetch(ORIGIN + "/", cache)
-    entries = sorted(set(ASSET.findall(home)))
-    entry_texts = [fetch(f"{ORIGIN}/cdn/assets/{name}", cache) for name in entries]
+    for sub in ("raw", "calls"):
+        (cache / sub).mkdir(parents=True, exist_ok=True)
+    home = fetch(ORIGIN + "/", cache, keep=False).decode("utf-8", "replace")
+    names = sorted(set(ASSET.findall(home)))
+    entry_urls = [f"{ORIGIN}/cdn/assets/{name}" for name in names]
+    entry_texts = [fetch(url, cache, keep=True).decode("utf-8", "replace") for url in entry_urls]
     # Entry chunks name more chunks; one more round reaches the runtime chunk.
     for text in list(entry_texts):
-        for name in sorted(set(ASSET.findall(text)) - set(entries)):
-            entries.append(name)
-            entry_texts.append(fetch(f"{ORIGIN}/cdn/assets/{name}", cache))
-    urls = lazy_chunk_urls(entry_texts)
+        for name in sorted(set(ASSET.findall(text)) - set(names)):
+            names.append(name)
+            entry_urls.append(f"{ORIGIN}/cdn/assets/{name}")
+            entry_texts.append(fetch(entry_urls[-1], cache, keep=True).decode("utf-8", "replace"))
+    urls = entry_urls + lazy_chunk_urls(entry_texts)
     with ThreadPoolExecutor(6) as pool:
-        lazy_texts = list(pool.map(lambda url: fetch(url, cache, keep=False), urls))
-    found = {}
-    for text in entry_texts + lazy_texts:
-        for match in CALL.finditer(text):
-            method, path = match.group(1).upper(), match.group(3)
-            arguments = call_arguments(text[match.start() : match.end() + CALL_WINDOW])
-            entry = found.setdefault((method, path), {"query": set(), "body": set()})
-            entry["query"] |= set(object_keys(arguments, "query") or [])
-            entry["body"] |= set(object_keys(arguments, "requestBody") or [])
-    return found
+        per_chunk = list(pool.map(lambda url: chunk_calls(url, cache, keep=url in entry_urls), urls))
+    return [call for calls in per_chunk for call in calls]
+
+
+def merge_calls(calls):
+    """{(METHOD, path): {query, body, dynamic, via}} over every call site of that operation."""
+    operations = {}
+    for call in calls:
+        key = (call["via"].removeprefix("safe").upper(), call["path"])
+        entry = operations.setdefault(key, {"query": set(), "body": set(), "dynamic": set(), "via": set()})
+        entry["query"] |= set(call["query"] or [])
+        entry["body"] |= set(call["body"] or [])
+        entry["dynamic"] |= set(call["dynamic"])
+        entry["via"].add(call["via"])
+    return operations
 
 
 # Schemas confirmed by live requests (LIVE, 2026-11-22) or archived bodies (ARCHIVE).
@@ -188,7 +260,7 @@ SCHEMAS = {
         "properties": {
             "status": {
                 "type": "string",
-                "description": "COMPLETE when no turn runs (also for ids that do not exist); IS_STREAMING while a turn runs. Other values are not observed; clients treat only IS_STREAMING as running.",
+                "description": "COMPLETE when no turn runs (also for ids that do not exist); IS_STREAMING while a turn runs. IS_STREAMING was also seen on chats whose newest update was 28 h to 24 d old, so it does not prove a live turn. Other values are not observed.",
                 "examples": ["COMPLETE", "IS_STREAMING"],
             }
         },
@@ -327,18 +399,30 @@ OBSERVED = {
         "evidence": ["repo", "bundle"],
         "body": {"is_archived": {"type": "boolean"}},
     },
+    ("GET", "/me"): {"summary": "User profile.", "evidence": ["live"]},
+    ("GET", "/models"): {"summary": "Models available to the account.", "evidence": ["live"]},
+    ("GET", "/settings/user"): {"summary": "Account settings.", "evidence": ["live"]},
+    ("GET", "/accounts/check/v4-2023-04-27"): {"summary": "Accounts, plan and entitlements.", "evidence": ["live"]},
+    ("GET", "/wham/usage"): {"summary": "Usage limits and credits.", "evidence": ["live"]},
+    ("GET", "/celsius/ws/user"): {"summary": "Returns {websocket_url} for the realtime socket.", "evidence": ["live"]},
     ("POST", "/conversation/init"): {
-        "summary": "Defaults, send block (blocked_features) and limits_progress.",
+        "summary": "Defaults, send block (blocked_features) and limits_progress. Response shape not recorded.",
         "evidence": ["live", "repo"],
     },
-    ("GET", "/wham/usage"): {"summary": "Quota windows (rate_limit.primary_window, secondary_window, credits).", "evidence": ["live"]},
-    ("GET", "/me"): {"summary": "User profile.", "evidence": ["live"]},
-    ("GET", "/models"): {"summary": "Model catalogue (about 75 KB).", "evidence": ["live"]},
-    ("GET", "/settings/user"): {"summary": "User settings.", "evidence": ["live"]},
-}
-OBSERVED_ONLY = {
-    ("GET", "/accounts/check/v4-2023-04-27"): {"summary": "Account entitlements and features.", "evidence": ["live"]},
-    ("GET", "/celsius/ws/user"): {"summary": "Returns {websocket_url} for the realtime socket.", "evidence": ["live"]},
+    ("GET", "/gizmos/snorlax/sidebar"): {"summary": "Projects (folders) for the sidebar. Answered 200 on 2026-11-22.", "evidence": ["live"]},
+    ("GET", "/pins/content"): {"summary": "Pinned items. Answered 200 on 2026-11-22.", "evidence": ["live"]},
+    ("GET", "/tbo"): {"summary": "Agent (\"tbo\") list. Answered 200 on 2026-11-22.", "evidence": ["live"]},
+    ("GET", "/pets"): {"summary": "Companion list. Answered 200 on 2026-11-22.", "evidence": ["live"]},
+    ("GET", "/memory/status"): {
+        "summary": "GET answers 404: no such route for GET.",
+        "evidence": ["live"],
+        "responses": {"404": json_response("No such route for GET.", ERROR_REF)},
+    },
+    ("GET", "/codex/notification/subscriptions"): {
+        "summary": "GET answers 405; the page calls this path with another method.",
+        "evidence": ["live"],
+        "responses": {"405": {"description": "GET is not allowed."}},
+    },
 }
 
 
@@ -347,19 +431,34 @@ def operation_id(method, path):
     return method.lower() + "_" + "_".join(words)
 
 
-def build(found):
-    for key in OBSERVED_ONLY:
-        found.setdefault(key, {"query": set(), "body": set()})
+def live_overlay():
+    """{(METHOD, path): {status, schema, body}} from the committed live-schema file."""
+    document = json.loads(LIVE_SCHEMAS.read_text())
+    return {tuple(key.split(" ", 1)): value for key, value in document["operations"].items()}
+
+
+def build(operations, live, snapshot):
+    found = dict(operations)
+    for key in list(OBSERVED) + list(live):
+        found.setdefault(key, {"query": set(), "body": set(), "dynamic": set(), "via": set()})
     paths, canonical = {}, {}
     for (method, path), mined in sorted(found.items(), key=lambda item: (item[0][1], item[0][0])):
         shape = re.sub(r"\{[^}]*\}", "{}", path)
         path = canonical.setdefault(shape, path)
-        observed = {**OBSERVED, **OBSERVED_ONLY}.get((method, path), {})
+        observed = OBSERVED.get((method, path), {})
+        live_entry = live.get((method, path))
+        responses = observed.get("responses")
+        evidence = list(observed.get("evidence", ["bundle"]))
+        if live_entry:
+            responses = {str(live_entry["status"]): json_response("Observed live; types only.", live_entry["schema"])}
+            evidence = ["live"] + [e for e in evidence if e != "live" and e != "bundle"]
+            if mined["via"]:
+                evidence.append("bundle")
         operation = {
             "operationId": operation_id(method, path),
             "tags": [path.strip("/").split("/")[0]],
-            "x-evidence": observed.get("evidence", ["bundle"]),
-            "responses": observed.get("responses", {"default": {"description": "Response schema not extracted."}}),
+            "x-evidence": evidence,
+            "responses": responses or {"default": {"description": "Response schema not extracted."}},
         }
         if observed.get("summary"):
             operation["summary"] = observed["summary"]
@@ -368,19 +467,20 @@ def build(found):
             for name in re.findall(r"\{([^}]+)\}", path)
         ]
         query_types = observed.get("query", {})
-        for name in sorted(set(query_types) | (mined["query"] - {"...spread"})):
+        spread = {"...spread", "...computed"}
+        for name in sorted(set(query_types) | (mined["query"] - spread)):
             parameters.append({"name": name, "in": "query", "schema": query_types.get(name, {})})
-        if "...spread" in mined["query"]:
-            operation["x-query-spread"] = True
+        if mined["query"] & spread or "query" in mined["dynamic"]:
+            operation["x-query-dynamic"] = True
         if parameters:
             operation["parameters"] = parameters
         body_types = observed.get("body", {})
-        body_keys = set(body_types) | (mined["body"] - {"...spread"})
-        if body_keys:
+        body_keys = set(body_types) | (mined["body"] - spread)
+        if body_keys or "body" in mined["dynamic"] or mined["body"] & spread:
             schema = {"type": "object", "properties": {k: body_types.get(k, {}) for k in sorted(body_keys)}}
             if observed.get("body_required"):
                 schema["required"] = observed["body_required"]
-            if "...spread" in mined["body"]:
+            if mined["body"] & spread or "body" in mined["dynamic"]:
                 schema["additionalProperties"] = True
             operation["requestBody"] = {"content": {"application/json": {"schema": schema}}}
         paths.setdefault(path, {})[method.lower()] = operation
@@ -388,8 +488,8 @@ def build(found):
         "openapi": "3.1.0",
         "info": {
             "title": "ChatGPT web backend API (as observed)",
-            "version": "2026-11-22",
-            "description": "Unofficial. OpenAI publishes no specification. Operations come from the call sites in the chatgpt.com page build; x-evidence says what else confirms each one (live request, archived bodies, this repository's code). Types are filled in only where confirmed; an empty schema means unknown, and an absent query or body key means the call site names none, not that the server rejects it. Re-verify before relying on a field. Prose, rate limits and caveats: docs/chatgpt-backend-api.md.",
+            "version": snapshot,
+            "description": "Unofficial. OpenAI publishes no specification. Operations come from the call sites in the chatgpt.com page build; x-evidence says what else confirms each one (live request, archived bodies, this repository's code). Types are filled in only where confirmed; an empty schema means unknown. A query or body key is listed when a call site names it; x-query-dynamic and additionalProperties mark call sites that also pass keys the parser cannot read. Re-verify before relying on a field. Prose, rate limits and caveats: docs/chatgpt-backend-api.md.",
         },
         "servers": [{"url": ORIGIN + "/backend-api"}],
         "security": [{"bearer": []}],
@@ -410,11 +510,19 @@ def build(found):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cache", required=True, type=Path)
-    parser.add_argument("--out", type=Path, default=Path(__file__).parent.parent / "docs" / "chatgpt-backend-api.openapi.json")
+    parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--check", action="store_true", help="Compare with the committed file instead of writing.")
     args = parser.parse_args()
-    document = build(mine(args.cache))
-    args.out.write_text(json.dumps(document, indent=1, sort_keys=False) + "\n")
+    committed = json.loads(args.out.read_text()) if args.out.exists() else None
+    snapshot = committed["info"]["version"] if args.check and committed else datetime.date.today().isoformat()
+    document = build(merge_calls(mine(args.cache)), live_overlay(), snapshot)
     operations = sum(len(item) for item in document["paths"].values())
+    if args.check:
+        if document != committed:
+            sys.exit(f"{args.out} is out of date: regenerate with chatgpt-openapi.py --cache {args.cache}")
+        print(f"{args.out} is current ({operations} operations)")
+        return
+    args.out.write_text(json.dumps(document, indent=1) + "\n")
     print(f"{len(document['paths'])} paths, {operations} operations -> {args.out}")
 
 

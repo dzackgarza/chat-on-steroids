@@ -79,31 +79,6 @@ removes its send button. (REPO: `src/main/chatgpt-limits.ts`, `AGENTS.md`)
 `POST conversation/init` also returns `limits_progress: [{feature_name, remaining,
 reset_after}]`. (LIVE)
 
-## Endpoints verified live
-
-Request shapes marked "none" send no body. Status is what the call returned on 2026-11-22.
-
-| Method and path | Status | Purpose |
-| --- | --- | --- |
-| `GET /api/auth/session` | 200 | Session and access token. See above. |
-| `GET /backend-api/conversations?order=updated&is_archived={bool}&offset={n}&limit={n}` | 200 | Sidebar list. See [Sidebar list](#sidebar-list). |
-| `GET /backend-api/conversation/{id}/stream_status` | 200 | Whether a turn is generating. See [Stream status](#stream-status). |
-| `GET /backend-api/conversation/{id}` | 429 | Full conversation body. See [Conversation body](#conversation-body). |
-| `GET /backend-api/conversations/{id}?num_turns={n}&include_has_versions=true` | 429 | The page's own load call. Body shape not observed. |
-| `POST /backend-api/conversation/init` | 200 | Defaults, send block, limits. |
-| `GET /backend-api/wham/usage` | 200 | Quota windows. |
-| `GET /backend-api/me` | 200 | User profile. |
-| `GET /backend-api/models` | 200 | Model catalogue. About 75 KB. |
-| `GET /backend-api/accounts/check/v4-2023-04-27` | 200 | Account entitlement and feature list. About 10 KB. |
-| `GET /backend-api/settings/user` | 200 | User settings. About 14 KB. |
-| `GET /backend-api/gizmos/snorlax/sidebar?owned_only=true&conversations_per_gizmo=0` | 200 | Projects (folders) for the sidebar. |
-| `GET /backend-api/pins/content?include_sites=false&include_pages=true&limit={n}&include_checkpoint_cdn=true&prefer_lite_checkpoint=true` | 200 | Pinned items. |
-| `GET /backend-api/tbo?limit={n}&include_room_preview=false` | 200 | Agent ("tbo") list. |
-| `GET /backend-api/pets?limit={n}` | 200 | Companion list. |
-| `GET /backend-api/celsius/ws/user` | 200 | Returns `{websocket_url}` for the page's realtime socket. |
-| `GET /backend-api/codex/notification/subscriptions` | 405 | GET is not allowed. The page calls this path with another method. |
-| `GET /backend-api/memory/status` | 404 | No such route for GET. |
-
 ## Sidebar list
 
 `GET /backend-api/conversations`. (LIVE unless marked)
@@ -145,7 +120,10 @@ The reply is 21 bytes and took 0.2 to 0.4 s. The page polls it (22 calls in one 
   does not prove the chat exists. (LIVE)
 - A turn that is running answers `{"status":"IS_STREAMING"}`. (LIVE, one chat, 2026-11-22; the
   same chat's batch `update_time` was 41 minutes newer than its sidebar-list `update_time`.)
-  `just chats` treats only `IS_STREAMING` as running.
+- `IS_STREAMING` is not proof of a live turn. On 2026-11-22, 79 chats answered
+  `IS_STREAMING` while their newest update was 28 hours to 516 days old, with no open tab and
+  no recorded turn. Whether those turns run is unknown. `just chats` prints such a chat as
+  `stream`, and prints `busy` only when the chat also changed inside its activity window.
 - The page maps a 404 from this route to `UNAVAILABLE`. (PAGE)
 - It stayed available while the history-detail budget was exhausted. (LIVE)
 
@@ -328,7 +306,7 @@ Shapes list keys and types only.
 ## Machine-readable specification
 
 `docs/chatgpt-backend-api.openapi.json` is an OpenAPI 3.1 description of the API. It holds every
-call the page's JavaScript makes to the backend (1,473 operations): method, path, path
+call the page's JavaScript makes to the backend: method, path, path
 parameters, the query and body keys the call site names, and `x-evidence` for what else confirms
 the operation. Types, enums and response schemas are filled in only where a live request or an
 archived body confirmed them (the sidebar list, batch, `stream_status`, the conversation body,
@@ -348,16 +326,18 @@ relative path, so a path can appear in the bundle without a leading `/backend-ap
 
 ## How to refresh this file
 
-1. **Live shapes.** From a signed-in tab, run one `fetch` per endpoint with the bearer token
-   from `/api/auth/session`, a pause of about one second between calls, and record key names and
-   types only. Never record values of ids, titles, tokens or text.
+1. **Live shapes.** With Chromium signed in on port 9222, run `scripts/chatgpt-live-schemas.py`.
+   It records JSON types of read-only calls (never values) in
+   `docs/chatgpt-backend-api-live-schemas.json`, which the generator merges into the OpenAPI file.
 2. **Page traffic.** In the tab, read `performance.getEntriesByType('resource')` and group the
    names by path shape. This lists the routes the page itself calls and the status codes and
    transfer sizes it saw. It makes no API request.
-3. **Bundles.** Run `uv run scripts/chatgpt-openapi.py --cache <dir>`. It fetches the page HTML,
-   the entry chunks and every lazy chunk the webpack runtime maps, extracts each
-   `.safeGet/.safePost/…("/path", {…})` call site, and rewrites the OpenAPI file.
+3. **Bundles.** Run `scripts/chatgpt-openapi.py --cache <dir>`. It parses the page HTML, the
+   entry chunks and every lazy chunk the webpack runtime maps with tree-sitter, keeps each
+   `.safeGet/.safePost/…("/path", {…})` call site, and rewrites the OpenAPI file. Extracted
+   calls are cached per content-hashed chunk URL, so a rerun fetches only new chunks.
+   `--check` compares a regeneration with the committed file and exits 1 on a difference.
 4. **Conversation body.** Aggregate key paths and the value sets of enum-like keys over archived
    bodies (`chatgpt-web-export` stores them under its library root).
-5. Update the snapshot date and every status code you re-observed, and add what you confirmed to
-   `OBSERVED` in `scripts/chatgpt-openapi.py`.
+5. Add what you confirmed to `OBSERVED` in `scripts/chatgpt-openapi.py`; `info.version` is the
+   generation date.

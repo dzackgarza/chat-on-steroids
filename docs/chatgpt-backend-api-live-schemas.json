@@ -1,0 +1,2291 @@
+{
+ "operations": {
+  "GET /accounts/check/v4-2023-04-27": {
+   "schema": {
+    "properties": {
+     "account_ordering": {
+      "items": {
+       "format": "uuid",
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "accounts": {
+      "additionalProperties": {
+       "properties": {
+        "account": {
+         "properties": {
+          "account_compute_residency": {
+           "type": "string"
+          },
+          "account_compute_residency_description": {
+           "type": "string"
+          },
+          "account_compute_residency_display_name": {
+           "type": "string"
+          },
+          "account_has_processing_residency": {
+           "type": "null"
+          },
+          "account_id": {
+           "format": "uuid",
+           "type": "string"
+          },
+          "account_owner_id": {
+           "type": "string"
+          },
+          "account_residency_region": {
+           "type": "string"
+          },
+          "account_user_id": {
+           "type": "string"
+          },
+          "account_user_role": {
+           "type": "string"
+          },
+          "created_time": {
+           "format": "date-time",
+           "type": "string"
+          },
+          "disable_account_switching": {
+           "type": "boolean"
+          },
+          "ekm_config": {
+           "type": "null"
+          },
+          "eligible_for_reactivation": {
+           "type": "boolean"
+          },
+          "enable_account_switching": {
+           "type": "boolean"
+          },
+          "has_previously_paid_subscription": {
+           "type": "boolean"
+          },
+          "hipaa_workspace_baa_metadata": {
+           "type": "null"
+          },
+          "is_conversation_classifier_enabled_for_workspace": {
+           "type": "boolean"
+          },
+          "is_deactivated": {
+           "type": "boolean"
+          },
+          "is_fedramp_compliant_workspace": {
+           "type": "boolean"
+          },
+          "is_finserv_enabled_workspace": {
+           "type": "boolean"
+          },
+          "is_hipaa_compliant_workspace": {
+           "type": "boolean"
+          },
+          "is_most_recent_expired_subscription_gratis": {
+           "type": "boolean"
+          },
+          "is_trial": {
+           "type": "boolean"
+          },
+          "is_usage_based_seat_enabled": {
+           "type": "boolean"
+          },
+          "is_view_only": {
+           "type": "boolean"
+          },
+          "is_zdr": {
+           "type": "boolean"
+          },
+          "name": {
+           "type": "null"
+          },
+          "organization_id": {
+           "type": "null"
+          },
+          "plan_display_name": {
+           "type": "string"
+          },
+          "plan_type": {
+           "type": "string"
+          },
+          "processor": {
+           "properties": {
+            "a001": {
+             "properties": {
+              "has_customer_object": {
+               "type": "boolean"
+              },
+              "processor_entity": {
+               "type": "string"
+              }
+             },
+             "type": "object"
+            },
+            "b001": {
+             "properties": {
+              "has_transaction_history": {
+               "type": "boolean"
+              }
+             },
+             "type": "object"
+            },
+            "c001": {
+             "properties": {
+              "has_transaction_history": {
+               "type": "boolean"
+              }
+             },
+             "type": "object"
+            }
+           },
+           "type": "object"
+          },
+          "profile_picture_id": {
+           "type": "null"
+          },
+          "profile_picture_url": {
+           "type": "null"
+          },
+          "promo_data": {
+           "properties": {},
+           "type": "object"
+          },
+          "pthdnu": {
+           "type": "string"
+          },
+          "reseller_hosted_account": {
+           "type": "boolean"
+          },
+          "reseller_id": {
+           "type": "null"
+          },
+          "started_as_free_workspace": {
+           "type": "boolean"
+          },
+          "structure": {
+           "type": "string"
+          },
+          "subscription_seat_pools_enabled": {
+           "type": "boolean"
+          },
+          "tbo_config": {
+           "properties": {
+            "plan_eligible": {
+             "type": "boolean"
+            },
+            "tbo_available": {
+             "type": "boolean"
+            },
+            "upgrade_plan_types": {
+             "items": {
+              "type": "string"
+             },
+             "type": "array"
+            },
+            "waitlist_info": {
+             "type": "string"
+            }
+           },
+           "type": "object"
+          },
+          "trial_state": {
+           "type": "null"
+          },
+          "user_segmentation_info": {
+           "type": "null"
+          },
+          "workspace_type": {
+           "type": "null"
+          }
+         },
+         "type": "object"
+        },
+        "can_access_with_session": {
+         "type": "boolean"
+        },
+        "eligible_offers": {
+         "properties": {
+          "default_offer_id": {
+           "type": "string"
+          },
+          "eligible_purchase_platforms": {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          },
+          "offers": {
+           "items": {
+            "properties": {
+             "epl_enabled": {
+              "oneOf": [
+               {
+                "type": "null"
+               },
+               {
+                "type": "boolean"
+               }
+              ]
+             },
+             "id": {
+              "type": "string"
+             },
+             "revenuecat_offering_ids": {
+              "oneOf": [
+               {
+                "items": {},
+                "type": "array"
+               },
+               {
+                "items": {
+                 "type": "string"
+                },
+                "type": "array"
+               }
+              ]
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        },
+        "eligible_promo_campaigns": {
+         "properties": {},
+         "type": "object"
+        },
+        "entitlement": {
+         "properties": {
+          "applied_benefits": {
+           "items": {},
+           "type": "array"
+          },
+          "applied_discounts": {
+           "items": {},
+           "type": "array"
+          },
+          "became_delinquent_timestamp": {
+           "type": "null"
+          },
+          "billing_currency": {
+           "type": "string"
+          },
+          "billing_period": {
+           "type": "string"
+          },
+          "cancels_at": {
+           "type": "null"
+          },
+          "discount": {
+           "type": "null"
+          },
+          "expires_at": {
+           "format": "date-time",
+           "type": "string"
+          },
+          "grace_period_end_timestamp": {
+           "type": "null"
+          },
+          "grace_period_id": {
+           "type": "null"
+          },
+          "has_active_subscription": {
+           "type": "boolean"
+          },
+          "is_active_subscription_gratis": {
+           "type": "boolean"
+          },
+          "is_delinquent": {
+           "type": "boolean"
+          },
+          "is_eligible_for_cp": {
+           "type": "boolean"
+          },
+          "renews_at": {
+           "format": "date-time",
+           "type": "string"
+          },
+          "scheduled_plan_change": {
+           "type": "null"
+          },
+          "subscription_id": {
+           "format": "uuid",
+           "type": "string"
+          },
+          "subscription_plan": {
+           "type": "string"
+          },
+          "trial": {
+           "type": "null"
+          }
+         },
+         "type": "object"
+        },
+        "features": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "has_eligible_promotion": {
+         "type": "null"
+        },
+        "is_eligible_for_free_thinking_preview_upsell": {
+         "type": "boolean"
+        },
+        "is_eligible_for_pro_200_pause_2026_09": {
+         "type": "boolean"
+        },
+        "is_eligible_for_yearly_plus_existing_user_subscription": {
+         "type": "boolean"
+        },
+        "is_eligible_for_yearly_plus_new_user_subscription": {
+         "type": "boolean"
+        },
+        "is_eligible_for_yearly_plus_subscription": {
+         "type": "boolean"
+        },
+        "is_pro_200_purchase_available": {
+         "type": "boolean"
+        },
+        "last_active_subscription": {
+         "properties": {
+          "cancellation_outcome": {
+           "type": "null"
+          },
+          "purchase_origin_platform": {
+           "type": "string"
+          },
+          "subscription_id": {
+           "format": "uuid",
+           "type": "string"
+          },
+          "will_renew": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "plugin_incentives_ui_enabled": {
+         "type": "boolean"
+        },
+        "sso_connection_name": {
+         "type": "null"
+        }
+       },
+       "type": "object"
+      },
+      "properties": {
+       "default": {
+        "properties": {
+         "account": {
+          "properties": {
+           "account_compute_residency": {
+            "type": "string"
+           },
+           "account_compute_residency_description": {
+            "type": "string"
+           },
+           "account_compute_residency_display_name": {
+            "type": "string"
+           },
+           "account_has_processing_residency": {
+            "type": "null"
+           },
+           "account_id": {
+            "format": "uuid",
+            "type": "string"
+           },
+           "account_owner_id": {
+            "type": "string"
+           },
+           "account_residency_region": {
+            "type": "string"
+           },
+           "account_user_id": {
+            "type": "string"
+           },
+           "account_user_role": {
+            "type": "string"
+           },
+           "created_time": {
+            "format": "date-time",
+            "type": "string"
+           },
+           "disable_account_switching": {
+            "type": "boolean"
+           },
+           "ekm_config": {
+            "type": "null"
+           },
+           "eligible_for_reactivation": {
+            "type": "boolean"
+           },
+           "enable_account_switching": {
+            "type": "boolean"
+           },
+           "has_previously_paid_subscription": {
+            "type": "boolean"
+           },
+           "hipaa_workspace_baa_metadata": {
+            "type": "null"
+           },
+           "is_conversation_classifier_enabled_for_workspace": {
+            "type": "boolean"
+           },
+           "is_deactivated": {
+            "type": "boolean"
+           },
+           "is_fedramp_compliant_workspace": {
+            "type": "boolean"
+           },
+           "is_finserv_enabled_workspace": {
+            "type": "boolean"
+           },
+           "is_hipaa_compliant_workspace": {
+            "type": "boolean"
+           },
+           "is_most_recent_expired_subscription_gratis": {
+            "type": "boolean"
+           },
+           "is_trial": {
+            "type": "boolean"
+           },
+           "is_usage_based_seat_enabled": {
+            "type": "boolean"
+           },
+           "is_view_only": {
+            "type": "boolean"
+           },
+           "is_zdr": {
+            "type": "boolean"
+           },
+           "name": {
+            "type": "null"
+           },
+           "organization_id": {
+            "type": "null"
+           },
+           "plan_display_name": {
+            "type": "string"
+           },
+           "plan_type": {
+            "type": "string"
+           },
+           "processor": {
+            "properties": {
+             "a001": {
+              "properties": {
+               "has_customer_object": {
+                "type": "boolean"
+               },
+               "processor_entity": {
+                "type": "string"
+               }
+              },
+              "type": "object"
+             },
+             "b001": {
+              "properties": {
+               "has_transaction_history": {
+                "type": "boolean"
+               }
+              },
+              "type": "object"
+             },
+             "c001": {
+              "properties": {
+               "has_transaction_history": {
+                "type": "boolean"
+               }
+              },
+              "type": "object"
+             }
+            },
+            "type": "object"
+           },
+           "profile_picture_id": {
+            "type": "null"
+           },
+           "profile_picture_url": {
+            "type": "null"
+           },
+           "promo_data": {
+            "properties": {},
+            "type": "object"
+           },
+           "pthdnu": {
+            "type": "string"
+           },
+           "reseller_hosted_account": {
+            "type": "boolean"
+           },
+           "reseller_id": {
+            "type": "null"
+           },
+           "started_as_free_workspace": {
+            "type": "boolean"
+           },
+           "structure": {
+            "type": "string"
+           },
+           "subscription_seat_pools_enabled": {
+            "type": "boolean"
+           },
+           "tbo_config": {
+            "properties": {
+             "plan_eligible": {
+              "type": "boolean"
+             },
+             "tbo_available": {
+              "type": "boolean"
+             },
+             "upgrade_plan_types": {
+              "items": {
+               "type": "string"
+              },
+              "type": "array"
+             },
+             "waitlist_info": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "trial_state": {
+            "type": "null"
+           },
+           "user_segmentation_info": {
+            "type": "null"
+           },
+           "workspace_type": {
+            "type": "null"
+           }
+          },
+          "type": "object"
+         },
+         "can_access_with_session": {
+          "type": "boolean"
+         },
+         "eligible_offers": {
+          "properties": {
+           "default_offer_id": {
+            "type": "string"
+           },
+           "eligible_purchase_platforms": {
+            "items": {
+             "type": "string"
+            },
+            "type": "array"
+           },
+           "offers": {
+            "items": {
+             "properties": {
+              "epl_enabled": {
+               "oneOf": [
+                {
+                 "type": "null"
+                },
+                {
+                 "type": "boolean"
+                }
+               ]
+              },
+              "id": {
+               "type": "string"
+              },
+              "revenuecat_offering_ids": {
+               "oneOf": [
+                {
+                 "items": {},
+                 "type": "array"
+                },
+                {
+                 "items": {
+                  "type": "string"
+                 },
+                 "type": "array"
+                }
+               ]
+              }
+             },
+             "type": "object"
+            },
+            "type": "array"
+           }
+          },
+          "type": "object"
+         },
+         "eligible_promo_campaigns": {
+          "properties": {},
+          "type": "object"
+         },
+         "entitlement": {
+          "properties": {
+           "applied_benefits": {
+            "items": {},
+            "type": "array"
+           },
+           "applied_discounts": {
+            "items": {},
+            "type": "array"
+           },
+           "became_delinquent_timestamp": {
+            "type": "null"
+           },
+           "billing_currency": {
+            "type": "string"
+           },
+           "billing_period": {
+            "type": "string"
+           },
+           "cancels_at": {
+            "type": "null"
+           },
+           "discount": {
+            "type": "null"
+           },
+           "expires_at": {
+            "format": "date-time",
+            "type": "string"
+           },
+           "grace_period_end_timestamp": {
+            "type": "null"
+           },
+           "grace_period_id": {
+            "type": "null"
+           },
+           "has_active_subscription": {
+            "type": "boolean"
+           },
+           "is_active_subscription_gratis": {
+            "type": "boolean"
+           },
+           "is_delinquent": {
+            "type": "boolean"
+           },
+           "is_eligible_for_cp": {
+            "type": "boolean"
+           },
+           "renews_at": {
+            "format": "date-time",
+            "type": "string"
+           },
+           "scheduled_plan_change": {
+            "type": "null"
+           },
+           "subscription_id": {
+            "format": "uuid",
+            "type": "string"
+           },
+           "subscription_plan": {
+            "type": "string"
+           },
+           "trial": {
+            "type": "null"
+           }
+          },
+          "type": "object"
+         },
+         "features": {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         "has_eligible_promotion": {
+          "type": "null"
+         },
+         "is_eligible_for_free_thinking_preview_upsell": {
+          "type": "boolean"
+         },
+         "is_eligible_for_pro_200_pause_2026_09": {
+          "type": "boolean"
+         },
+         "is_eligible_for_yearly_plus_existing_user_subscription": {
+          "type": "boolean"
+         },
+         "is_eligible_for_yearly_plus_new_user_subscription": {
+          "type": "boolean"
+         },
+         "is_eligible_for_yearly_plus_subscription": {
+          "type": "boolean"
+         },
+         "is_pro_200_purchase_available": {
+          "type": "boolean"
+         },
+         "last_active_subscription": {
+          "properties": {
+           "cancellation_outcome": {
+            "type": "null"
+           },
+           "purchase_origin_platform": {
+            "type": "string"
+           },
+           "subscription_id": {
+            "format": "uuid",
+            "type": "string"
+           },
+           "will_renew": {
+            "type": "boolean"
+           }
+          },
+          "type": "object"
+         },
+         "plugin_incentives_ui_enabled": {
+          "type": "boolean"
+         },
+         "sso_connection_name": {
+          "type": "null"
+         }
+        },
+        "type": "object"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /celsius/ws/user": {
+   "schema": {
+    "properties": {
+     "websocket_url": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /conversation/{conversation_id}/stream_status": {
+   "schema": {
+    "properties": {
+     "status": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /conversations": {
+   "schema": {
+    "properties": {
+     "items": {
+      "items": {
+       "properties": {
+        "async_status": {
+         "oneOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "blocked_urls": {
+         "items": {},
+         "type": "array"
+        },
+        "context_scopes": {
+         "type": "null"
+        },
+        "context_scopes_v2": {
+         "properties": {
+          "context_scopes": {
+           "items": {
+            "properties": {
+             "is_siloed": {
+              "type": "boolean"
+             },
+             "key": {
+              "type": "null"
+             },
+             "key_scoped_access_claim": {
+              "type": "null"
+             },
+             "key_timestamp": {
+              "type": "null"
+             },
+             "scope_namespace": {
+              "type": "string"
+             },
+             "sub_scope": {
+              "type": "null"
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        },
+        "conversation_origin": {
+         "type": "null"
+        },
+        "conversation_template_id": {
+         "type": "null"
+        },
+        "create_time": {
+         "format": "date-time",
+         "type": "string"
+        },
+        "current_node": {
+         "type": "null"
+        },
+        "gizmo_id": {
+         "type": "null"
+        },
+        "id": {
+         "format": "uuid",
+         "type": "string"
+        },
+        "is_archived": {
+         "type": "boolean"
+        },
+        "is_do_not_remember": {
+         "oneOf": [
+          {
+           "type": "boolean"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "is_starred": {
+         "type": "null"
+        },
+        "is_temporary_chat": {
+         "type": "boolean"
+        },
+        "latest_assistant_turn_created_at": {
+         "type": "null"
+        },
+        "mapping": {
+         "type": "null"
+        },
+        "memory_scope": {
+         "type": "string"
+        },
+        "pinned_time": {
+         "type": "null"
+        },
+        "safe_urls": {
+         "items": {},
+         "type": "array"
+        },
+        "snippet": {
+         "type": "null"
+        },
+        "sugar_item_id": {
+         "type": "null"
+        },
+        "sugar_item_visible": {
+         "type": "boolean"
+        },
+        "summary_metadata": {
+         "type": "null"
+        },
+        "title": {
+         "type": "string"
+        },
+        "trial_conversation_type": {
+         "type": "null"
+        },
+        "update_time": {
+         "format": "date-time",
+         "type": "string"
+        },
+        "workspace_id": {
+         "type": "null"
+        }
+       },
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "limit": {
+      "type": "integer"
+     },
+     "offset": {
+      "type": "integer"
+     },
+     "total": {
+      "type": "integer"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /me": {
+   "schema": {
+    "properties": {
+     "ads_segment_id": {
+      "type": "integer"
+     },
+     "chatgpt_eval_data": {
+      "type": "null"
+     },
+     "country": {
+      "type": "string"
+     },
+     "created": {
+      "type": "integer"
+     },
+     "email": {
+      "type": "string"
+     },
+     "email_domain_type": {
+      "type": "string"
+     },
+     "first_name": {
+      "type": "string"
+     },
+     "id": {
+      "type": "string"
+     },
+     "is_test_user": {
+      "type": "boolean"
+     },
+     "name": {
+      "type": "string"
+     },
+     "object": {
+      "type": "string"
+     },
+     "phone_number": {
+      "type": "string"
+     },
+     "picture": {
+      "type": "string"
+     },
+     "region": {
+      "type": "string"
+     },
+     "region_code": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /models": {
+   "schema": {
+    "properties": {
+     "categories": {
+      "items": {
+       "properties": {
+        "action_pill_short_name": {
+         "type": "string"
+        },
+        "category": {
+         "type": "string"
+        },
+        "color": {
+         "type": "string"
+        },
+        "date_updated": {
+         "format": "date-time",
+         "type": "string"
+        },
+        "default_model": {
+         "type": "string"
+        },
+        "human_category_name": {
+         "type": "string"
+        },
+        "human_category_short_name": {
+         "type": "string"
+        },
+        "icon": {
+         "type": "string"
+        },
+        "model_lane": {
+         "type": "string"
+        },
+        "model_version": {
+         "type": "string"
+        },
+        "render_header_type": {
+         "type": "string"
+        },
+        "short_explainer": {
+         "type": "string"
+        },
+        "slash_command_enabled": {
+         "type": "boolean"
+        },
+        "subcategory": {
+         "type": "string"
+        },
+        "subscription_level": {
+         "type": "string"
+        },
+        "supported_features": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "supported_models": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "tagline": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "default_model_slug": {
+      "type": "string"
+     },
+     "icons": {
+      "type": "null"
+     },
+     "internal_groups": {
+      "items": {
+       "properties": {
+        "group": {
+         "type": "string"
+        },
+        "human_group_name": {
+         "type": "string"
+        },
+        "human_group_short_name": {
+         "type": "string"
+        },
+        "model_ids": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "model_picker_version": {
+      "type": "integer"
+     },
+     "models": {
+      "items": {
+       "properties": {
+        "artifact_capabilities": {
+         "properties": {
+          "granola_presentation": {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          },
+          "granola_whiteboard": {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          },
+          "granola_workbook": {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          }
+         },
+         "type": "object"
+        },
+        "capabilities": {
+         "properties": {},
+         "type": "object"
+        },
+        "configurable_thinking_effort": {
+         "type": "boolean"
+        },
+        "daybreak": {
+         "properties": {
+          "available": {
+           "type": "boolean"
+          },
+          "default_requested_program": {
+           "type": "string"
+          },
+          "reason": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "description": {
+         "type": "string"
+        },
+        "enable_infer": {
+         "type": "boolean"
+        },
+        "enable_infer_opt_out": {
+         "type": "boolean"
+        },
+        "enabled_tools": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "is_work_mode_model": {
+         "type": "boolean"
+        },
+        "max_tokens": {
+         "type": "integer"
+        },
+        "product_features": {
+         "properties": {
+          "attachments": {
+           "properties": {
+            "accepted_mime_types": {
+             "items": {
+              "type": "string"
+             },
+             "type": "array"
+            },
+            "can_accept_all_mime_types": {
+             "type": "boolean"
+            },
+            "image_mime_types": {
+             "items": {
+              "type": "string"
+             },
+             "type": "array"
+            },
+            "type": {
+             "type": "string"
+            }
+           },
+           "type": "object"
+          },
+          "contextual_answers": {
+           "properties": {
+            "is_eligible_for_contextual_answers": {
+             "type": "boolean"
+            }
+           },
+           "type": "object"
+          }
+         },
+         "type": "object"
+        },
+        "reasoning_type": {
+         "type": "string"
+        },
+        "slug": {
+         "type": "string"
+        },
+        "tags": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "thinking_efforts": {
+         "oneOf": [
+          {
+           "items": {},
+           "type": "array"
+          },
+          {
+           "items": {
+            "properties": {
+             "description": {
+              "type": "string"
+             },
+             "full_label": {
+              "type": "string"
+             },
+             "mobile_full_label": {
+              "type": "string"
+             },
+             "short_label": {
+              "type": "string"
+             },
+             "thinking_effort": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          }
+         ]
+        },
+        "title": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "secondary_title": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "versions": {
+      "items": {
+       "properties": {
+        "display_text": {
+         "type": "string"
+        },
+        "display_text_for_intelligence": {
+         "type": "string"
+        },
+        "display_text_full": {
+         "type": "string"
+        },
+        "enabled": {
+         "type": "boolean"
+        },
+        "id": {
+         "type": "string"
+        },
+        "intelligence_presets": {
+         "oneOf": [
+          {
+           "items": {
+            "properties": {
+             "id": {
+              "type": "integer"
+             },
+             "lane": {
+              "type": "string"
+             },
+             "model_slug": {
+              "type": "string"
+             },
+             "preset_type": {
+              "type": "string"
+             },
+             "selected_display_title": {
+              "type": "string"
+             },
+             "thinking_effort": {
+              "type": "string"
+             },
+             "title": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          },
+          {
+           "items": {
+            "properties": {
+             "id": {
+              "type": "integer"
+             },
+             "lane": {
+              "type": "string"
+             },
+             "model_slug": {
+              "type": "string"
+             },
+             "preset_type": {
+              "type": "string"
+             },
+             "selected_display_title": {
+              "type": "string"
+             },
+             "selected_display_version": {
+              "type": "string"
+             },
+             "thinking_effort": {
+              "type": "string"
+             },
+             "title": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "type": "array"
+          }
+         ]
+        },
+        "short_display_text_for_intelligence": {
+         "type": "string"
+        },
+        "slugs": {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       },
+       "type": "object"
+      },
+      "type": "array"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /settings/user": {
+   "schema": {
+    "properties": {
+     "announcements": {
+      "properties": {
+       "finance-savings-promotion-dismissed": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "finance-savings-promotion-impressions": {
+        "type": "integer"
+       },
+       "oai/apps/hasCompletedTppOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasCompletedWhamCodeReviewOnboardingFlow": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasDiscoveredCodex": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasDismissedCanvasContextualOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasDismissedTaskBrief/first_served": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasDismissedTaskMonitor/first_served": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasDismissedTaskWeekendLongRead": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeen84ury106FreeNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenAdvancedVoice/2024-09-24": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenAdvancedVoiceRealWebNuxTooltip": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenArchiveConversationOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenArtifactsLearnMoreModal": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenAutoSwitchNux": {
+        "type": "integer"
+       },
+       "oai/apps/hasSeenBigPasteCoachmark": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenBurritoNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenCanvasCodeExecutionNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenCanvasShareButtonNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenCodexAppHomeBanner": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenComposerSearchButtonTooltip": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenComposerSystemHintButtonTooltip": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenConnectorsNuxModal": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenDesktopBrowserExtensionAnnouncement": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenFileLibraryUploadPersistenceToast": {
+        "type": "integer"
+       },
+       "oai/apps/hasSeenGoldenHourNuxV2": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenGoogleConnectorsNuxModal": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenImage2026RevampNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenLibraryGoogleDriveOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenMemoryUpdatedTooltip": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenMoonshineNuxV2": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenOdysseyConnectorsModal": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenOdysseyTakeoverModal": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenPhoenixFreeNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenPurpleRainNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenSpaceIntroduction": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenSunspotNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenTaskSuggestionConnectorFillers": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenTemporaryChatOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenWindowsAppOnboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenl1239dk1CodeReviewTab": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenl1239dk1LaunchNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenl1239dk1NewFeatures": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenl1239dk1Onboarding": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasSeenn7jupdNux": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/hasUserContextFirstTime/2023-06-29": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/taskSuggestionConnectorFallbackImpressions/google_drive": {
+        "type": "integer"
+       },
+       "oai/apps/taskSuggestionConnectorFallbackImpressions/notion": {
+        "type": "integer"
+       },
+       "oai/apps/taskSuggestionConnectorFallbackState/google_drive": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/taskSuggestionConnectorFallbackState/linear": {
+        "type": "integer"
+       },
+       "oai/apps/taskSuggestionConnectorFallbackState/notion": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "oai/apps/taskSuggestionConnectorFallbackState/slack": {
+        "type": "integer"
+       },
+       "paid-sticker-homepage-promotion": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "paid-sticker-homepage-promotion-impressions": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "available_options": {
+      "properties": {
+       "backend_reasoning_effort": {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       }
+      },
+      "type": "object"
+     },
+     "beta_settings": {
+      "properties": {},
+      "type": "object"
+     },
+     "eligible_announcement_strings": {
+      "properties": {
+       "oai/apps/hasSeenNoPaymentTrialStarted": {
+        "properties": {
+         "description": {
+          "type": "string"
+         },
+         "got_it_button": {
+          "type": "string"
+         },
+         "title": {
+          "type": "string"
+         }
+        },
+        "type": "object"
+       }
+      },
+      "type": "object"
+     },
+     "eligible_announcements": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "flags": {
+      "properties": {
+       "bazaar": {
+        "properties": {
+         "consent_dismissible": {
+          "type": "boolean"
+         },
+         "consent_fullscreen": {
+          "type": "boolean"
+         },
+         "consent_presentation_id": {
+          "type": "null"
+         },
+         "consent_required": {
+          "type": "boolean"
+         }
+        },
+        "type": "object"
+       },
+       "bazaar_consent_required": {
+        "type": "boolean"
+       },
+       "bazaar_personalization_unavailable": {
+        "type": "boolean"
+       },
+       "dictation_typing_tip_eligible": {
+        "type": "boolean"
+       },
+       "eclipse": {
+        "type": "boolean"
+       },
+       "file_library_enabled_for_registration_country": {
+        "type": "boolean"
+       },
+       "image_gen_holdout_active": {
+        "type": "boolean"
+       },
+       "persistent_file_library_available": {
+        "type": "boolean"
+       }
+      },
+      "type": "object"
+     },
+     "permissions": {
+      "type": "null"
+     },
+     "persistent_announcements": {
+      "items": {},
+      "type": "array"
+     },
+     "settings": {
+      "properties": {
+       "3VyEPC5dTP_model_instructions_enabled": {
+        "type": "boolean"
+       },
+       "a8voRl0kxc_enabled": {
+        "type": "boolean"
+       },
+       "allow_solving_captchas": {
+        "type": "boolean"
+       },
+       "amphora_locks": {
+        "properties": {
+         "3VyEPC5dTP_model_instructions_enabled": {
+          "type": "boolean"
+         }
+        },
+        "type": "object"
+       },
+       "bH2sVuQ5TJ_enabled": {
+        "type": "boolean"
+       },
+       "browser_auth_default_saved_enabled": {
+        "type": "boolean"
+       },
+       "can_consume_personal_credits_chatgpt": {
+        "type": "boolean"
+       },
+       "can_consume_personal_credits_chatpass": {
+        "type": "boolean"
+       },
+       "chat_theme": {
+        "type": "string"
+       },
+       "codex_training_allowed": {
+        "type": "boolean"
+       },
+       "codex_training_allowed_v2": {
+        "type": "boolean"
+       },
+       "connector_enforce_csp_in_dev_mode": {
+        "type": "boolean"
+       },
+       "connector_search_enabled": {
+        "type": "boolean"
+       },
+       "default_model_config": {
+        "properties": {
+         "default_model_slug": {
+          "type": "null"
+         },
+         "juices": {
+          "properties": {
+           "pro": {
+            "type": "string"
+           }
+          },
+          "type": "object"
+         },
+         "was_user_on_latest_version": {
+          "type": "boolean"
+         }
+        },
+        "type": "object"
+       },
+       "developer_mode": {
+        "type": "boolean"
+       },
+       "enable_device_code_auth": {
+        "type": "boolean"
+       },
+       "enable_flora_network_access": {
+        "type": "boolean"
+       },
+       "first_party_project_pins_unmigrated": {
+        "type": "boolean"
+       },
+       "golden_hour": {
+        "type": "boolean"
+       },
+       "gxM2LY8iJn_enabled": {
+        "type": "boolean"
+       },
+       "h17180r_gmail": {
+        "type": "boolean"
+       },
+       "h17180r_google_calendar": {
+        "type": "boolean"
+       },
+       "h17180r_google_contacts": {
+        "type": "boolean"
+       },
+       "hive_referenced_in_internal_knowledge": {
+        "type": "boolean"
+       },
+       "last_used_model_config": {
+        "properties": {
+         "juices": {
+          "properties": {
+           "android_app": {
+            "properties": {
+             "gpt-5-4-thinking": {
+              "type": "string"
+             },
+             "gpt-5-5-thinking": {
+              "type": "string"
+             },
+             "gpt-5-6-thinking": {
+              "type": "string"
+             },
+             "gpt-6-thinking": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "default": {
+            "properties": {
+             "gpt-5-2-thinking": {
+              "type": "string"
+             },
+             "gpt-5-4-thinking": {
+              "type": "string"
+             },
+             "gpt-5-5-pro": {
+              "type": "string"
+             },
+             "gpt-5-5-thinking": {
+              "type": "string"
+             },
+             "gpt-5-6-pro": {
+              "type": "string"
+             },
+             "gpt-5-6-thinking": {
+              "type": "string"
+             },
+             "gpt-6-pro": {
+              "type": "string"
+             },
+             "gpt-6-thinking": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "web": {
+            "properties": {
+             "gpt-5-2-thinking": {
+              "type": "string"
+             },
+             "gpt-5-4-thinking": {
+              "type": "string"
+             },
+             "gpt-5-5-pro": {
+              "type": "string"
+             },
+             "gpt-5-5-thinking": {
+              "type": "string"
+             },
+             "gpt-5-6-pro": {
+              "type": "string"
+             },
+             "gpt-5-6-thinking": {
+              "type": "string"
+             },
+             "gpt-6-pro": {
+              "type": "string"
+             },
+             "gpt-6-thinking": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "windows_app": {
+            "properties": {
+             "gpt-5-5-thinking": {
+              "type": "string"
+             }
+            },
+            "type": "object"
+           }
+          },
+          "type": "object"
+         },
+         "slugs": {
+          "properties": {
+           "android_app": {
+            "type": "string"
+           },
+           "default": {
+            "type": "string"
+           },
+           "web": {
+            "type": "string"
+           },
+           "windows_app": {
+            "type": "string"
+           }
+          },
+          "type": "object"
+         }
+        },
+        "type": "object"
+       },
+       "lockdown_mode_enabled": {
+        "type": "boolean"
+       },
+       "m3m": {
+        "type": "boolean"
+       },
+       "m3m_opted_out": {
+        "type": "boolean"
+       },
+       "meeting_bot_receive_notes_enabled": {
+        "type": "boolean"
+       },
+       "memory_in_search": {
+        "type": "boolean"
+       },
+       "model_picker_persists_ultra_effort": {
+        "type": "boolean"
+       },
+       "model_picker_reasoning_effort_visibility": {
+        "properties": {
+         "enabled": {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         "source": {
+          "type": "string"
+         },
+         "uses_defaults": {
+          "type": "boolean"
+         }
+        },
+        "type": "object"
+       },
+       "model_sticky_for_new_chats": {
+        "type": "boolean"
+       },
+       "moonshine": {
+        "type": "boolean"
+       },
+       "needs_advanced_voice_mode_migration_notice": {
+        "type": "boolean"
+       },
+       "needs_standard_voice_mode_migration_notice": {
+        "type": "boolean"
+       },
+       "potion_enabled": {
+        "type": "boolean"
+       },
+       "precise_location_allowed": {
+        "type": "boolean"
+       },
+       "precise_location_device_settings": {
+        "properties": {
+         "devices": {
+          "additionalProperties": {
+           "properties": {
+            "last_updated": {
+             "format": "date-time",
+             "type": "string"
+            },
+            "status": {
+             "type": "string"
+            }
+           },
+           "type": "object"
+          },
+          "properties": {},
+          "type": "object"
+         }
+        },
+        "type": "object"
+       },
+       "precise_location_eligible": {
+        "type": "boolean"
+       },
+       "precise_location_enabled_for_device": {
+        "type": "boolean"
+       },
+       "project_pins_backfilled": {
+        "type": "boolean"
+       },
+       "rKAMeJfyrM_settings": {
+        "properties": {
+         "enabled": {
+          "type": "boolean"
+         },
+         "end_time": {
+          "type": "null"
+         },
+         "start_time": {
+          "type": "null"
+         }
+        },
+        "type": "object"
+       },
+       "record_slack_notifications_enabled": {
+        "type": "boolean"
+       },
+       "response_presentation": {
+        "properties": {
+         "mode": {
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "show_expanded_code_view": {
+        "type": "boolean"
+       },
+       "show_legacy_models": {
+        "type": "boolean"
+       },
+       "sites_remix_enabled_by_default": {
+        "type": "boolean"
+       },
+       "study_mode_project_pins_unmigrated": {
+        "type": "boolean"
+       },
+       "sunshine": {
+        "type": "boolean"
+       },
+       "task_suggestions_enabled": {
+        "type": "boolean"
+       },
+       "task_suggestions_proactive_notifications_enabled": {
+        "type": "boolean"
+       },
+       "tpp_work_mode_quick_send_by_default": {
+        "type": "boolean"
+       },
+       "training_allowed": {
+        "type": "boolean"
+       },
+       "voice_enabled": {
+        "type": "boolean"
+       },
+       "voice_mode": {
+        "type": "string"
+       },
+       "voice_mode_rollout_version": {
+        "type": "integer"
+       },
+       "voice_name": {
+        "type": "string"
+       },
+       "wF9qLt3XpB_enabled": {
+        "type": "boolean"
+       },
+       "wingman_thinking_effort": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "GET /wham/usage": {
+   "schema": {
+    "properties": {
+     "account_id": {
+      "type": "string"
+     },
+     "additional_rate_limits": {
+      "type": "null"
+     },
+     "code_review_rate_limit": {
+      "type": "null"
+     },
+     "credits": {
+      "properties": {
+       "approx_cloud_messages": {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       "approx_local_messages": {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       "balance": {
+        "type": "string"
+       },
+       "has_credits": {
+        "type": "boolean"
+       },
+       "overage_limit_reached": {
+        "type": "boolean"
+       },
+       "unlimited": {
+        "type": "boolean"
+       }
+      },
+      "type": "object"
+     },
+     "email": {
+      "type": "string"
+     },
+     "model_usage": {
+      "properties": {
+       "gpt-6-astra": {
+        "properties": {
+         "available": {
+          "type": "boolean"
+         },
+         "available_at": {
+          "format": "date-time",
+          "type": "string"
+         },
+         "credits_would_enable": {
+          "type": "boolean"
+         }
+        },
+        "type": "object"
+       }
+      },
+      "type": "object"
+     },
+     "plan_type": {
+      "type": "string"
+     },
+     "promo": {
+      "type": "null"
+     },
+     "rate_limit": {
+      "properties": {
+       "allowed": {
+        "type": "boolean"
+       },
+       "limit_reached": {
+        "type": "boolean"
+       },
+       "primary_window": {
+        "properties": {
+         "limit_window_seconds": {
+          "type": "integer"
+         },
+         "reset_after_seconds": {
+          "type": "integer"
+         },
+         "reset_at": {
+          "type": "integer"
+         },
+         "used_percent": {
+          "type": "integer"
+         }
+        },
+        "type": "object"
+       },
+       "secondary_window": {
+        "type": "null"
+       }
+      },
+      "type": "object"
+     },
+     "rate_limit_reached_type": {
+      "properties": {
+       "details": {
+        "type": "string"
+       },
+       "type": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "rate_limit_reset_credits": {
+      "properties": {
+       "applicable_available_count": {
+        "type": "integer"
+       },
+       "available_count": {
+        "type": "integer"
+       }
+      },
+      "type": "object"
+     },
+     "rate_limit_upsell": {
+      "properties": {
+       "banner_type": {
+        "type": "string"
+       },
+       "ctas": {
+        "items": {
+         "properties": {
+          "action": {
+           "type": "string"
+          },
+          "label": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "description": {
+        "type": "string"
+       },
+       "referral": {
+        "type": "null"
+       },
+       "request_url": {
+        "type": "null"
+       },
+       "reset_at": {
+        "type": "integer"
+       },
+       "title": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "spend_control": {
+      "properties": {
+       "individual_limit": {
+        "type": "null"
+       },
+       "reached": {
+        "type": "boolean"
+       }
+      },
+      "type": "object"
+     },
+     "user_id": {
+      "type": "string"
+     }
+    },
+    "type": "object"
+   },
+   "status": 200
+  },
+  "POST /conversations/batch": {
+   "schema": {
+    "items": {
+     "properties": {
+      "async_status": {
+       "type": "integer"
+      },
+      "blocked_urls": {
+       "items": {},
+       "type": "array"
+      },
+      "context_scopes_v2": {
+       "properties": {
+        "context_scopes": {
+         "items": {
+          "properties": {
+           "is_siloed": {
+            "type": "boolean"
+           },
+           "key": {
+            "type": "null"
+           },
+           "key_scoped_access_claim": {
+            "type": "null"
+           },
+           "key_timestamp": {
+            "type": "null"
+           },
+           "scope_namespace": {
+            "type": "string"
+           },
+           "sub_scope": {
+            "type": "null"
+           }
+          },
+          "type": "object"
+         },
+         "type": "array"
+        }
+       },
+       "type": "object"
+      },
+      "create_time": {
+       "format": "date-time",
+       "type": "string"
+      },
+      "id": {
+       "format": "uuid",
+       "type": "string"
+      },
+      "is_archived": {
+       "type": "boolean"
+      },
+      "is_do_not_remember": {
+       "type": "boolean"
+      },
+      "is_temporary_chat": {
+       "type": "boolean"
+      },
+      "latest_assistant_turn_created_at": {
+       "format": "date-time",
+       "type": "string"
+      },
+      "memory_scope": {
+       "type": "string"
+      },
+      "safe_urls": {
+       "items": {},
+       "type": "array"
+      },
+      "sugar_item_visible": {
+       "type": "boolean"
+      },
+      "title": {
+       "type": "string"
+      },
+      "update_time": {
+       "format": "date-time",
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "type": "array"
+   },
+   "status": 200
+  }
+ }
+}
