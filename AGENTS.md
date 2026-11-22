@@ -1412,15 +1412,16 @@ is the age of that `update_time` (or the recorder's clock, if newer). `state` is
 | `idle`, `-` | No running turn. The recorder's state, or `idle` for an open tab or a chat ChatGPT reports `COMPLETE`. |
 
 The full pass reads only the rows that survive the window, one at a time, for model and size
-(`/backend-api/conversation/<id>` is under the history-detail limit, HTTP 429). A 429 waits the
-`Retry-After` once and retries once. A second 429 stops all further full reads and lists the
+(`/backend-api/conversation/<id>` is under the history-detail limit, HTTP 429).
+The first 429 stops all further full reads (waiting out `Retry-After`, about 50 s, would make the
+listing slower than the question it answers) and lists the
 remaining rows as `!429`, so a rate-limited run still answers "which chats are generating". A
 chat whose metadata call failed also stays listed, as `!status`.
 
 The sidebar chat list (`/backend-api/conversations`) only enumerates ids and titles. Its
 `update_time` stays frozen while a long turn runs, so it never decides what is active. The command
-checks the `candidates` (default 100) newest chats by list time, plus every open tab and
-recorder-busy chat, with `stream_status` 16 at a time (100 chats in 7 s). A chat outside those that
+checks the `candidates` (default 20) newest chats by list time, plus every open tab and
+recorder-busy chat, with `stream_status` 16 at a time (20 chats in about 3 s, 100 in 15 s). A chat outside those that
 is generating with no tab and no recording is missed; `just chats 10 "" 0` checks the whole
 list. `~tok` is visible user, assistant and tool text at four characters per token, not ChatGPT's
 context counter. It needs Chromium on port 9222 signed in to ChatGPT. Details:

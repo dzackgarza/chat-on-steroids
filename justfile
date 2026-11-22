@@ -171,7 +171,7 @@ state_dir := if os() == "macos" {
 # this app recorded. The id is what `say` wants.
 #
 # The sidebar list's times are not trusted: they freeze while a long turn runs. So this reads
-# the `candidates` newest chats by list time (default 100), plus every open tab and every
+# the `candidates` newest chats by list time (default 20), plus every open tab and every
 # recorder-busy chat, are checked with ChatGPT's cheap metadata and stream_status calls; only
 # the ones that pass the `minutes` window are read in full. A chat outside those that is
 # generating with no tab and no recording is missed; raise `candidates` to cover more.
@@ -182,7 +182,7 @@ state_dir := if os() == "macos" {
 # reproducing ChatGPT's context counter.
 #
 # Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
-chats minutes="10" match="" candidates="100" archived="false" json="false":
+chats minutes="10" match="" candidates="20" archived="false" json="false":
     #!/usr/bin/env bash
     set -euo pipefail
     extra=()

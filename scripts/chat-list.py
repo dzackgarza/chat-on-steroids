@@ -343,7 +343,7 @@ def fetch_activity(websocket, ids):
 
 
 def fetch_summaries(websocket, ids):
-    """Read each conversation, one at a time, backing off on 429; {id: summary} or {id: {status: http}}."""
+    """Read each conversation, one at a time, stopping at the first 429; {id: summary} or {id: {status: http}}."""
     if not ids:
         return {}
     expression = (
@@ -354,28 +354,19 @@ def fetch_summaries(websocket, ids):
   if (typeof s.accessToken !== 'string') return JSON.stringify({error: 'no_access_token'});
   const headers = {Authorization: 'Bearer ' + s.accessToken};
   const out = {};
-  // One read at a time: a burst of full-conversation reads is what trips HTTP 429. After one
-  // retry a persistent 429 stops every further full read (the limit lasts minutes, and each
-  // further attempt only prolongs it); those rows report !429 but keep their state and time.
+  // One read at a time: a burst of full-conversation reads is what trips HTTP 429. The first
+  // 429 stops every further full read (the limit lasts about a minute, and waiting it out would
+  // make the listing slower than the question it answers); those rows report !429 but keep their
+  // state and time.
   let limited = false;
   async function one(id) {
     if (limited) { out[id] = {status: 429}; return; }
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const response = await fetch('/backend-api/conversation/' + id,
-          {headers, credentials: 'include', signal: AbortSignal.timeout(60000)});
-        if (response.status === 429) {
-          if (attempt === 0) {
-            await new Promise((resolve) => setTimeout(resolve,
-              (Number(response.headers.get('retry-after')) || 5) * 1000));
-            continue;
-          }
-          limited = true;
-        }
-        out[id] = response.ok ? summarize(await response.json()) : {status: response.status};
-        return;
-      } catch (error) { out[id] = {status: null}; return; }
-    }
+    try {
+      const response = await fetch('/backend-api/conversation/' + id,
+        {headers, credentials: 'include', signal: AbortSignal.timeout(60000)});
+      if (response.status === 429) limited = true;
+      out[id] = response.ok ? summarize(await response.json()) : {status: response.status};
+    } catch (error) { out[id] = {status: null}; }
   }
   for (const id of ids) await one(id);
   return JSON.stringify(out);
@@ -463,8 +454,8 @@ def main():
     parser.add_argument(
         "--candidates",
         type=int,
-        default=100,
-        help="How many chats, newest by sidebar-list time, to check for activity (default 100; "
+        default=20,
+        help="How many chats, newest by sidebar-list time, to check for activity (default 20; "
         "0 = every chat), "
         "in addition to every open tab and every recorder-busy chat.",
     )
