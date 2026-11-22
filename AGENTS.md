@@ -1382,7 +1382,7 @@ just sessions                    # recorded chats, newest first
 just transcript <part-of-an-id>  # print one chat; defaults to the newest
 just search <term>               # which chats mention a term
 
-just chats [hours]               # ACTIVE chats (default: changed in the last 1h): id, state, model, ~tokens
+just chats [minutes]             # ACTIVE chats (default: changed in the last 10 min): id, state, model, ~tokens
 just chats 0                     # the whole account, active and inactive
 just state <conversation-id>     # what that one chat's turn is doing, from the live recorder
 just say <conversation-id> "..."  # send that message to that chat
@@ -1397,7 +1397,7 @@ turn event was a start, so ChatGPT is generating — send when it is `idle`. A c
 was closed mid-turn keeps a stale `busy`, so read the clock column with it.
 
 `just chats` reads the account's conversations, not only the ones this app recorded, so it
-covers chats that never used the connector. `hours=N` keeps chats changed in the last N hours.
+covers chats that never used the connector. `minutes=N` keeps chats changed in the last N minutes.
 `idle` is the time since the chat last changed in the account index, which can lag a streaming
 turn. `state` is `busy` when the chat's open tab marks the turn `in_progress` or the recorder
 says so (such a chat is listed outside the window too), else the recorder's state, `idle` for an

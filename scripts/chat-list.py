@@ -394,13 +394,13 @@ def main():
         type=int,
         default=30,
         help="How many conversations to list, newest first (default 30), after "
-        "--match and --hours have filtered the whole index.",
+        "--match and --minutes have filtered the whole index.",
     )
     parser.add_argument(
-        "--hours",
+        "--minutes",
         type=float,
         default=0,
-        help="Only conversations updated within this many hours (0 = no age limit).",
+        help="Only conversations updated within this many minutes (0 = no age limit).",
     )
     parser.add_argument(
         "--match", default="", help="Only rows whose title contains this text."
@@ -460,7 +460,7 @@ def main():
     cache_path = Path(args.cache).expanduser()
     cache = load_json(cache_path, {})
 
-    cutoff = time.time() - args.hours * 3600 if args.hours > 0 else 0.0
+    cutoff = time.time() - args.minutes * 60 if args.minutes > 0 else 0.0
     tabs = tab_turn_states(args.devtools)
     wanted = [
         item

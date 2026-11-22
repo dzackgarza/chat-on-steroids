@@ -159,19 +159,19 @@ state_dir := if os() == "macos" {
     env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/state"
 }
 
-# The ACTIVE ChatGPT chats (changed in the last `hours`, default 1): idle, state, model, size, id
+# The ACTIVE ChatGPT chats (changed in the last `minutes`, default 10): idle, state, model, size, id
 #
 # Every chat on the account appears, whether or not it ever used the connector, newest first.
 # Columns: `idle` is time since the chat last changed in the account index, which can lag a
 # turn still streaming. `state` is `busy` when the chat's open tab marks its turn in progress
-# or this app's recorder says so (a busy chat is listed even outside `hours`); otherwise the
+# or this app's recorder says so (a busy chat is listed even outside `minutes`); otherwise the
 # recorder's idle/stalled/wedged, `idle` for an open tab with no running turn, and `-` for a
 # chat with no open tab and no recording, whose generating state this does not know.
 # `model` is the model that answered last, `msgs` and `tools` count messages, and `~tok`
 # sizes the chat. The last column is the newest recorded action. The id is what `say` wants.
 #
-# `hours` is the activity window: a chat appears only if it changed in the last N hours.
-# `just chats 0` lists the whole account, active and inactive; `just chats 24` adds the
+# `minutes` is the activity window: a chat appears only if it changed in the last N minutes.
+# `just chats 0` lists the whole account, active and inactive; `just chats 1440` adds the
 # day's quieter chats. `match` filters on the title. `limit` caps rows after both filters.
 # archived="true" lists archived chats. `fresh` bounds how many live detail fetches this run
 # may make for model and size.
@@ -185,7 +185,7 @@ state_dir := if os() == "macos" {
 # here, so it sizes a chat rather than reproducing ChatGPT's context counter.
 #
 # Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
-chats hours="1" match="" limit="100" archived="false" fresh="20" json="false":
+chats minutes="10" match="" limit="100" archived="false" fresh="20" json="false":
     #!/usr/bin/env bash
     set -euo pipefail
     extra=()
@@ -200,7 +200,7 @@ chats hours="1" match="" limit="100" archived="false" fresh="20" json="false":
         *) echo 'archived must be true or false' >&2; exit 2 ;;
     esac
     exec python3 "{{justfile_directory()}}/scripts/chat-list.py" --sessions "{{sessions_dir}}" \
-        --hours "{{hours}}" --match "{{match}}" --limit "{{limit}}" --fresh "{{fresh}}" "${extra[@]}"
+        --minutes "{{minutes}}" --match "{{match}}" --limit "{{limit}}" --fresh "{{fresh}}" "${extra[@]}"
 
 # ---------------------------------------------------------------------------
 # The browser's actual tabs.
