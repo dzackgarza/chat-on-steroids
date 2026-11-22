@@ -171,9 +171,10 @@ state_dir := if os() == "macos" {
 # this app recorded. The id is what `say` wants.
 #
 # The sidebar list's times are not trusted: they freeze while a long turn runs. So this reads
-# the conversation of the `candidates` newest chats by list time, plus every open tab and
-# every recorder-busy chat. A chat outside those that is generating with no tab and no
-# recording is missed; raise `candidates` to cover more (each is one conversation read).
+# the `candidates` newest chats by list time (default 100), plus every open tab and every
+# recorder-busy chat, are checked with ChatGPT's cheap metadata and stream_status calls; only
+# the ones that pass the `minutes` window are read in full. A chat outside those that is
+# generating with no tab and no recording is missed; raise `candidates` to cover more.
 # `minutes=0` lists every chat read, active or not. `match` filters on the title.
 #
 # `~tok` counts user, assistant and tool text at four characters per token. Hidden reasoning,
@@ -181,7 +182,7 @@ state_dir := if os() == "macos" {
 # reproducing ChatGPT's context counter.
 #
 # Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
-chats minutes="10" match="" candidates="10" archived="false" json="false":
+chats minutes="10" match="" candidates="100" archived="false" json="false":
     #!/usr/bin/env bash
     set -euo pipefail
     extra=()
@@ -867,8 +868,13 @@ install:
 steward-dashboard *args:
     python3 scripts/generate-steward-dashboard.py {{args}}
 
+# Python tests for the scripts/ CLIs (chat-list.py, chatgpt-openapi.py).
+[private]
+_test-scripts:
+    uvx --with openapi-spec-validator pytest -q scripts/tests
+
 # Run the fast commit check; the commit hook runs this
-test-commit:
+test-commit: _test-scripts
     @just -f ~/ai-review-ci/justfiles/bun.just -d . test-commit
 
 # Run the fast push check; the push hook runs this

@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """List the ChatGPT chats that are active now, with model and length.
 
-A chat is active when a turn is generating, or when its newest message is recent.
-Both come from the conversation itself, not from ChatGPT's sidebar list:
+A chat is active when a turn is generating, or when its newest message is recent. Both come
+from ChatGPT's per-chat calls, not from the sidebar list:
 
-  * generating — the chat's open tab marks its newest turn `in_progress`
-    (`data-talvt-turn-state`, the attribute extension/chatgpt-dom.js reads), or this app's
-    recorder says a turn is running;
-  * last activity — `create_time` of the newest message in
-    `/backend-api/conversation/<id>`.
+  * generating — `/backend-api/conversation/<id>/stream_status` says IS_STREAMING, the chat's
+    open tab marks its newest turn `in_progress` (`data-talvt-turn-state`, the attribute
+    extension/chatgpt-dom.js reads), or this app's recorder says a turn is running;
+  * last activity — `update_time` from `POST /backend-api/conversations/batch`, which follows a
+    running turn.
 
-The sidebar list (`/backend-api/conversations`) is used only to enumerate chat ids and
-titles. Its `update_time` equals the conversation's own `update_time` for chats at rest but
-stays frozen while a long turn runs (measured: 20:04 in the list against 20:38 in the
-conversation), so it never decides whether a chat is active.
+The sidebar list (`/backend-api/conversations`) only enumerates chat ids and titles. Its
+`update_time` stays frozen while a long turn runs (measured: 20:04 in the list against 20:38 in
+the conversation), so it never decides whether a chat is active.
 
-Because the list time cannot rule a chat out, this reads the conversation of every
-candidate: the `--candidates` newest chats by list time, every chat with an open tab, and
-every chat the recorder says is busy. Model (`metadata.model_slug`) and size come from the
-same read.
+Pass one checks the `--candidates` newest chats by list time, every chat with an open tab and
+every chat the recorder says is busy, with those two cheap calls (neither is under ChatGPT's
+history-detail rate limit). Pass two reads the whole conversation (`metadata.model_slug`, size)
+only for the chats that passed the activity window. The endpoints are specified in
+docs/chatgpt-backend-api.md.
 
 `~tok` is characters of user, assistant and tool text on the current branch divided by
 four. It excludes hidden reasoning (`thoughts`, `reasoning_recap`), which is not carried
@@ -302,15 +302,19 @@ ACTIVITY_JS = r"""
     await sleep(200);
   }
   // The page polls /conversation/<id>/stream_status (a 21-byte reply): COMPLETE, or
-  // IS_STREAMING while a turn runs. It is not under the history-detail budget either.
-  for (const id of ids) {
-    let stream;
+  // IS_STREAMING while a turn runs. It is not under the history-detail budget either. Sixteen
+  // at a time read 100 chats in 7 s with no 429 (measured 2026-11-22).
+  async function stream(id) {
     try {
       const response = await fetch('/backend-api/conversation/' + id + '/stream_status',
         {headers, credentials: 'include', signal: AbortSignal.timeout(20000)});
-      stream = response.ok ? (await response.json()).status : 'HTTP_' + response.status;
-    } catch (error) { stream = 'ERROR'; }
-    out[id] = {...out[id], stream};
+      return response.ok ? (await response.json()).status : 'HTTP_' + response.status;
+    } catch (error) { return 'ERROR'; }
+  }
+  for (let i = 0; i < ids.length; i += 16) {
+    const chunk = ids.slice(i, i + 16);
+    const states = await Promise.all(chunk.map(stream));
+    chunk.forEach((id, k) => { out[id] = {...out[id], stream: states[k]}; });
   }
   return JSON.stringify(out);
 """
@@ -330,7 +334,8 @@ def fetch_activity(websocket, ids):
         + ACTIVITY_JS
         + "})()"
     )
-    value = evaluate(websocket, expression, timeout="120")
+    # 10 ids per batch call and 16 per stream_status round: about 0.1 s per chat, measured.
+    value = evaluate(websocket, expression, timeout=str(60 + len(ids) // 4))
     try:
         return json.loads(value) if value else {}
     except json.JSONDecodeError:
@@ -383,6 +388,67 @@ def fetch_summaries(websocket, ids):
         return {}
 
 
+def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
+    """One row per chat worth listing, newest first, from the cheap pass (no message bodies).
+
+    `activity` is fetch_activity's {id: {update_time, stream}} or {id: {batch_status}} when the
+    metadata call failed. A chat is listed when a turn runs (ChatGPT's stream_status, an open tab
+    marked in progress, or the recorder), when its newest message is within `minutes`, or when
+    its metadata could not be read: a chat whose time is unknown cannot be ruled inactive."""
+    rows = []
+    for chat in candidates:
+        seen = activity.get(chat, {})
+        when, recorded, action = states.get(chat, (0, "-", ""))
+        stream = seen.get("stream")
+        state = recorded
+        last_at = max(epoch(seen.get("update_time")), when / 1000)
+        fresh = minutes <= 0 or now - last_at <= minutes * 60
+        if tabs.get(chat) == "in_progress":
+            state = "busy"
+        elif stream == "IS_STREAMING":
+            # ChatGPT keeps IS_STREAMING on some chats for weeks after their last update
+            # (28 h to 24 d on 2026-11-22), so a streaming flag with no change inside the window
+            # is reported as `stream`, not `busy`: the server claims it, nothing confirms it.
+            state = "busy" if fresh or recorded == "busy" else "stream"
+        elif state == "busy":
+            # The recorder keeps "busy" until it sees a turn end; ChatGPT says the stream is over.
+            state = "idle" if stream == "COMPLETE" else state
+        elif state == "-" and (chat in tabs or stream == "COMPLETE"):
+            state = "idle"
+        failed = "batch_status" in seen or not seen
+        if not failed and state not in ("busy", "stream") and not fresh:
+            continue
+        row = {"id": chat, "title": titles[chat], "state": state, "action": action,
+               "last_at": last_at}
+        if failed:
+            row["status"] = seen.get("batch_status")
+        rows.append(row)
+    rows.sort(key=lambda row: row["last_at"], reverse=True)
+    return rows
+
+
+def render(rows, now):
+    lines = [
+        f"{'last msg':>8} {'state':<8} {'id':<38} {'model':<18} {'msgs':>5} {'tools':>5} "
+        f"{'~tok':>7}  title | last action"
+    ]
+    for row in rows:
+        model = row.get("model") or (f"!{row['status']}" if "status" in row else "?")
+        if len(row.get("models") or {}) > 1:
+            model += f"+{len(row['models']) - 1}"
+        messages = (row.get("user") or 0) + (row.get("assistant") or 0)
+        tokens = row.get("tokens") or 0
+        size = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+        last = age_text(now - row["last_at"]) if row["last_at"] else "?"
+        title = " ".join(row["title"].split())[:60]
+        lines.append(
+            f"{last:>8} {row['state']:<8} {row['id']:<38} {model:<18} {messages:>5} "
+            f"{row.get('tool') or 0:>5} {size:>7}  {title}"
+            + (f" | {row['action']}" if row["action"] else "")
+        )
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -397,8 +463,9 @@ def main():
     parser.add_argument(
         "--candidates",
         type=int,
-        default=10,
-        help="How many chats, newest by sidebar-list time, to read in full (default 10), "
+        default=100,
+        help="How many chats, newest by sidebar-list time, to check for activity (default 100; "
+        "0 = every chat), "
         "in addition to every open tab and every recorder-busy chat.",
     )
     parser.add_argument(
@@ -429,7 +496,7 @@ def main():
     # (1409 chats: 52 s). Its first pages hold the newest chats, so read only enough of them
     # for the candidates, with headroom for the few pinned chats that come first out of order.
     # A title match has to search the whole list.
-    list_size = 0 if args.match else 100 * (1 + args.candidates // 100)
+    list_size = 0 if args.match or args.candidates == 0 else 100 * (1 + args.candidates // 100)
     listing = evaluate(
         websocket,
         index_expression("true" if args.archived else "false", list_size),
@@ -457,7 +524,7 @@ def main():
     newest = sorted(
         body["items"], key=lambda item: epoch(item.get("update_time")), reverse=True
     )
-    candidates = {item["id"] for item in newest[: args.candidates]}
+    candidates = {item["id"] for item in newest[: args.candidates or None]}
     candidates |= generating | {chat for chat in tabs if chat in titles}
     candidates = {
         chat
@@ -466,35 +533,21 @@ def main():
     }
 
     activity = fetch_activity(websocket, sorted(candidates))
+    if candidates and not any("update_time" in seen for seen in activity.values()):
+        sys.exit(
+            "ChatGPT answered none of the per-chat metadata calls "
+            "(POST /backend-api/conversations/batch); try again, or lower --candidates"
+        )
 
     now = time.time()
-    rows = []
-    for chat in candidates:
-        seen = activity.get(chat, {})
-        when, recorded, action = states.get(chat, (0, "-", ""))
-        stream = seen.get("stream")
-        state = recorded
-        if tabs.get(chat) == "in_progress" or stream == "IS_STREAMING":
-            state = "busy"
-        elif state == "busy":
-            # The recorder keeps "busy" until it sees a turn end; ChatGPT says the stream is over.
-            state = "idle" if stream == "COMPLETE" else state
-        elif state == "-" and (chat in tabs or stream == "COMPLETE"):
-            state = "idle"
-        # update_time of the batch read follows a running turn; the recorder's clock counts when
-        # this app saw something newer.
-        last_at = max(epoch(seen.get("update_time")), when / 1000)
-        if state != "busy" and args.minutes > 0 and now - last_at > args.minutes * 60:
-            continue
-        rows.append({"id": chat, "title": titles[chat], "state": state, "action": action,
-                     "last_at": last_at})
-    rows.sort(key=lambda row: row["last_at"], reverse=True)
+    rows = activity_rows(candidates, titles, tabs, states, activity, now, args.minutes)
 
     # Model and size need the whole conversation, which is under ChatGPT's history-detail budget
     # (HTTP 429), so only the chats that survived the activity window are read in full.
-    summaries = fetch_summaries(websocket, [row["id"] for row in rows])
+    summaries = fetch_summaries(websocket, [row["id"] for row in rows if "status" not in row])
     for row in rows:
-        row.update(summaries.get(row["id"]) or {"status": None})
+        if "status" not in row:
+            row.update(summaries.get(row["id"]) or {"status": None})
 
     if args.json:
         keys = ("id", "title", "state", "last_at", "model", "models", "user", "assistant",
@@ -502,29 +555,10 @@ def main():
         print(json.dumps([{key: row.get(key) for key in keys} for row in rows], indent=1))
         return
 
-    print(
-        f"{'last msg':>8} {'state':<8} {'id':<38} {'model':<18} {'msgs':>5} {'tools':>5} "
-        f"{'~tok':>7}  title | last action"
-    )
-    for row in rows:
-        model = row.get("model") or (
-            f"!{row['status']}" if "status" in row else "?"
-        )
-        if len(row.get("models") or {}) > 1:
-            model += f"+{len(row['models']) - 1}"
-        messages = (row.get("user") or 0) + (row.get("assistant") or 0)
-        tokens = row.get("tokens") or 0
-        size = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
-        last = age_text(now - row["last_at"]) if row["last_at"] else "?"
-        title = " ".join(row["title"].split())[:60]
-        print(
-            f"{last:>8} {row['state']:<8} {row['id']:<38} {model:<18} {messages:>5} "
-            f"{row.get('tool') or 0:>5} {size:>7}  {title}"
-            + (f" | {row['action']}" if row["action"] else "")
-        )
+    print(render(rows, now))
     if any("status" in row for row in rows):
         print(
-            "\n!n is the HTTP status of a conversation read that failed; run again.",
+            "\n!n is the HTTP status of a read that failed (!None: no reply); run again.",
             file=sys.stderr,
         )
 

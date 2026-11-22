@@ -1403,23 +1403,28 @@ chats that never used the connector. It runs in two passes. The cheap pass asks 
 `POST /backend-api/conversations/batch` (10 ids per call, metadata only) for each candidate's
 `update_time`, and `/backend-api/conversation/<id>/stream_status` for whether a turn runs
 (`IS_STREAMING`, else `COMPLETE`). Neither call is under the history-detail rate limit. `last msg`
-is the age of that `update_time` (or the recorder's clock, if newer). `state` is `busy` when
-`stream_status` says `IS_STREAMING`, when the chat's open tab marks the turn `in_progress`, or when
-the recorder says `busy` and ChatGPT has not said `COMPLETE` (such a chat is listed outside the
-`minutes` window too). Otherwise it is the recorder's state, `idle`, or `-`.
+is the age of that `update_time` (or the recorder's clock, if newer). `state` is:
+
+| `state` | Meaning |
+| --- | --- |
+| `busy` | A turn runs: the open tab marks it `in_progress`, or `stream_status` says `IS_STREAMING` and the chat changed inside the `minutes` window, or the recorder says `busy`. |
+| `stream` | `stream_status` says `IS_STREAMING` but nothing changed inside the window. ChatGPT left this flag on chats 28 h to 24 d after their last update (2026-11-22). The server claims a turn; nothing confirms it. |
+| `idle`, `-` | No running turn. The recorder's state, or `idle` for an open tab or a chat ChatGPT reports `COMPLETE`. |
 
 The full pass reads only the rows that survive the window, one at a time, for model and size
-(`/backend-api/conversation/<id>` is under the history-detail limit, HTTP 429). After one 429 and
-one retry, the command stops reading and lists the remaining rows as `!429`, so a rate-limited run
-still answers "which chats are generating".
+(`/backend-api/conversation/<id>` is under the history-detail limit, HTTP 429). A 429 waits the
+`Retry-After` once and retries once. A second 429 stops all further full reads and lists the
+remaining rows as `!429`, so a rate-limited run still answers "which chats are generating". A
+chat whose metadata call failed also stays listed, as `!status`.
 
 The sidebar chat list (`/backend-api/conversations`) only enumerates ids and titles. Its
 `update_time` stays frozen while a long turn runs, so it never decides what is active. The command
-checks the `candidates` (default 10) newest chats by list time, plus every open tab and
-recorder-busy chat; a chat outside those that is generating with no tab and no recording is
-missed, and raising `candidates` covers more at a small cost per chat. `~tok` is visible user,
-assistant and tool text at four characters per token, not ChatGPT's context counter. It needs
-Chromium on port 9222 signed in to ChatGPT. Details: `scripts/chat-list.py`.
+checks the `candidates` (default 100) newest chats by list time, plus every open tab and
+recorder-busy chat, with `stream_status` 16 at a time (100 chats in 7 s). A chat outside those that
+is generating with no tab and no recording is missed; `just chats 10 "" 0` checks the whole
+list. `~tok` is visible user, assistant and tool text at four characters per token, not ChatGPT's
+context counter. It needs Chromium on port 9222 signed in to ChatGPT. Details:
+`scripts/chat-list.py`; its tests: `scripts/tests/test_chat_list.py` (run by `just test-commit`).
 The endpoints it calls, their response shapes, and the rate limits are specified in
 `docs/chatgpt-backend-api.md` and `docs/chatgpt-backend-api.openapi.json`.
 
