@@ -1408,7 +1408,7 @@ is the age of that `update_time` (or the recorder's clock, if newer). `state` is
 | `state` | Meaning |
 | --- | --- |
 | `busy` | A turn runs: the open tab marks it `in_progress`, or `stream_status` says `IS_STREAMING` and the chat changed inside the `minutes` window, or the recorder says `busy`. |
-| `alert` | An open tab shows an error banner (`aside[role=alert]`), such as "Message delivery timed out. Please try again." The banner text is the `last action`. The server cannot show this: the message never arrived, so `stream_status` stays `COMPLETE`. Only a tab shows it; a chat with no open tab never reports `alert`. Listed regardless of age. |
+| `alert` | An open tab shows an error banner (`aside[role=alert]`), such as "Message delivery timed out. Please try again." The banner text is the `last action`. The server cannot show this: the message never arrived, so `stream_status` stays `COMPLETE`. Only the tab that sent the message shows it: the page keeps the failure in memory (no server field, no browser storage holds it), and a fresh tab opened on the same chat showed no banner and turn state `complete` (2026-11-23). A chat with no such tab never reports `alert`. Listed regardless of age. |
 | `stream` | `stream_status` says `IS_STREAMING` but nothing changed inside the window. ChatGPT left this flag on chats 28 h to 24 d after their last update (2026-11-22). The server claims a turn; nothing confirms it. |
 | `idle`, `-` | No running turn. The recorder's state, or `idle` for an open tab or a chat ChatGPT reports `COMPLETE`. |
 
