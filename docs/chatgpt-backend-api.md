@@ -122,8 +122,13 @@ The reply is 21 bytes and took 0.2 to 0.4 s. The page polls it (22 calls in one 
   same chat's batch `update_time` was 41 minutes newer than its sidebar-list `update_time`.)
 - `IS_STREAMING` is not proof of a live turn. On 2026-11-22, 79 chats answered
   `IS_STREAMING` while their newest update was 28 hours to 516 days old, with no open tab and
-  no recorded turn. Whether those turns run is unknown. `just chats` prints such a chat as
-  `stream`, and prints `busy` only when the chat also changed inside its activity window.
+  no recorded turn. The same chats answer `async_status` 3 in the batch call (2 other chats
+  answered 4, `UNREAD`; every other chat omits the field). Opening one in a fresh tab showed
+  `in_progress` for about 13 minutes, then the banner "Message delivery timed out. Please try
+  again." (LIVE, one chat, 2026-11-23). The page's bundle explains it: it resumes the stream on
+  load, polls until `poll_freshness_max_mins` (default 10, 20 for pro models), then reports
+  `unconfirmed`. (PAGE) `just chats` prints such a chat as `alert`, and `busy` only when the
+  chat also changed inside its activity window.
 - The page maps a 404 from this route to `UNAVAILABLE`. (PAGE)
 - It stayed available while the history-detail budget was exhausted. (LIVE)
 

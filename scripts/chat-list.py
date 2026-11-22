@@ -384,6 +384,9 @@ def fetch_summaries(websocket, ids):
         return {}
 
 
+DELIVERY_TIMEOUT = "Message delivery timed out. Please try again."  # i18n errors.polling.timeout
+
+
 def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
     """One row per chat worth listing, newest first, from the cheap pass (no message bodies).
 
@@ -406,17 +409,21 @@ def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
         elif tabs.get(chat) == "in_progress":
             state = "busy"
         elif stream == "IS_STREAMING":
-            # ChatGPT keeps IS_STREAMING on some chats for weeks after their last update
-            # (28 h to 24 d on 2026-11-22), so a streaming flag with no change inside the window
-            # is reported as `stream`, not `busy`: the server claims it, nothing confirms it.
-            state = "busy" if fresh or recorded == "busy" else "stream"
+            # ChatGPT keeps IS_STREAMING (batch async_status 3) on some chats for weeks after
+            # their last update. The page resumes the stream when it opens such a chat, polls
+            # for its timeout (10 min, 20 min for pro models), then shows the banner below.
+            # Measured 2026-11-23: a fresh tab on one showed it after about 13 minutes.
+            if fresh or recorded == "busy":
+                state = "busy"
+            else:
+                state, action = "alert", DELIVERY_TIMEOUT
         elif state == "busy":
             # The recorder keeps "busy" until it sees a turn end; ChatGPT says the stream is over.
             state = "idle" if stream == "COMPLETE" else state
         elif state == "-" and (chat in tabs or stream == "COMPLETE"):
             state = "idle"
         failed = "batch_status" in seen or not seen
-        if not failed and state not in ("busy", "stream", "alert") and not fresh:
+        if not failed and state not in ("busy", "alert") and not fresh:
             continue
         row = {"id": chat, "title": titles[chat], "state": state, "action": action,
                "last_at": last_at}
