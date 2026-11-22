@@ -1383,6 +1383,7 @@ just transcript <part-of-an-id>  # print one chat; defaults to the newest
 just search <term>               # which chats mention a term
 
 just chats                       # conversation ids, and whether each chat is mid-turn
+just models [limit] [match]      # every account chat: answering model and ~tokens of text
 just state <conversation-id>     # what that one chat's turn is doing, from the live recorder
 just say <conversation-id> "..."  # send that message to that chat
 just new "..."                    # open a new chat with that opening message
@@ -1394,6 +1395,13 @@ just revive <conversation-id> "..."     # reload its page, then send
 `just chats` is the one that gives you the id `say` needs. `busy` means that chat's newest
 turn event was a start, so ChatGPT is generating — send when it is `idle`. A chat whose tab
 was closed mid-turn keeps a stale `busy`, so read the clock column with it.
+
+`just models` lists the account's conversations, not only the ones this app recorded, so it
+covers chats that never used the connector. The account index carries no model; the model
+(`model_slug` on assistant messages) exists only in each conversation's detail, so rows come
+from the exported corpus, a summary cache, or a bounded number of live detail fetches. `~tok`
+is visible user, assistant and tool text at four characters per token, not ChatGPT's context
+counter. It needs Chromium on port 9222 signed in to ChatGPT. Details: `scripts/chat-models.py`.
 
 A chat that `new` opens is an ordinary chat: it is not a worker, it belongs to no run, and
 it appears in `just sessions` like any other.

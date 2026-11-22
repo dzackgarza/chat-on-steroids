@@ -327,6 +327,31 @@ gpt limit="100" match="" archived="false":
         stamp = calendar.timegm(time.strptime(updated.split(".")[0].rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
         print(f"{time.strftime('%m-%d %H:%M', time.localtime(stamp))}\t{chat}\t{title[:60]}")
 
+# Every ChatGPT conversation with the model that answered it and its length
+#
+# `chats` lists what this app recorded. This lists what the account holds: the live
+# index through a signed-in tab, then each conversation's `model_slug` and text size
+# from the exported corpus when current, the summary cache, or one live detail fetch.
+#
+# ~tok counts user, assistant and tool text at four characters per token; hidden
+# reasoning, system prompts and tool schemas are not visible from here, so it sizes a
+# chat rather than reproducing ChatGPT's context counter. `model+N` means the chat
+# used N other models besides the one that answered last; `*` means the corpus export
+# predates the live conversation.
+#
+# Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
+models limit="30" match="" fresh="20" json="false":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    extra=()
+    case "{{json}}" in
+        true) extra+=(--json) ;;
+        false) ;;
+        *) echo 'json must be true or false' >&2; exit 2 ;;
+    esac
+    exec python3 "{{justfile_directory()}}/scripts/chat-models.py" \
+        --limit "{{limit}}" --match "{{match}}" --fresh "{{fresh}}" "${extra[@]}"
+
 # Archive one conversation in ChatGPT, whether or not it has a tab open
 archive chat:
     @just _set-archived {{chat}} true archived
