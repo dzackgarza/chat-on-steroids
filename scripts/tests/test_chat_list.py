@@ -38,10 +38,12 @@ def test_a_turn_running_now_is_busy_even_though_the_sidebar_time_is_old():
     assert rows(activity)[RUNNING]["state"] == "busy"
 
 
-def test_a_streaming_flag_with_no_update_for_a_day_is_stream_not_busy():
-    # Measured: IS_STREAMING on a chat whose newest update was 28 h old.
+def test_a_streaming_flag_with_no_update_for_a_day_is_the_wedged_delivery_timeout_alert():
+    # Measured 2026-11-23: a fresh tab on a chat whose backend says IS_STREAMING (async_status 3)
+    # with no update since August polled ~13 min, then showed "Message delivery timed out".
     activity = {OLD: {"update_time": "2026-11-21T10:00:00.000000Z", "stream": "IS_STREAMING"}}
-    assert rows(activity)[OLD]["state"] == "stream"
+    row = rows(activity)[OLD]
+    assert (row["state"], row["action"]) == ("alert", "Message delivery timed out. Please try again.")
 
 
 def test_a_finished_chat_outside_the_window_is_not_listed():
