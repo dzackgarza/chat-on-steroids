@@ -281,6 +281,62 @@ def index_expression(archived, max_items):
 }})()"""
 
 
+ACTIVITY_JS = r"""
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const out = {};
+  // POST /backend-api/conversations/batch is what the page uses for chat metadata: up to 10 ids
+  // per call, no message bodies (about 0.5 KB per chat), and it is not under the history-detail
+  // 429 budget. Its update_time follows a running turn; the sidebar list's does not.
+  for (let i = 0; i < ids.length; i += 10) {
+    const chunk = ids.slice(i, i + 10);
+    try {
+      const response = await fetch('/backend-api/conversations/batch', {method: 'POST',
+        headers: {...headers, 'Content-Type': 'application/json'}, credentials: 'include',
+        body: JSON.stringify({conversation_ids: chunk, include_full_history: false}),
+        signal: AbortSignal.timeout(30000)});
+      if (!response.ok) { for (const id of chunk) out[id] = {batch_status: response.status}; continue; }
+      for (const item of await response.json())
+        out[item.id] = {update_time: item.update_time,
+                        latest_assistant: item.latest_assistant_turn_created_at || null};
+    } catch (error) { for (const id of chunk) out[id] = {batch_status: null}; }
+    await sleep(200);
+  }
+  // The page polls /conversation/<id>/stream_status (a 21-byte reply): COMPLETE, or
+  // IS_STREAMING while a turn runs. It is not under the history-detail budget either.
+  for (const id of ids) {
+    let stream;
+    try {
+      const response = await fetch('/backend-api/conversation/' + id + '/stream_status',
+        {headers, credentials: 'include', signal: AbortSignal.timeout(20000)});
+      stream = response.ok ? (await response.json()).status : 'HTTP_' + response.status;
+    } catch (error) { stream = 'ERROR'; }
+    out[id] = {...out[id], stream};
+  }
+  return JSON.stringify(out);
+"""
+
+
+def fetch_activity(websocket, ids):
+    """Cheap per-chat activity: {id: {update_time, latest_assistant, stream}} (ISO times)."""
+    if not ids:
+        return {}
+    expression = (
+        "(async () => {\n"
+        + f"  const ids = {json.dumps(ids)};\n"
+        + """  const s = await (await fetch('/api/auth/session', {credentials: 'include'})).json();
+  if (typeof s.accessToken !== 'string') return JSON.stringify({});
+  const headers = {Authorization: 'Bearer ' + s.accessToken};
+"""
+        + ACTIVITY_JS
+        + "})()"
+    )
+    value = evaluate(websocket, expression, timeout="120")
+    try:
+        return json.loads(value) if value else {}
+    except json.JSONDecodeError:
+        return {}
+
+
 def fetch_summaries(websocket, ids):
     """Read each conversation, one at a time, backing off on 429; {id: summary} or {id: {status: http}}."""
     if not ids:
@@ -295,7 +351,7 @@ def fetch_summaries(websocket, ids):
   const out = {};
   // One read at a time: a burst of full-conversation reads is what trips HTTP 429. After one
   // retry a persistent 429 stops every further full read (the limit lasts minutes, and each
-  // further attempt only prolongs it); those rows report !429 but keep their stream state.
+  // further attempt only prolongs it); those rows report !429 but keep their state and time.
   let limited = false;
   async function one(id) {
     if (limited) { out[id] = {status: 429}; return; }
@@ -316,20 +372,7 @@ def fetch_summaries(websocket, ids):
       } catch (error) { out[id] = {status: null}; return; }
     }
   }
-  // The page itself polls /conversation/<id>/stream_status (a ~20-byte reply) to know whether a
-  // turn is generating; it is cheap and answers for chats with no open tab and no recording.
-  async function stream(id) {
-    try {
-      const response = await fetch('/backend-api/conversation/' + id + '/stream_status',
-        {headers, credentials: 'include', signal: AbortSignal.timeout(20000)});
-      return response.ok ? (await response.json()).status : 'HTTP_' + response.status;
-    } catch (error) { return 'ERROR'; }
-  }
-  for (const id of ids) {
-    const generating = await stream(id);
-    await one(id);
-    out[id] = {...out[id], stream: generating};
-  }
+  for (const id of ids) await one(id);
   return JSON.stringify(out);
 })()"""
     )
@@ -422,27 +465,36 @@ def main():
         if not args.match or args.match.lower() in titles[chat].lower()
     }
 
-    summaries = fetch_summaries(websocket, sorted(candidates))
+    activity = fetch_activity(websocket, sorted(candidates))
 
     now = time.time()
     rows = []
     for chat in candidates:
-        summary = summaries.get(chat) or {"status": None}
+        seen = activity.get(chat, {})
         when, recorded, action = states.get(chat, (0, "-", ""))
+        stream = seen.get("stream")
         state = recorded
-        if tabs.get(chat) == "in_progress" or summary.get("stream") not in (None, "COMPLETE", "ERROR") and not str(summary.get("stream")).startswith("HTTP_"):
+        if tabs.get(chat) == "in_progress" or stream == "IS_STREAMING":
             state = "busy"
-        elif state == "-" and chat in tabs:
+        elif state == "busy":
+            # The recorder keeps "busy" until it sees a turn end; ChatGPT says the stream is over.
+            state = "idle" if stream == "COMPLETE" else state
+        elif state == "-" and (chat in tabs or stream == "COMPLETE"):
             state = "idle"
-        # The recorder's clock counts when this app saw something newer than the message.
-        last_at = max(summary.get("last_at") or 0, when / 1000)
-        # A failed read has no time, so it cannot be judged inactive: it stays listed as !status.
-        failed = "status" in summary
-        if not failed and state != "busy" and args.minutes > 0 and now - last_at > args.minutes * 60:
+        # update_time of the batch read follows a running turn; the recorder's clock counts when
+        # this app saw something newer.
+        last_at = max(epoch(seen.get("update_time")), when / 1000)
+        if state != "busy" and args.minutes > 0 and now - last_at > args.minutes * 60:
             continue
         rows.append({"id": chat, "title": titles[chat], "state": state, "action": action,
-                     "last_at": last_at, **summary})
+                     "last_at": last_at})
     rows.sort(key=lambda row: row["last_at"], reverse=True)
+
+    # Model and size need the whole conversation, which is under ChatGPT's history-detail budget
+    # (HTTP 429), so only the chats that survived the activity window are read in full.
+    summaries = fetch_summaries(websocket, [row["id"] for row in rows])
+    for row in rows:
+        row.update(summaries.get(row["id"]) or {"status": None})
 
     if args.json:
         keys = ("id", "title", "state", "last_at", "model", "models", "user", "assistant",

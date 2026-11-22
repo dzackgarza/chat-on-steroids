@@ -143,9 +143,25 @@ The reply is 21 bytes and took 0.2 to 0.4 s. The page polls it (22 calls in one 
 
 - A conversation id that does not exist also answers `200 {"status":"COMPLETE"}`. `COMPLETE`
   does not prove the chat exists. (LIVE)
-- The value for a turn that is running is **not yet observed**. `just chats` treats any reply
-  other than `COMPLETE` as running.
+- A turn that is running answers `{"status":"IS_STREAMING"}`. (LIVE, one chat, 2026-11-22; the
+  same chat's batch `update_time` was 41 minutes newer than its sidebar-list `update_time`.)
+  `just chats` treats only `IS_STREAMING` as running.
+- The page maps a 404 from this route to `UNAVAILABLE`. (PAGE)
 - It stayed available while the history-detail budget was exhausted. (LIVE)
+
+## Conversation batch
+
+`POST /backend-api/conversations/batch` with `{"conversation_ids": [...], "include_full_history": false}`
+answers `200` with a JSON array of chat metadata, about 0.5 KB per chat, in 0.5 s for 10 chats. (LIVE, PAGE)
+
+- More than 10 ids answers `422` "conversation_ids must contain at most 10 elements". (LIVE)
+- Item keys: `id`, `title`, `create_time`, `update_time`, `latest_assistant_turn_created_at`
+  (absent when null), `async_status` (absent for some chats), `is_archived`, `is_temporary_chat`,
+  `is_do_not_remember`, `memory_scope`, `context_scopes_v2.context_scopes[]`, `safe_urls[]`,
+  `blocked_urls[]`, `sugar_item_visible`. It has no `mapping`. (LIVE)
+- Times are ISO strings. For 9 of 10 chats `update_time` equals the sidebar list's; for a chat
+  with a running turn it was newer. (LIVE)
+- It answered while the history-detail budget was exhausted. (LIVE)
 
 ## Conversation body
 
