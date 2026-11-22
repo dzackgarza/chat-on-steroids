@@ -407,7 +407,9 @@ def main():
             state = "idle"
         # The recorder's clock counts when this app saw something newer than the message.
         last_at = max(summary.get("last_at") or 0, when / 1000)
-        if state != "busy" and args.minutes > 0 and now - last_at > args.minutes * 60:
+        # A failed read has no time, so it cannot be judged inactive: it stays listed as !status.
+        failed = "status" in summary
+        if not failed and state != "busy" and args.minutes > 0 and now - last_at > args.minutes * 60:
             continue
         rows.append({"id": chat, "title": titles[chat], "state": state, "action": action,
                      "last_at": last_at, **summary})
