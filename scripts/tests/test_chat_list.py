@@ -104,3 +104,12 @@ def test_the_model_column_shows_the_latest_model_and_how_many_others_were_used()
                 "user": 2, "assistant": 2, "tool": 1, "tokens": 12500})
     line = chat_list.render([row], NOW).splitlines()[1]
     assert "gpt-6-pro+1" in line and "12.5k" in line
+
+
+def test_a_tab_showing_the_delivery_timeout_banner_is_listed_as_an_alert_with_its_text():
+    # Captured 2026-11-22: tab marked `complete`, server said COMPLETE, last update hours old,
+    # page showed <aside role="alert">Message delivery timed out. Please try again.</aside>.
+    activity = {RUNNING: {"update_time": "2026-11-22T10:00:00.000000Z", "stream": "COMPLETE"}}
+    tabs = {RUNNING: "alert:Message delivery timed out. Please try again."}
+    row = rows(activity, tabs=tabs)[RUNNING]
+    assert (row["state"], row["action"]) == ("alert", "Message delivery timed out. Please try again.")
