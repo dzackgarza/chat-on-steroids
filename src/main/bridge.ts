@@ -62,6 +62,7 @@ import {
   noteWorkstreamRecoveryDelivered,
   observeWorkstreamTerminalError,
   releaseFailedWorkstreamReplacementBind,
+  releaseUnredeemedBlockedBootstrap,
   reopenUnsentWorkstreamReplacement,
   replaceWorkstream,
   retireWorkstream,
@@ -6273,6 +6274,21 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
         await releaseFailedWorkstreamReplacementBind(row.id, commandId);
       }
     }
+    // A browser-open attempt with no redeemed page cannot be evidence that
+    // the original claimed conversation is dead. Older controller builds
+    // stranded the row as blocked+commandId, even when a prior unarchived
+    // claimant remained recoverable. Release that exact failed rendezvous
+    // and allow authenticated same-chat recovery; do NOT invent a new chat.
+    for (const row of workstreamStatus()) {
+      if (row.phase !== "blocked" || row.conversationId !== null ||
+          row.actionId !== null || !row.commandId) continue;
+      const receipt = receiptFor(row.commandId);
+      if (receipt && !receipt.committed && receipt.client === null &&
+          !commands.some((command) => command.id === row.commandId) &&
+          await releaseUnredeemedBlockedBootstrap(row.id, row.commandId)) {
+        logWarn(`workstream ${row.id}: unredeemed bootstrap released; checking exact original claimant before replacement`);
+      }
+    }
     // Recover durable rows written by the old code, which already cleared commandId
     // into lateCommandId after a browser-proven unsent bootstrap. A receipt is
     // required; a merely missing command is insufficient to authorize replacement.
@@ -6446,10 +6462,14 @@ export async function sweepWorkstreams(now = Date.now()): Promise<void> {
             now,
             Boolean(
               receipt && !receipt.committed && receipt.error &&
+              // An expired command whose client is null never reached a
+              // page. Two such expiries prove the browser is unavailable,
+              // NOT that the original conversation is terminal. Replacing
+              // that chat only opens another doomed fresh tab.
+              receipt.client !== null &&
               browserPresent() &&
-              (["expired", "no_live_composer_tab"].includes(
-                classifySendFailure(receipt.error).state,
-              ) || receipt.error.includes("native-insert-no-text")),
+              (classifySendFailure(receipt.error).state === "no_live_composer_tab" ||
+                receipt.error.includes("native-insert-no-text")),
             ),
           );
         } else if (receipt?.committed && row.phase === "recovering") {

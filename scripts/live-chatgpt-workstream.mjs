@@ -148,11 +148,11 @@ async function cdpEvaluate(page, expression) {
 async function chatGptConversation(conversationId) {
   const page = await anyChatGptPage();
   return cdpEvaluate(page, `(async () => {
-    const session = await fetch('/api/auth/session', { credentials: 'include' });
+    const session = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
     if (!session.ok) return { error: 'session_http_' + session.status };
     const auth = await session.json();
     if (typeof auth.accessToken !== 'string') return { error: 'session_token_missing' };
-    const response = await fetch('/backend-api/conversation/${conversationId}', {
+    const response = await fetch('https://chatgpt.com/backend-api/conversation/${conversationId}', {
       credentials: 'include', headers: { Authorization: 'Bearer ' + auth.accessToken }
     });
     let body = null;
@@ -164,25 +164,25 @@ async function chatGptConversation(conversationId) {
 async function archiveConversation(conversationId) {
   const page = await anyChatGptPage();
   return cdpEvaluate(page, `(async () => {
-    const session = await fetch('/api/auth/session', { credentials: 'include' });
+    const session = await fetch('https://chatgpt.com/api/auth/session', { credentials: 'include' });
     if (!session.ok) return { error: 'session_http_' + session.status };
     const auth = await session.json();
     if (typeof auth.accessToken !== 'string') return { error: 'session_token_missing' };
-    const current = await fetch('/backend-api/conversation/${conversationId}', {
+    const current = await fetch('https://chatgpt.com/backend-api/conversation/${conversationId}', {
       credentials: 'include', headers: { Authorization: 'Bearer ' + auth.accessToken }
     });
     if (current.status === 404) return { status: 404, ok: true, alreadyGone: true };
     if (!current.ok) return { status: current.status, ok: false };
     if ((await current.json())?.is_archived === true)
       return { status: 200, ok: true, alreadyArchived: true };
-    const response = await fetch('/backend-api/conversation/${conversationId}', {
+    const response = await fetch('https://chatgpt.com/backend-api/conversation/${conversationId}', {
       method: 'PATCH', credentials: 'include',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.accessToken },
       body: JSON.stringify({ is_archived: true })
     });
     if (response.status === 404) return { status: 404, ok: true, alreadyGone: true };
     if (!response.ok) return { status: response.status, ok: false };
-    const confirm = await fetch('/backend-api/conversation/${conversationId}', {
+    const confirm = await fetch('https://chatgpt.com/backend-api/conversation/${conversationId}', {
       credentials: 'include', headers: { Authorization: 'Bearer ' + auth.accessToken }
     });
     if (confirm.status === 404) return { status: 404, ok: true, alreadyGone: true };
@@ -250,11 +250,19 @@ if (process.argv.includes('--cleanup-fixtures')) {
   process.exit(0);
 }
 const noWorkMode = process.argv.includes('--no-work-loop');
+const sameChatMode = process.argv.includes('--recover-only');
 const context = noWorkMode ? [
   'LIVE ACCEPTANCE FIXTURE ONLY.',
   `First call the ${pluginName} workstream tool with action="continue" and workstream="${id}". Print the exact workstream claim line as instructed by that tool.`,
   'Then reply with exactly "NO-WORK-DONE". Do not call any ordinary connector tools or edit any files.',
   'This tests whether the controller recognizes a completed turn with no successful tools; make one short reply and stop.'
+].join(' ') : sameChatMode ? [
+  'LIVE ACCEPTANCE FIXTURE ONLY. Do not edit files or touch other workstreams.',
+  `Use the plugin named ${pluginName}. First call workstream with action="continue" and workstream="${id}" and print its exact claim line.`,
+  'In this FIRST turn, call the ordinary read tool on /home/dzack/gitclones/chat-on-steroids/AGENTS.md and then finish your turn.',
+  'There is a SECOND required turn, but only after the controller explicitly continues THIS conversation:',
+  'on that later turn, call the same read tool on /home/dzack/gitclones/chat-on-steroids/README.md and then finish.',
+  'Do not read README.md in your first turn; do not open a replacement conversation.'
 ].join(' ') : [
   'LIVE ACCEPTANCE FIXTURE ONLY.',
   'Do not edit files, run shell commands, or touch another workstream.',
@@ -320,6 +328,79 @@ try {
   }, START_TIMEOUT_MS);
   oldConversation = first.conversationId;
 
+  if (sameChatMode) {
+    // A successful Core call may complete before the assistant has finished
+    // its turn. Recovery is meant to address a stopped existing chat, not
+    // interrupt a still-writing first answer.
+    await waitFor('first real tool turn to finish before same-chat recovery', async () => {
+      const row = (await bridgeGet('/workstreams')).workstreams.find((candidate) => candidate.id === id);
+      if (!row?.sessionId || row.conversationId !== oldConversation) return null;
+      const journal = await readFile(path.join(dataRoot, 'sessions', row.sessionId, 'events.jsonl'), 'utf8').catch(() => '');
+      let firstToolAt = 0;
+      let lastStartedAt = 0;
+      let lastCompletedAt = 0;
+      for (const line of journal.split('\n')) {
+        try {
+          const event = JSON.parse(line);
+          if (event.kind === 'tool_call' && event.call?.tool === 'read' && event.call?.outcome === 'ok' &&
+              event.call?.args?.text?.includes('/home/dzack/gitclones/chat-on-steroids/AGENTS.md'))
+            firstToolAt = Math.max(firstToolAt, event.time);
+          if (event.kind === 'turn_start') lastStartedAt = Math.max(lastStartedAt, event.time);
+          if (event.kind === 'turn_end' && event.outcome === 'completed')
+            lastCompletedAt = Math.max(lastCompletedAt, event.time);
+        } catch { /* a journal append may be incomplete during this read */ }
+      }
+      // ChatGPT can begin the next assistant segment in the SAME millisecond
+      // as a preceding segment's `turn_end`. A quiet segment is not a quiet
+      // conversation; sending recovery then interrupts live generation.
+      if (!firstToolAt || lastCompletedAt < firstToolAt || lastCompletedAt < lastStartedAt ||
+          Date.now() - lastCompletedAt < 7_000) return null;
+      const page = await pageForConversation(oldConversation);
+      if (!page) return null;
+      const stillGenerating = await cdpEvaluate(page, `Boolean(document.querySelector(
+        'button[data-testid="stop-button"], button[data-testid="composer-stop-button"], ' +
+        'button[aria-label="Stop streaming"], button[aria-label="Stop generating"], ' +
+        'form[data-chatgpt-composer] button[aria-label^="Stop" i]'))`
+      ).catch(() => true);
+      return stillGenerating ? null : row;
+    }, START_TIMEOUT_MS);
+    const before = await chatGptConversation(oldConversation);
+    assert.equal(before.ok, true);
+    assert.equal(before.body.is_archived, false);
+    const resumedAt = Date.now();
+    await bridgePost('/workstreams/recover', {
+      id, reason: 'Live acceptance: explicitly resume the verified original conversation',
+      expectedConversationId: oldConversation,
+      expectedLastActivity: first.lastActivity,
+    });
+    const recovered = await waitFor('second real tool call in the SAME ChatGPT conversation', async () => {
+      const rows = (await bridgeGet('/workstreams')).workstreams ?? [];
+      const row = rows.find((candidate) => candidate.id === id);
+      if (!row) throw new Error('the live recovery workstream was unexpectedly retired');
+      if (row.conversationId !== oldConversation)
+        throw new Error(`same-chat recovery moved to ${row.conversationId} instead of ${oldConversation}`);
+      const journal = await readFile(path.join(dataRoot, 'sessions', row.sessionId, 'events.jsonl'), 'utf8').catch(() => '');
+      const secondRead = journal.split('\n').some((line) => {
+        try {
+          const event = JSON.parse(line);
+          return event.kind === 'tool_call' && event.time >= resumedAt &&
+            event.call?.tool === 'read' && event.call?.outcome === 'ok' &&
+            event.call?.args?.text?.includes('/home/dzack/gitclones/chat-on-steroids/README.md');
+        } catch { return false; }
+      });
+      if (!secondRead || !await pageForConversation(oldConversation)) return null;
+      return row;
+    }, START_TIMEOUT_MS);
+    const after = await chatGptConversation(oldConversation);
+    assert.equal(after.ok, true);
+    assert.equal(after.body.is_archived, false);
+    assert.ok(recovered.lastActivity >= resumedAt);
+    console.log(JSON.stringify({
+      ok: true, workstream: id,
+      sameChatRecovered: true, conversationId: oldConversation,
+      secondOrdinaryToolCall: true, originalUnarchived: true,
+    }, null, 2));
+  } else {
   if (!process.argv.includes('--replace-only')) {
     // The full acceptance mode checks the entire paused lease boundary. For a focused
     // archive/replace diagnosis `--replace-only` keeps all real browser, connector and
@@ -362,6 +443,7 @@ try {
     oldArchived: true,
     replacementLive: true
   }, null, 2));
+  }
   }
 } finally {
   // The fixture can fail before assigning oldConversation, despite having created a

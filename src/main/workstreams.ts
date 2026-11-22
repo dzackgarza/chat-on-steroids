@@ -1150,6 +1150,7 @@ export async function prepareArchivedWorkstreamRecovery(
       !["active", "blocked"].includes(row.phase) ||
       (row.phase === "blocked" &&
         row.error !== "archived_claimant_restoration_pending" &&
+        row.error !== "fresh_bootstrap_unredeemed: original claimant needs verified recovery" &&
         !row.error?.startsWith("conversation_unbound:")) ||
       row.conversationId !== null ||
       row.claimedBy.at(-1) !== claimant ||
@@ -1436,9 +1437,10 @@ export async function recordWorkstreamCommand(
  * intended turn. Do not spend the remainder of that attempt's model-response backoff on a
  * command that can no longer make progress: release the dead command and make recovery
  * eligible to retry delivery to the SAME conversation. One failed delivery
- * never proves the old chat is unusable; two independently failed browser
- * commands to that exact chat establish that this frontend cannot currently
- * receive a continuation and authorize the bounded replacement fallback.
+ * never proves the old chat is unusable; two failures acknowledged by an
+ * actual page for that exact chat can authorize a bounded replacement.
+ * An expired *unredeemed* send instead proves the browser command was not
+ * delivered, not that the chat is terminal. Preserve same-chat recovery.
  * A missing/lost receipt is ambiguous, not another browser failure.
  */
 export async function releaseFailedWorkstreamDelivery(
@@ -1468,9 +1470,9 @@ export async function releaseFailedWorkstreamDelivery(
       row.nextCheck = now;
       row.error = null;
     } else if (confirmedPageDeliveryFailure && previouslyFailedOnPage) {
-      // Both independent browser commands reached a terminal delivery
-      // failure. They did not start a model turn, so do not miscount them as
-      // failed model revives. Escalate on this proof of unavailable frontend.
+      // Both independent commands were redeemed by a browser document and
+      // acknowledged as failed to submit. They did not start a model turn,
+      // so do not miscount them as failed model revives.
       row.attempts = MAX_RECOVERY_ATTEMPTS;
       row.nextCheck = now;
       row.error = "revive_browser_delivery_exhausted: two failed same-chat deliveries";
@@ -1823,6 +1825,38 @@ export async function releaseFailedWorkstreamReplacementBind(
       return false;
     row.commandId = null;
     if (row.conversationId === null) row.lateCommandId = commandId;
+    await save();
+    return true;
+  });
+}
+
+/**
+ * A replacement/opening command failed before ANY page redeemed it. When the
+ * durable row already has an exact historical claimant and the blocked row
+ * has no bound successor, the failed command does not prove the old chat is
+ * dead. Clear only that impossible bootstrap rendezvous, and let the browser
+ * verify/resume the original claimant before requesting another replacement.
+ *
+ * A missing receipt or a receipt with a page client is ambiguous and never
+ * authorizes this transition. A newer claim and an in-flight tool both fence
+ * the old candidate through the usual row predicates.
+ */
+export async function releaseUnredeemedBlockedBootstrap(
+  id: string,
+  commandId: string,
+): Promise<boolean> {
+  return exclusive(async () => {
+    const row = rows.get(id);
+    if (
+      !row || row.phase !== "blocked" ||
+      row.commandId !== commandId || row.actionId !== null ||
+      row.conversationId !== null ||
+      !row.claimedBy.at(-1) ||
+      runningToolCallsForWorkstream(id) > 0
+    ) return false;
+    row.commandId = null;
+    row.lateCommandId = null;
+    row.error = "fresh_bootstrap_unredeemed: original claimant needs verified recovery";
     await save();
     return true;
   });
