@@ -1421,6 +1421,8 @@ recording is missed, and raising `candidates` covers more at one conversation re
 model (`metadata.model_slug`) and size come from the same read. `~tok` is visible user,
 assistant and tool text at four characters per token, not ChatGPT's context counter. It needs
 Chromium on port 9222 signed in to ChatGPT. Details: `scripts/chat-list.py`.
+The endpoints it calls, their response shapes, and the rate limits are specified in
+`docs/chatgpt-backend-api.md`.
 
 A chat that `new` opens is an ordinary chat: it is not a worker, it belongs to no run, and
 it appears in `just sessions` like any other.
