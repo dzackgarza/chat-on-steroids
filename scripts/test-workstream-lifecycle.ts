@@ -13,6 +13,7 @@ import {
   admitWorkstreamCall,
   acknowledgeWorkstreamArchiveCleanup,
   bindWorkstreamConversation,
+  blockWorkstreamAction,
   completeWorkstreamReplacementReceipt,
   continueWorkstream,
   finishWorkstreamArchive,
@@ -26,6 +27,7 @@ import {
   queueFailedBootstrapArchive,
   recordWorkstreamCommand,
   releaseFailedWorkstreamDelivery,
+  releaseUnredeemedBlockedBootstrap,
   recoverWorkstreamNow,
   replaceWorkstream,
   reserveWorkstream,
@@ -214,6 +216,30 @@ void (async () => {
       'uncertain-next', 42200, false);
     assert.equal(state('uncertain-chat').phase, 'recovering');
     assert.match(state('uncertain-chat').error ?? '', /^revive_transport_uncertain:/);
+
+    // An opening command that never reached any browser page cannot establish
+    // a successor. Earlier builds stranded this as blocked+commandId, so the
+    // original claimant could never be probed again. Clear the failed
+    // rendezvous only when the bridge has proved no page redeemed the command.
+    const blockedBootstrap = await startWorkstream('blocked-bootstrap', path.join(temp, 'bootstrap'), 12500);
+    assert.equal(blockedBootstrap.ok, true);
+    if (!blockedBootstrap.ok) throw new Error('unreachable');
+    const original = '98989898-9898-9898-9898-989898989898';
+    await bindWorkstreamConversation(blockedBootstrap.workstreamId, original);
+    const reclaimedBootstrap = await continueWorkstream('blocked-bootstrap', 400_000);
+    assert.equal(reclaimedBootstrap.ok, true);
+    await reserveWorkstream('blocked-bootstrap', 'prior instructions', 'unsent-bootstrap', true, 400_100);
+    await blockWorkstreamAction('blocked-bootstrap', 'open-unsent-bootstrap', 'browser did not answer');
+    assert.equal(state('blocked-bootstrap').phase, 'blocked');
+    assert.equal(state('blocked-bootstrap').commandId, 'unsent-bootstrap');
+    assert.equal(await releaseUnredeemedBlockedBootstrap('blocked-bootstrap', 'wrong-command'), false);
+    assert.equal(await releaseUnredeemedBlockedBootstrap('blocked-bootstrap', 'unsent-bootstrap'), true);
+    assert.equal(state('blocked-bootstrap').commandId, null);
+    assert.equal(state('blocked-bootstrap').phase, 'blocked');
+    assert.equal(await recoverWorkstreamNow('blocked-bootstrap', 'verified unarchived',
+      400_200, { conversationId: null, lastActivity: 400_100 }, original), true);
+    assert.equal(state('blocked-bootstrap').conversationId, original);
+    assert.equal(state('blocked-bootstrap').phase, 'recovering');
 
     // The claim-line provenance belongs to ONE opaque lock, not merely the
     // historic tail of claimedBy. Typed terminality must be actionable before

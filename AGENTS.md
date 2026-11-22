@@ -663,9 +663,11 @@ renderers, and the headless CDP opener propagates failed HTTP/timeout/no-target
 results to command delivery. An opener failure cannot become a phantom
 successful bootstrap waiting indefinitely for a nonexistent page ACK.
 One browser delivery failure is not evidence that the original chat is dead.
-Two separately failed same-chat browser commands trigger the bounded
-archive/replacement fallback. Lost receipts, account-wide usage holds, and
-other unverified transport failures do not count as proof of a dead page.
+Two separately *page-redeemed and acknowledged* same-chat delivery failures
+can trigger the bounded archive/replacement fallback. An unredeemed send
+that simply expires proves only a browser transport outage, not conversation
+terminality. Lost receipts, account-wide usage holds, and other unverified
+transport failures never count as proof of a dead page.
 
 **A replacement inherits its predecessors' execution, not just the brief.** A workstream keeps
 one recorder session across every chat that holds it, so the opening message of any replacement
