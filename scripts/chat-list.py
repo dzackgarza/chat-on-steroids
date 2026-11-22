@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """List the account's ChatGPT conversations with idle time, answering model and length.
-(`just gpt` runs this.)
+(`just chats` runs this.)
 
 The account's own conversation index is the only complete list, and it carries no
 model: `default_model_slug` and per-message `metadata.model_slug` exist only on
@@ -100,6 +100,114 @@ def epoch(value):
         return datetime.fromisoformat(text).timestamp()
     except ValueError:
         return 0.0
+
+
+def load_jsonl(path):
+    rows = []
+    for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
+    return rows
+
+
+def describe(row):
+    """One line for the newest thing this chat did. `busy` alone says nothing about
+    whether work is happening — a chat mid-tool-call and a chat wedged ten minutes ago
+    both read the same — so the row carries the action and its clock instead."""
+    kind = row.get("kind", "?")
+    if kind == "tool_call":
+        call = row.get("call", {})
+        summary = (call.get("summary") or {}).get("title") or ""
+        return " ".join(x for x in (call.get("tool"), call.get("outcome"), summary) if x)
+    if kind.endswith("_message"):
+        text = (row.get("message") or {}).get("text") or ""
+        return f"{kind.removesuffix('_message')}: {' '.join(text.split())[:60]}"
+    if kind == "turn_end":
+        return f"turn_end {row.get('outcome', '')}".strip()
+    if kind == "chat_error":
+        return f"error: {' '.join(((row.get('message') or {}).get('text') or '').split())[:60]}"
+    return kind
+
+
+def recorded_states(root):
+    """Turn state of every chat this app recorded: {conversation id: (ms, state, action)}.
+
+    Only chats that bridged through the app appear here; any other account chat has no
+    recorded turn state, so its row shows `-`."""
+    states = {}
+    for meta_file in root.glob("*/meta.json"):
+        meta = json.loads(meta_file.read_text())
+        chat = meta.get("conversationId")
+        if not chat:
+            continue
+        session = meta_file.parent
+        events = load_jsonl(session / "events.jsonl")
+        # A message is rewritten in its own shard while it streams, so the newest one is not
+        # in events.jsonl at all and is often the only thing that happened recently.
+        messages = [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
+        # Ordered by seq as well as time: a turn ending and the next one starting share a
+        # second, and the clock alone reports the chat as having just stopped when it started.
+        order = lambda row: (row.get("time", 0), row.get("seq", 0))
+        newest = max(events + messages, key=order, default=None)
+
+        # turn_start when ChatGPT begins generating, turn_end when it finishes. Only turn_end
+        # is a clean ending: a turn that dies to an error or a closed tab keeps turn_start as
+        # its newest turn event, so those two alone report a dead chat as busy forever.
+        marks = [row for row in events if row.get("kind") in ("turn_start", "turn_end", "chat_error")]
+        last = max(marks, key=order, default=None)
+        if last is None or last["kind"] == "turn_end":
+            state = "idle"
+        else:
+            state = "busy"
+            # A stall report is not an ending: the turn often resumes. Anything recorded after
+            # one is the chat working again, so `wedged` stands only while the error is last.
+            if last["kind"] == "chat_error" and not any(order(row) > order(last) for row in events):
+                state = "wedged"
+        # The clock is the last action's own time, never meta.updatedAt: the recorder touches
+        # that on any observation of the chat, including its own polling.
+        when = newest.get("time", 0) if newest else meta["updatedAt"]
+
+        # A turn nothing has added to for 90 s is not generating, whatever the last event says.
+        # Deliberately eager: the cost of being early is one refused push, because callers
+        # compare this timestamp before and after the attempt; the cost of being late is a
+        # whole polling interval of a chat doing nothing.
+        if state == "busy" and time.time() - when / 1000 > 90:
+            state = "stalled"
+
+        entry = (when, state, describe(newest) if newest else "-")
+        if chat not in states or entry[0] > states[chat][0]:
+            states[chat] = entry
+    return states
+
+
+TAB_STATE_JS = """(() => {
+  const els = [...document.querySelectorAll('[data-talvt-turn-state]')];
+  return els.length ? els[els.length - 1].getAttribute('data-talvt-turn-state') : null;
+})()"""
+
+
+def tab_turn_states(endpoint):
+    """Turn state of each open ChatGPT conversation tab: {conversation id: state}.
+
+    ChatGPT's own page marks the newest turn `in_progress` while the model works, then
+    `complete` or `cancelled` (the same attribute the extension reads, see
+    extension/chatgpt-dom.js). This is the direct signal that a chat is generating now;
+    the account index's update time can lag a turn that is still streaming. A chat with
+    no open tab has no entry."""
+    states = {}
+    for target in cdp_targets(endpoint):
+        url = target.get("url") or ""
+        if target.get("type") != "page" or "chatgpt.com/" not in url or "/c/" not in url:
+            continue
+        chat = url.split("/c/", 1)[1].split("?")[0].split("/")[0].split("#")[0]
+        state = evaluate(target["webSocketDebuggerUrl"], TAB_STATE_JS, timeout="10")
+        if state:
+            states[chat] = state
+    return states
 
 
 def idle_text(seconds):
@@ -316,6 +424,11 @@ def main():
         help="Exported conversation library from chatgpt-web-export.",
     )
     parser.add_argument("--cache", default=str(STATE))
+    parser.add_argument(
+        "--sessions",
+        required=True,
+        help="This app's recorder directory (the justfile's sessions_dir).",
+    )
     parser.add_argument("--json", action="store_true", help="Machine-readable output.")
     args = parser.parse_args()
 
@@ -348,11 +461,12 @@ def main():
     cache = load_json(cache_path, {})
 
     cutoff = time.time() - args.hours * 3600 if args.hours > 0 else 0.0
+    tabs = tab_turn_states(args.devtools)
     wanted = [
         item
         for item in items
         if (not args.match or args.match.lower() in (item.get("title") or "").lower())
-        and epoch(item.get("update_time")) >= cutoff
+        and (epoch(item.get("update_time")) >= cutoff or tabs.get(item["id"]) == "in_progress")
     ]
     wanted.sort(key=lambda item: epoch(item.get("update_time")), reverse=True)
     wanted = wanted[: args.limit]
@@ -407,6 +521,19 @@ def main():
             row["stale"] = True
         rows.append(row)
 
+    states = recorded_states(Path(args.sessions).expanduser())
+    for row in rows:
+        when, state, action = states.get(row["id"], (0, "-", ""))
+        # The account index can lag a turn that is still streaming; the recorder's own
+        # clock is the fresher of the two when this app saw the chat.
+        row["update_time"] = max(row["update_time"], when / 1000)
+        tab = tabs.get(row["id"])
+        if tab == "in_progress":
+            state = "busy"
+        elif state == "-" and tab:
+            state = "idle"
+        row["state"] = state
+        row["action"] = action
     rows.sort(key=lambda row: row["update_time"], reverse=True)
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -435,6 +562,8 @@ def main():
                             "stale",
                             "archived",
                             "status",
+                            "state",
+                            "action",
                         )
                     }
                     for row in rows
@@ -445,7 +574,7 @@ def main():
         return
 
     print(
-        f"{'updated':<12} {'idle':>6} {'id':<38} {'model':<18} {'msgs':>5} {'tools':>5} {'~tok':>7}  title"
+        f"{'updated':<12} {'idle':>6} {'state':<8} {'id':<38} {'model':<18} {'msgs':>5} {'tools':>5} {'~tok':>7}  title | last action"
     )
     for row in rows:
         model = row.get("model") or (
@@ -471,8 +600,9 @@ def main():
         idle = idle_text(time.time() - row["update_time"]) if row["update_time"] else "?"
         title = " ".join((row.get("title") or "").split())[:60]
         print(
-            f"{when:<12} {idle:>6} {row['id']:<38} {model:<18} {messages:>5} {row.get('tool') or 0:>5} "
-            f"{tokens:>7}  {title}"
+            f"{when:<12} {idle:>6} {row['state']:<8} {row['id']:<38} {model:<18} {messages:>5} "
+            f"{row.get('tool') or 0:>5} {tokens:>7}  {title}"
+            + (f" | {row['action']}" if row["action"] else "")
         )
     if any(row["stale"] for row in rows):
         print(

@@ -1382,8 +1382,8 @@ just sessions                    # recorded chats, newest first
 just transcript <part-of-an-id>  # print one chat; defaults to the newest
 just search <term>               # which chats mention a term
 
-just chats                       # conversation ids, and whether each chat is mid-turn
-just gpt [limit] [match] [archived] [hours]  # every account chat: idle time, model, ~tokens
+just chats [hours]               # ACTIVE chats (default: changed in the last 1h): id, state, model, ~tokens
+just chats 0                     # the whole account, active and inactive
 just state <conversation-id>     # what that one chat's turn is doing, from the live recorder
 just say <conversation-id> "..."  # send that message to that chat
 just new "..."                    # open a new chat with that opening message
@@ -1396,10 +1396,13 @@ just revive <conversation-id> "..."     # reload its page, then send
 turn event was a start, so ChatGPT is generating — send when it is `idle`. A chat whose tab
 was closed mid-turn keeps a stale `busy`, so read the clock column with it.
 
-`just gpt` lists the account's conversations, not only the ones this app recorded, so it
-covers chats that never used the connector. `hours=N` keeps chats changed in the last N hours;
-`idle` is the time since the chat last changed, and the account index cannot say whether a turn
-is generating now (`just chats` does, for recorded chats). The account index carries no model; the model
+`just chats` reads the account's conversations, not only the ones this app recorded, so it
+covers chats that never used the connector. `hours=N` keeps chats changed in the last N hours.
+`idle` is the time since the chat last changed in the account index, which can lag a streaming
+turn. `state` is `busy` when the chat's open tab marks the turn `in_progress` or the recorder
+says so (such a chat is listed outside the window too), else the recorder's state, `idle` for an
+open tab with no running turn, or `-` for a chat with neither a tab nor a recording: its
+generating state is unknown to this command. The account index carries no model; the model
 (`model_slug` on assistant messages) exists only in each conversation's detail, so rows come
 from the exported corpus, a summary cache, or a bounded number of live detail fetches. `~tok`
 is visible user, assistant and tool text at four characters per token, not ChatGPT's context

@@ -159,141 +159,33 @@ state_dir := if os() == "macos" {
     env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/state"
 }
 
-# Which chats are recorded, what each last did, and the id `say` wants
+# The ACTIVE ChatGPT chats (changed in the last `hours`, default 1): idle, state, model, size, id
 #
-# Only chats active in the last `hours` are shown. Every chat this app has ever seen is
-# still on disk, and a driver reading a list of hundreds of finished ones cannot see the
-# three it is actually keeping alive. Pass a bigger number, or 0, for the whole history.
-chats hours="24":
-    #!/usr/bin/env python3
-    import json, pathlib, sys, time
-
-    root = pathlib.Path("{{sessions_dir}}")
-
-    def load_jsonl(path):
-        rows = []
-        for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                print(f"warning: skipping malformed recorder row {path}:{lineno}: {exc}", file=sys.stderr)
-        return rows
-
-    def describe(row):
-        """One line for the newest thing this chat did. `busy` alone says nothing about
-        whether work is happening — a chat mid-tool-call and a chat wedged ten minutes ago
-        both read the same — so the row carries the action and its clock instead."""
-        kind = row.get("kind", "?")
-        if kind == "tool_call":
-            call = row.get("call", {})
-            summary = (call.get("summary") or {}).get("title") or ""
-            return " ".join(x for x in (call.get("tool"), call.get("outcome"), summary) if x)
-        if kind.endswith("_message"):
-            text = (row.get("message") or {}).get("text") or ""
-            return f"{kind.removesuffix('_message')}: {' '.join(text.split())[:60]}"
-        if kind == "turn_end":
-            return f"turn_end {row.get('outcome', '')}".strip()
-        if kind == "chat_error":
-            return f"error: {' '.join(((row.get('message') or {}).get('text') or '').split())[:60]}"
-        return kind
-
-    rows = []
-    for meta_file in root.glob("*/meta.json"):
-        meta = json.loads(meta_file.read_text())
-        chat = meta.get("conversationId")
-        if not chat:
-            continue  # nothing to address a message to
-        session = meta_file.parent
-
-        events = load_jsonl(session / "events.jsonl")
-        # A message is rewritten in its own shard while it streams, so the newest one is not
-        # in events.jsonl at all and is often the only thing that happened recently.
-        messages = [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
-        # Ordered by seq as well as time: a turn ending and the next one starting share a
-        # second, and the clock alone reports the chat as having just stopped when it started.
-        newest = max(events + messages, key=lambda row: (row.get("time", 0), row.get("seq", 0)), default=None)
-
-        # The recorder writes turn_start when ChatGPT begins generating and turn_end when it
-        # finishes. Only turn_end is a clean ending: a turn that dies to an error or a closed
-        # tab keeps turn_start as its newest turn event, so reading those two alone reports a
-        # dead chat as busy forever — the row nobody should be waiting on.
-        order = lambda row: (row.get("time", 0), row.get("seq", 0))
-        marks = [row for row in events if row.get("kind") in ("turn_start", "turn_end", "chat_error")]
-        last = max(marks, key=order, default=None)
-        if last is None or last["kind"] == "turn_end":
-            state = "idle"
-        else:
-            state = "busy"
-            # A stall report is not an ending — it says a turn stopped producing output, and
-            # the turn often resumes. Anything recorded after one is the chat working again,
-            # so `wedged` only stands while the error really is the last thing that happened.
-            if last["kind"] == "chat_error" and not any(order(row) > order(last) for row in events):
-                state = "wedged"
-        # The clock is the last action's own time, never meta.updatedAt: the recorder touches
-        # that on any observation of the chat, including its own polling, so a session whose
-        # page has produced nothing for twenty minutes still carries a timestamp from seconds
-        # ago — and a row whose clock and whose action disagree is worse than no clock.
-        when = newest.get("time", 0) if newest else meta["updatedAt"]
-
-        # A turn nothing has added to for a while is not generating, whatever the last event
-        # says. Recorded gaps between rows inside a live turn run 8.2s at the median and 26s at
-        # p90, and separating turns that never stalled from turns that did barely moves that —
-        # so the long tail is not evidence of slow work, it is the recording being coarser than
-        # the agent's actual contact with the app.
-        #
-        # Ninety seconds, therefore, and deliberately eager. The cost of being early is one
-        # refused push, because the caller compares this timestamp before and after the attempt
-        # and leaves a chat alone when the clock moved. The cost of being late is the whole
-        # polling interval of a chat doing nothing.
-        if state == "busy" and time.time() - when / 1000 > 90:
-            state = "stalled"
-
-        rows.append((when, chat, state, describe(newest) if newest else "-"))
-
-    cutoff = float("{{hours}}") * 3600
-    for updated, chat, state, action in sorted(rows, reverse=True):
-        if cutoff and time.time() - updated / 1000 > cutoff:
-            continue
-        clock = time.strftime("%m-%d %H:%M:%S", time.localtime(updated / 1000))
-        print(f"{clock}\t{chat}\t{state}\t{action}")
-
-# ---------------------------------------------------------------------------
-# The browser's actual tabs.
+# Every chat on the account appears, whether or not it ever used the connector, newest first.
+# Columns: `idle` is time since the chat last changed in the account index, which can lag a
+# turn still streaming. `state` is `busy` when the chat's open tab marks its turn in progress
+# or this app's recorder says so (a busy chat is listed even outside `hours`); otherwise the
+# recorder's idle/stalled/wedged, `idle` for an open tab with no running turn, and `-` for a
+# chat with no open tab and no recording, whose generating state this does not know.
+# `model` is the model that answered last, `msgs` and `tools` count messages, and `~tok`
+# sizes the chat. The last column is the newest recorded action. The id is what `say` wants.
 #
-# `chats` reports what this app recorded; it cannot see a tab. Chromium's DevTools endpoint
-# can, and it is the only thing that knows a conversation is open twice. Every tab the app
-# opens carries a `clf` marker and nothing closes it when the command ends, so tabs pile up:
-# duplicates of live chats, and chats whose work finished hours ago.
-#
-# Needs Chromium started with --remote-debugging-port=9222.
-
-devtools := "http://127.0.0.1:9222"
-
-# Your ChatGPT conversations themselves, newest first — not just the ones this app recorded
-#
-# Read from ChatGPT through a tab's own session, so it sees every conversation on the account,
-# including chats that never touched the connector. Each row: when it last changed, how long
-# it has been idle, the model that answered it, message and tool counts, and `~tok`.
-#
-# `hours` keeps only chats updated in the last N hours (0 = no age limit). `limit` caps rows
-# after that filter. `match` filters on the title. archived="true" lists archived chats.
-# `fresh` bounds how many live detail fetches this run may make for model and size.
+# `hours` is the activity window: a chat appears only if it changed in the last N hours.
+# `just chats 0` lists the whole account, active and inactive; `just chats 24` adds the
+# day's quieter chats. `match` filters on the title. `limit` caps rows after both filters.
+# archived="true" lists archived chats. `fresh` bounds how many live detail fetches this run
+# may make for model and size.
 #
 # The account index carries no model; `model_slug` exists only on each conversation's detail.
 # So model and size come from the exported corpus when current, else a summary cache keyed by
 # update time, else a live fetch. `*` marks a corpus value older than the live chat; `?` means
-# none was available (raise `fresh`). `model+N` means N other models answered earlier turns.
-# `~tok` counts user, assistant and tool text at four characters per token. Hidden reasoning,
-# system prompts and tool schemas are invisible from here, so it sizes a chat rather than
-# reproducing ChatGPT's context counter.
-#
-# "Idle" is the time since the conversation last changed. The index cannot say whether a turn
-# is generating now; `just chats` and `just state` report that for chats this app records.
+# none was available (raise `fresh`); `!n` is the status of a failed fetch; `model+N` means N
+# other models answered earlier turns. `~tok` counts user, assistant and tool text at four
+# characters per token. Hidden reasoning, system prompts and tool schemas are invisible from
+# here, so it sizes a chat rather than reproducing ChatGPT's context counter.
 #
 # Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
-gpt limit="100" match="" archived="false" hours="0" fresh="20" json="false":
+chats hours="1" match="" limit="100" archived="false" fresh="20" json="false":
     #!/usr/bin/env bash
     set -euo pipefail
     extra=()
@@ -307,8 +199,20 @@ gpt limit="100" match="" archived="false" hours="0" fresh="20" json="false":
         false) ;;
         *) echo 'archived must be true or false' >&2; exit 2 ;;
     esac
-    exec python3 "{{justfile_directory()}}/scripts/chat-list.py" \
-        --limit "{{limit}}" --match "{{match}}" --fresh "{{fresh}}" --hours "{{hours}}" "${extra[@]}"
+    exec python3 "{{justfile_directory()}}/scripts/chat-list.py" --sessions "{{sessions_dir}}" \
+        --hours "{{hours}}" --match "{{match}}" --limit "{{limit}}" --fresh "{{fresh}}" "${extra[@]}"
+
+# ---------------------------------------------------------------------------
+# The browser's actual tabs.
+#
+# `chats` reports what this app recorded; it cannot see a tab. Chromium's DevTools endpoint
+# can, and it is the only thing that knows a conversation is open twice. Every tab the app
+# opens carries a `clf` marker and nothing closes it when the command ends, so tabs pile up:
+# duplicates of live chats, and chats whose work finished hours ago.
+#
+# Needs Chromium started with --remote-debugging-port=9222.
+
+devtools := "http://127.0.0.1:9222"
 
 # Archive one conversation in ChatGPT, whether or not it has a tab open
 archive chat:
