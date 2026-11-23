@@ -2182,6 +2182,45 @@ async function handle(
   if (rateLimited()) return json(res, 429, { error: "rate_limited" }, origin);
   if (noteBrowserSeen()) changed();
 
+  // The overview is read-only and does not impersonate a page observer. In particular,
+  // never call /activity to get these values: that route establishes *real page contact*
+  // and would otherwise make a closed or frozen ChatGPT tab look alive.
+  if (route === "/sidebar/metrics" && req.method === "POST") {
+    let request: unknown;
+    try {
+      request = await readBody(req);
+    } catch (error) {
+      return (error as Error).message === "body_too_large"
+        ? tooLarge(res, origin)
+        : json(res, 400, { error: "bad_request" }, origin);
+    }
+    const values = request && typeof request === "object" && !Array.isArray(request)
+      ? (request as Record<string, unknown>)["conversationIds"]
+      : null;
+    if (!Array.isArray(values) || values.length > 10 || values.length === 0 ||
+        values.some((value) => typeof value !== "string" || conversationId(value) !== value) ||
+        new Set(values).size !== values.length)
+      return json(res, 400, { error: "bad_conversation_ids" }, origin);
+    const metrics = await Promise.all(values.map(async (id: string) => {
+      const session = await findSessionByConversation(id, { requireUnique: true });
+      const live = conversationTurnState(id);
+      return {
+        id,
+        recorded: session !== null,
+        contextTokens: session?.contextTokens ?? null,
+        userMessages: session?.userMessages ?? null,
+        toolCalls: session?.toolCalls ?? null,
+        lastTurnOutcome: session?.lastTurnOutcome ?? null,
+        updatedAt: session?.updatedAt ?? null,
+        generating: live.known ? live.generating : null,
+        lastStoredAt: live.lastStoredAt,
+        lastStoredKind: live.lastStoredKind,
+        inFlightCalls: inFlightCallsFor(id).length,
+      };
+    }));
+    return json(res, 200, { rows: metrics }, origin);
+  }
+
   if (route === "/workstreams/archive" && req.method === "GET") {
     await sweepWorkstreams();
     return json(

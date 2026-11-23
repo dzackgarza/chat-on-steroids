@@ -868,6 +868,16 @@ selectors into `content.js`.**
 **`content.js`** owns per-document memory: conversation epoch, seen-message identities, live
 turn state, Fiber cache, rendered replacement state, pre-service-worker queue.
 
+**`sidebar-chats.html/js/css`** is an on-demand, read-only extension page opened from the
+popup. It takes the first ten unarchived entries in ChatGPT sidebar order and fetches
+per-conversation batch/stream metadata from a signed-in ChatGPT tab. It never fetches
+full ChatGPT history: the read-only bridge `POST /sidebar/metrics` supplies bounded
+local recorder context-size estimates, message counts and progress facts when available.
+Missing recordings are not zeros, and any failed request is an explicit error to the
+consumer rather than an invisible fallback. The overview must never use
+`/activity` as a status probe: that feed asserts live page contact, which viewing another
+chat from the overview cannot prove.
+
 **`fiber.js` is intentionally least trusted.** It emits a strict **allowlist** (not copied
 props minus a denylist), never tool argument values, validates the exact CLF connector
 names, and fails closed on unfamiliar React shapes. Its `postMessage` output is
@@ -904,7 +914,8 @@ A second loopback HTTP service on the first free port of **8765–8769**. The ex
 it with `/hello`, silently provisions a bearer token with `/pair`, then uses authenticated
 routes: `/status`, `/events`, `/closed`, `/activity`, `/compact/claim-auto`, `/compact`,
 `/goal/draft`, `/goal/ack`, `/goal/objective`, `/goal/open`, `/settings` (GET and POST),
-`/commands/redeem`, `/commands/ack`. `/settings` is the only pair the page may write, and
+`/commands/redeem`, `/commands/ack`, `/sidebar/metrics` (read-only, bounded POST).
+`/settings` is the only pair the page may write, and
 its GET exists for the one composer with no conversation to read `/activity` for: a New Chat.
 
 `/send`, `GET /send/outcome`, `GET /conversation/status` and `GET /sleep/status` are the

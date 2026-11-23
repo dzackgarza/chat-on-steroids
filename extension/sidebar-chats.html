@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sidebar conversations · Chat On Steroids</title>
+    <link rel="stylesheet" href="sidebar-chats.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Chat On Steroids / ChatGPT</p>
+          <h1>Top 10 sidebar conversations</h1>
+          <p class="description">Unarchived conversations in ChatGPT sidebar order, including pinned chats. Status and activity come from live conversation metadata, not the sidebar timestamp.</p>
+        </div>
+        <button type="button" id="refresh">Refresh</button>
+      </header>
+      <p id="notice" role="status" aria-live="polite">Looking for a signed-in ChatGPT tab…</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Conversation</th>
+              <th scope="col">Status</th>
+              <th scope="col">Idle for</th>
+              <th scope="col">Last activity</th>
+              <th scope="col">Recorded length (est.)</th>
+              <th scope="col">Recorded messages / tools</th>
+              <th scope="col">Last recorded turn</th>
+            </tr>
+          </thead>
+          <tbody id="conversations"></tbody>
+        </table>
+      </div>
+      <p class="footnote">No full conversation histories are requested. Status and last activity come from ChatGPT's lightweight APIs; recorded length and message statistics come from Chat On Steroids' existing session metadata. A conversation that was not recorded has no local length, and any failed request is reported explicitly. The local context-size estimate is not an exact ChatGPT context counter. Stale streaming flags do not certify that a model is still working.</p>
+    </main>
+    <script src="sidebar-chats.js"></script>
+  </body>
+</html>

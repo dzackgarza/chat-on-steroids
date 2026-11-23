@@ -1877,6 +1877,23 @@ function serializeTab(tab, operation) {
 }
 
 const HANDLERS = {
+  /** Locally recorded size and liveness, without polling /activity or reading chat text. */
+  async sidebar_metrics(message, sender) {
+    if (sender?.url !== chrome.runtime.getURL('sidebar-chats.html'))
+      return { ok: false, error: 'not_dashboard' };
+    const ids = message?.ids;
+    if (!Array.isArray(ids) || !ids.length || ids.length > 10 ||
+        ids.some((id) => typeof id !== 'string' || !/^[a-f\d-]{8,64}$/i.test(id)) ||
+        new Set(ids).size !== ids.length)
+      return { ok: false, error: 'bad_conversation_ids' };
+    const reply = await call('/sidebar/metrics', {
+      method: 'POST', body: JSON.stringify({ conversationIds: ids })
+    });
+    return reply.ok && Array.isArray(reply.data?.rows)
+      ? { ok: true, rows: reply.data.rows }
+      : { ok: false, status: reply.status,
+          error: `HTTP ${reply.status}: ${reply.data?.error || reply.error || 'invalid metrics response'}` };
+  },
   async register_document(_message, sender) {
     const result = await registerDocument(sender, _message);
     if (result && result.ok === true) void recoverDeferredRevivals().catch(() => undefined);

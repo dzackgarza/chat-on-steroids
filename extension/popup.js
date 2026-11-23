@@ -394,6 +394,10 @@ $('copyBtn').addEventListener('click', (event) => {
 
 $('more').addEventListener('toggle', () => paintDetails(latest.status, latest.tab));
 
+$('sidebarChatsBtn').addEventListener('click', () => {
+  void chrome.tabs.create({ url: chrome.runtime.getURL('sidebar-chats.html') });
+});
+
 $('retryBtn').addEventListener('click', async () => {
   $('retryBtn').disabled = true;
   await chrome.runtime.sendMessage({ type: 'pair' });

@@ -205,6 +205,22 @@ h1 b {
   list-style: none;
 }
 
+.sidebar-link {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-link:hover .name,
+.sidebar-link:focus-visible .name {
+  text-decoration: underline;
+}
+
 .row + .row,
 details + .row,
 #stream > summary {

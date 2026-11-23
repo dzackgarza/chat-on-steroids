@@ -146,6 +146,8 @@ Session recording is **on by default for new installs** and can be disabled. It 
 
 The bundled Chrome extension adds browser-side conversation identity, page-visible transcript capture, richer tool rows, Compact & Resume, and worker-tab coordination. It runs only on `chatgpt.com` / `chat.openai.com` plus the app's loopback bridge ports. App and extension versions move together, so after updating the app, use **Reload** for the unpacked extension in `chrome://extensions`.
 
+**Sidebar conversation overview:** Open the extension popup and select **Top 10 sidebar conversations**. The read-only comparison tab lists the first ten unarchived entries in ChatGPT sidebar order (including pins), with current status, time since last activity, last-active timestamp, clickable title, and recorded conversation size, message and turn-outcome information where the app actually has a recording. Activity comes from ChatGPT's conversation batch/stream endpoints and the app's recorder—not the stale-on-active-turn sidebar timestamp. A backend streaming flag without recent evidence is labeled *Unverified stream*, not treated as proof of work. It never fetches ChatGPT's full conversation histories. Missing recordings are labeled *Not recorded*; failed metadata and recorder requests expose their errors (including HTTP status) and make the overview report that the refresh was incomplete. Refresh is manual; it does not send messages or manipulate conversations.
+
 ### Compact & Resume
 
 For long recorded sessions, the app estimates context pressure locally. Fresh installs warn around **400k estimated tokens**, use **533k** as the limit marker, and enable automatic compaction at 400k. These are local estimates, not ChatGPT's private context counter.
