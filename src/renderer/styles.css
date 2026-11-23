@@ -70,7 +70,7 @@
  * inherited from Windows. The structure is identical; only these values change, so a
  * colour used anywhere below is correct in both themes without a second rule.
  */
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   --page: #09090b;
   --card: #121216;
   --ink: #f4f4f6;
@@ -116,7 +116,11 @@ body {
 body {
   background: var(--page);
   color: var(--ink);
-  font: 13.5px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font:
+    13.5px/1.5 "Segoe UI Variable Text",
+    "Segoe UI",
+    system-ui,
+    sans-serif;
   letter-spacing: -0.004em;
   -webkit-font-smoothing: antialiased;
 }
@@ -272,7 +276,7 @@ header {
 }
 
 /* Darkening a dark wash does nothing; lift it instead. */
-:root[data-theme='dark'] .power:hover:not(:disabled) {
+:root[data-theme="dark"] .power:hover:not(:disabled) {
   filter: brightness(1.35);
 }
 
@@ -299,18 +303,18 @@ main {
 }
 
 /* Home: three cards over a deliberately compact recent-activity strip. */
-[data-panel='home'] {
+[data-panel="home"] {
   grid-template-rows: auto 300px minmax(0, 1fr);
   gap: 12px;
   padding: 12px 14px 14px;
 }
 
-[data-panel='activity'] {
+[data-panel="activity"] {
   padding: 12px 14px 14px;
   grid-template-rows: minmax(0, 1fr);
 }
 
-[data-panel='setup'].is-active {
+[data-panel="setup"].is-active {
   display: block;
   overflow: hidden auto;
 }
@@ -430,7 +434,9 @@ main {
   font-size: 12px;
   font-weight: 550;
   cursor: pointer;
-  transition: background 0.14s, color 0.14s;
+  transition:
+    background 0.14s,
+    color 0.14s;
 }
 
 .btn:hover:not(:disabled) {
@@ -617,14 +623,16 @@ main {
 }
 
 .sw i::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 2px auto 2px 2px;
   width: 16px;
   border-radius: 50%;
   background: var(--knob-off);
   box-shadow: 0 1px 2px rgb(0 0 0 / 22%);
-  transition: transform 0.15s, background 0.15s;
+  transition:
+    transform 0.15s,
+    background 0.15s;
 }
 
 .sw input:checked + i {
@@ -725,7 +733,7 @@ main {
    already puts it in the middle, and a rotation is about the element's own centre, so it
    stays there — the nudge this used to carry only moved it back off again. */
 .tools .tool input:checked::after {
-  content: '';
+  content: "";
   width: 7px;
   height: 4px;
   border: 1.6px solid var(--page);
@@ -1044,7 +1052,7 @@ main {
   display: none;
 }
 
-[data-panel='activity'] .card {
+[data-panel="activity"] .card {
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
@@ -1090,11 +1098,11 @@ main {
   display: none;
 }
 
-.wizard.is-tidy .step.is-done[data-step='chatgpt'] {
+.wizard.is-tidy .step.is-done[data-step="chatgpt"] {
   padding: 14px 0;
 }
 
-.wizard.is-tidy .step.is-done[data-step='chatgpt'] .step-body > .step-actions {
+.wizard.is-tidy .step.is-done[data-step="chatgpt"] .step-body > .step-actions {
   display: flex;
 }
 
@@ -1104,7 +1112,10 @@ main {
  * switched on but never created look finished, which is the one state tidying must not
  * invent. The instructions still collapse — only the cards stay.
  */
-.wizard.is-tidy .step.is-done[data-step='chatgpt'] .step-body > .connectors.has-unfinished {
+.wizard.is-tidy
+  .step.is-done[data-step="chatgpt"]
+  .step-body
+  > .connectors.has-unfinished {
   display: grid;
 }
 
@@ -1226,9 +1237,9 @@ main {
   color: var(--soft);
 }
 
-input[type='text'],
-input[type='password'],
-input[type='number'],
+input[type="text"],
+input[type="password"],
+input[type="number"],
 textarea,
 select {
   width: 100%;
@@ -1241,9 +1252,9 @@ select {
   color: var(--ink);
 }
 
-input[type='text']:focus,
-input[type='password']:focus,
-input[type='number']:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
 textarea:focus,
 select:focus {
   outline: 0;
@@ -1258,7 +1269,8 @@ textarea {
 }
 
 .goal-prompt textarea {
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
 }
 
@@ -1388,7 +1400,7 @@ input[readonly] {
    grow and a timeline that shares the screen with a settings form reads as
    neither. */
 
-[data-panel='chat'] {
+[data-panel="chat"] {
   padding: 12px 14px 14px;
   gap: 12px;
   grid-template-columns: 310px minmax(0, 1fr);
@@ -1396,7 +1408,7 @@ input[readonly] {
 }
 
 /* Header, body, footer. The Sessions card is exactly this shape. */
-[data-panel='chat'] .card {
+[data-panel="chat"] .card {
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
@@ -1406,7 +1418,7 @@ input[readonly] {
    switcher in an empty card, and `.scroll` fell into an implicit auto row sized to its
    whole content — which is why the timeline painted over the header. Every child gets an
    explicit track; nothing here may rely on implicit rows. */
-[data-panel='chat'] .card.is-session {
+[data-panel="chat"] .card.is-session {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
@@ -1464,7 +1476,7 @@ input[readonly] {
 }
 
 .sess.is-live .sess-top b::before {
-  content: '';
+  content: "";
   display: inline-block;
   width: 6px;
   height: 6px;
@@ -1480,6 +1492,29 @@ input[readonly] {
   font-style: normal;
   font-size: 11px;
   color: var(--faint);
+}
+
+.sess-status {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--pill);
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.sess-status.is-active {
+  border-color: var(--green-line);
+  background: var(--green-wash);
+  color: var(--green);
+}
+
+.sess-status.is-failed {
+  border-color: var(--red-line);
+  background: var(--red-wash);
+  color: var(--red);
 }
 
 /* Role and live-state chips first, then the counts. The counts are what yields when
@@ -2185,7 +2220,9 @@ nav button {
   font-size: 12.5px;
   font-weight: 550;
   cursor: pointer;
-  transition: background 0.14s, color 0.14s;
+  transition:
+    background 0.14s,
+    color 0.14s;
 }
 
 nav button:hover {
@@ -2200,7 +2237,7 @@ nav button.is-sel {
 }
 
 nav button.is-sel::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 50%;
   bottom: 3px;
@@ -2276,7 +2313,7 @@ nav button.is-sel::after {
   background: var(--hover);
 }
 
-.goal-model[data-chosen='1'] {
+.goal-model[data-chosen="1"] {
   background: var(--hover);
   box-shadow: inset 2px 0 0 var(--blue);
 }
