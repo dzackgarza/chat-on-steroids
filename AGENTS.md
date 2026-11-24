@@ -874,7 +874,12 @@ per-conversation batch/stream metadata from a signed-in ChatGPT tab. It never fe
 full ChatGPT history: the read-only bridge `POST /sidebar/metrics` supplies bounded
 local recorder context-size estimates, message counts and progress facts when available.
 Missing recordings are not zeros, and any failed request is an explicit error to the
-consumer rather than an invisible fallback. The overview must never use
+consumer rather than an invisible fallback. A same-conversation live tab may already
+have the correct `document.title` while both list and batch still say `New chat`;
+associate it by verified page route and surface the differing source titles. Reconcile
+one status: a page `in_progress` marker or an unclosed recorder turn never overrides
+backend `COMPLETE`, and an old `IS_STREAMING` flag alone never proves work. The
+overview must never use
 `/activity` as a status probe: that feed asserts live page contact, which viewing another
 chat from the overview cannot prove.
 
@@ -1405,9 +1410,10 @@ just interrupt <conversation-id> "..."  # stop the turn it is running, then send
 just revive <conversation-id> "..."     # reload its page, then send
 ```
 
-`just chats` is the one that gives you the id `say` needs. `busy` means that chat's newest
-turn event was a start, so ChatGPT is generating — send when it is `idle`. A chat whose tab
-was closed mid-turn keeps a stale `busy`, so read the clock column with it.
+`just chats` is the one that gives you the id `say` needs. `busy` requires a
+recently updated backend streaming indication; a stale page marker or recorder turn
+cannot establish live generation by itself. Inspect explicit error and uncertainty
+states before sending.
 
 `just chats` reads ChatGPT conversations, not only the ones this app recorded, so it covers
 chats that never used the connector. It runs in two passes. The cheap pass asks ChatGPT's
@@ -1418,9 +1424,12 @@ is the age of that `update_time` (or the recorder's clock, if newer). `state` is
 
 | `state` | Meaning |
 | --- | --- |
-| `busy` | A turn runs: the open tab marks it `in_progress`, or `stream_status` says `IS_STREAMING` and the chat changed inside the `minutes` window, or the recorder says `busy`. |
-| `alert` | The page shows "Message delivery timed out. Please try again." for this chat. Two sources: (1) the backend still says `IS_STREAMING` (batch `async_status` 3) and the chat did not change inside the `minutes` window. The page resumes such a stream when it opens the chat (`resumeCompletionStream`, recovery source `initial_fetch`), polls `stream_status` and the conversation until its timeout (`poll_freshness_max_mins`, default 10 min, 20 min for pro models), then reports kind `unconfirmed`, which renders that text. A fresh tab on a chat last updated in August showed `in_progress` for about 13 minutes, then the banner with Retry (2026-11-23). (2) an open tab shows `aside[role=alert]`; its text is the `last action`. Listed regardless of age. |
-| `idle`, `-` | No running turn. The recorder's state, or `idle` for an open tab or a chat ChatGPT reports `COMPLETE`. |
+| `busy` | Backend `IS_STREAMING` and the newest observed activity is recent (ten-minute verification window, independent of listing filter). |
+| `alert` | An open tab actually displays an `aside[role=alert]`; show its text. Never invent an alert from a stale stream flag. |
+| `stalled`, `failed`, `interrupted`, `observer_lost`, `wedged` | The recorded final/abnormal turn state; a backend `COMPLETE` only says the stream is no longer generating, not that the turn succeeded. |
+| `page_stale`, `unverified` | Conflicting page `in_progress` with backend `COMPLETE`, or a stale/unknown streaming indication; neither proves generation. |
+| `error` | Batch metadata could not be read. Its HTTP error remains visible. |
+| `idle`, `-` | Backend `COMPLETE` without an observed failure, or no evidence of a running turn. |
 
 The full pass reads only the rows that survive the window, one at a time, for model and size
 (`/backend-api/conversation/<id>` is under the history-detail limit, HTTP 429).
@@ -1430,7 +1439,10 @@ remaining rows as `!429`, so a rate-limited run still answers "which chats are g
 chat whose metadata call failed also stays listed, as `!status`.
 
 The sidebar chat list (`/backend-api/conversations`) only enumerates ids and titles. Its
-`update_time` stays frozen while a long turn runs, so it never decides what is active. The command
+`update_time` stays frozen while a long turn runs, so it never decides what is active.
+The CLI also reads each open tab's identity-checked `document.title`: on 2026-11-24
+both list and batch said `New chat` while the actual conversation tab carried a
+specific Lean CAS milestone title. The command
 checks the `candidates` (default 20) newest chats by list time, plus every open tab and
 recorder-busy chat, with `stream_status` 16 at a time (20 chats in about 3 s, 100 in 15 s). A chat outside those that
 is generating with no tab and no recording is missed; `just chats 10 "" 0` checks the whole

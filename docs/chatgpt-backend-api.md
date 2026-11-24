@@ -105,6 +105,10 @@ Facts about the list:
 - `update_time` equals the conversation's own `update_time` at rest. It stays **frozen while a
   long turn runs** (measured: list 20:04, conversation 20:38). It does not decide whether a chat
   is active. (measured in this repository's development; `AGENTS.md`)
+- **Title can lag the live tab.** On 2026-11-24 the first-page list and ten-id batch
+  returned `New chat` for the same conversation whose verified open page already had
+  a specific Lean CAS milestone `document.title`. A browser-side title must be joined
+  by the exact conversation route, not borrowed from another tab. (LIVE)
 - The sequence is not strictly newest first. Pinned chats come first. A prefix of the list is
   not "the newest N chats". (measured in this repository's development)
 - `latest_assistant_turn_created_at` was null in every item sampled (4 items). Its meaning is
@@ -127,10 +131,16 @@ The reply is 21 bytes and took 0.2 to 0.4 s. The page polls it (22 calls in one 
   `in_progress` for about 13 minutes, then the banner "Message delivery timed out. Please try
   again." (LIVE, one chat, 2026-11-23). The page's bundle explains it: it resumes the stream on
   load, polls until `poll_freshness_max_mins` (default 10, 20 for pro models), then reports
-  `unconfirmed`. (PAGE) `just chats` prints such a chat as `alert`, and `busy` only when the
-  chat also changed inside its activity window.
+  `unconfirmed`. (PAGE) `just chats` now labels an old flag `unverified` (or
+  `stalled` when independently recorded), not as an error banner it has not observed;
+  it prints `alert` only when the page actually displays one.
 - The page maps a 404 from this route to `UNAVAILABLE`. (PAGE)
 - It stayed available while the history-detail budget was exhausted. (LIVE)
+- On 2026-11-24 an open tab retained an `in_progress` page marker while this
+  endpoint returned `COMPLETE`; a separate overlength chat displayed an actual
+  terminal error banner. These are independent observations, not three
+  mutually valid execution states: the completed backend stream cannot be
+  reclassified as generating solely from the page marker. (LIVE)
 
 ## Conversation batch
 

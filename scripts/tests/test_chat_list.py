@@ -38,12 +38,14 @@ def test_a_turn_running_now_is_busy_even_though_the_sidebar_time_is_old():
     assert rows(activity)[RUNNING]["state"] == "busy"
 
 
-def test_a_streaming_flag_with_no_update_for_a_day_is_the_wedged_delivery_timeout_alert():
-    # Measured 2026-11-23: a fresh tab on a chat whose backend says IS_STREAMING (async_status 3)
-    # with no update since August polled ~13 min, then showed "Message delivery timed out".
+def test_a_stale_streaming_flag_is_not_invented_into_a_page_error_or_a_busy_turn():
+    # An old IS_STREAMING flag is not a live stream and does not prove that a page
+    # displayed an error. The real error is available only from a live tab.
     activity = {OLD: {"update_time": "2026-11-21T10:00:00.000000Z", "stream": "IS_STREAMING"}}
-    row = rows(activity)[OLD]
-    assert (row["state"], row["action"]) == ("alert", "Message delivery timed out. Please try again.")
+    assert OLD not in rows(activity)  # Not an active chat in a ten-minute window.
+    row = rows(activity, minutes=0)[OLD]
+    assert row["state"] == "unverified"
+    assert row["action"] == "IS_STREAMING without recent activity"
 
 
 def test_a_finished_chat_outside_the_window_is_not_listed():
@@ -75,9 +77,33 @@ def test_recorder_busy_becomes_idle_when_chatgpt_says_the_stream_is_over():
     assert rows(activity, states=states)[QUIET]["state"] == "idle"
 
 
-def test_an_open_tab_marking_the_turn_in_progress_is_busy():
+def test_backend_complete_is_not_overridden_by_stale_page_in_progress():
     activity = {QUIET: {"update_time": "2026-11-22T13:59:00.000000Z", "stream": "COMPLETE"}}
-    assert rows(activity, tabs={QUIET: "in_progress"})[QUIET]["state"] == "busy"
+    row = rows(activity, tabs={QUIET: "in_progress"})[QUIET]
+    assert (row["state"], row["action"]) == (
+        "page_stale", "Backend COMPLETE; page still shows in_progress"
+    )
+
+
+def test_recorded_stalled_turn_and_finished_stream_is_stalled_not_generating():
+    activity = {QUIET: {"update_time": "2026-11-22T13:59:00.000000Z", "stream": "COMPLETE"}}
+    states = {QUIET: (NOW * 1000, "stalled", "turn_end stalled")}
+    row = rows(activity, tabs={QUIET: "in_progress"}, states=states)[QUIET]
+    assert (row["state"], row["action"]) == (
+        "stalled", "Last recorded turn: stalled; backend stream COMPLETE"
+    )
+
+
+def test_old_streaming_flag_and_in_progress_marker_do_not_certify_activity():
+    activity = {OLD: {"update_time": "2026-11-21T10:00:00Z", "stream": "IS_STREAMING"}}
+    row = rows(activity, tabs={OLD: "in_progress"})[OLD]
+    assert row["state"] == "unverified"
+
+
+def test_unobserved_metadata_error_is_reported_even_when_page_marks_in_progress():
+    activity = {QUIET: {"batch_status": 429, "stream": "IS_STREAMING"}}
+    row = rows(activity, tabs={QUIET: "in_progress"})[QUIET]
+    assert (row["state"], row["action"]) == ("error", "Batch metadata unavailable: 429")
 
 
 def test_rows_are_newest_first():

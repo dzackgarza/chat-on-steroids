@@ -27,7 +27,9 @@ async function inspectIndex() {
   if (selected.some((item) => typeof item?.id !== 'string' || !/^[a-f\d-]{8,64}$/i.test(item.id)))
     return { error: 'Sidebar contains an invalid conversation ID' };
   const found = selected.map((item) => ({
-      id: item.id, title: typeof item.title === 'string' ? item.title.slice(0, 500) : 'Untitled',
+      id: item.id, title: typeof item.title === 'string' ? item.title.slice(0, 500) : '',
+      sidebarTitle: typeof item.title === 'string' ? item.title.slice(0, 500) : null,
+      batchTitle: null, titleSource: 'sidebar',
       sidebarAt: item.update_time || null, createdAt: item.create_time || null,
       pinned: Boolean(item.pinned_time), batchAt: null, batchError: null,
       stream: null, streamError: null
@@ -44,7 +46,18 @@ async function inspectIndex() {
       if (!Array.isArray(body)) throw new Error('Invalid metadata batch');
       const byId = new Map(body.map((entry) => [entry.id, entry]));
       for (const row of found) {
-        row.batchAt = byId.get(row.id)?.update_time || null;
+        const entry = byId.get(row.id);
+        row.batchAt = entry?.update_time || null;
+        if (typeof entry?.title === 'string' && entry.title.trim()) {
+          row.batchTitle = entry.title.slice(0, 500);
+          // The batch is ChatGPT's newer metadata projection, unlike the
+          // sidebar list whose title and clock can lag an active conversation.
+          if (!row.sidebarTitle || (Date.parse(row.batchAt) >= Date.parse(row.sidebarAt))) {
+            row.title = row.batchTitle;
+            row.titleSource = 'batch';
+          }
+        }
+        if (!row.title) row.titleError = `No title returned for ${row.id}`;
         if (!row.batchAt) row.batchError = `POST /conversations/batch: missing timestamp for ${row.id}`;
         else if (!Number.isFinite(Date.parse(row.batchAt)))
           row.batchError = `POST /conversations/batch: invalid update_time for ${row.id}: ${String(row.batchAt)}`;
@@ -95,15 +108,36 @@ function state(row) {
   const recent = ms !== null && Date.now() - ms < 10 * 60000;
   if (row.streamError) return { kind: 'error', label: 'Status error', why: row.streamError };
   if (row.pageAlert) return { kind: 'error', label: 'Page error', why: row.pageAlert };
-  if (row.pageState === 'in_progress') return {
-    kind: 'busy', label: 'Generating', why: 'Observed in an open ChatGPT tab'
-  };
+  if (row.batchError) return { kind: 'error', label: 'Metadata error', why: row.batchError };
+  if (row.pageError) return { kind: 'error', label: 'Page inspection error', why: row.pageError };
+  if (row.localError) return { kind: 'error', label: 'Recorder error', why: row.localError };
+  // ChatGPT's page can retain an in_progress DOM marker long after its stream
+  // has ended. The backend's COMPLETE is the terminal stream state; a recorder
+  // with an unclosed turn is not a second live stream.
+  if (row.stream === 'COMPLETE') {
+    if (row.local?.lastTurnOutcome === 'failed' || row.local?.lastTurnOutcome === 'stalled')
+      return { kind: 'error', label: row.local.lastTurnOutcome === 'failed' ? 'Failed' : 'Stalled',
+        why: `Last recorded turn: ${row.local.lastTurnOutcome}; backend stream COMPLETE` };
+    if (row.local?.lastTurnOutcome === 'observer_lost' ||
+        row.local?.lastTurnOutcome === 'interrupted')
+      return { kind: 'warning',
+        label: row.local.lastTurnOutcome === 'observer_lost' ? 'Observer lost' : 'Interrupted',
+        why: `Last recorded turn: ${row.local.lastTurnOutcome}; backend stream COMPLETE` };
+    if (row.pageState === 'in_progress')
+      return { kind: 'warning', label: 'Page state stale',
+        why: 'Backend stream COMPLETE; open tab still marks its turn in_progress' };
+    return { kind: 'idle', label: 'Idle', why: 'Backend reports COMPLETE' };
+  }
   if (row.stream === 'IS_STREAMING' && recent) return {
-    kind: 'busy', label: 'Streaming', why: 'Backend streaming indication and recent activity'
+    kind: 'busy', label: 'Generating', why: 'Backend IS_STREAMING and recent actual activity'
   };
-  if (row.stream === 'IS_STREAMING')
-    return { kind: 'warning', label: 'Unverified stream', why: 'Backend IS_STREAMING flag without recent activity' };
-  if (row.stream === 'COMPLETE') return { kind: 'idle', label: 'Idle', why: 'Backend reports COMPLETE' };
+  if (row.stream === 'IS_STREAMING') {
+    if (row.local?.lastTurnOutcome === 'stalled')
+      return { kind: 'error', label: 'Stalled',
+        why: 'Last recorded turn stalled, with no recent activity; backend streaming flag is unverified' };
+    return { kind: 'warning', label: 'Unverified stream',
+      why: 'Backend IS_STREAMING flag without recent activity; a page in_progress marker is not proof of work' };
+  }
   return { kind: 'warning', label: 'Unknown', why: row.stream || 'Stream status unavailable' };
 }
 
@@ -132,9 +166,15 @@ function render() {
     link.href = `https://chatgpt.com/c/${row.id}`;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
-    link.textContent = row.title;
+    link.textContent = row.title || 'Title unavailable';
     title.append(link);
     secondary(title, `${row.pinned ? 'Pinned · ' : ''}${row.id.slice(0, 8)}…${row.id.slice(-4)}${row.openTab ? ' · Open tab' : ''}`);
+    secondary(title, `Title source: ${row.titleSource}`);
+    if (row.sidebarTitle && row.sidebarTitle !== row.title)
+      secondary(title, `Sidebar title: ${row.sidebarTitle}`);
+    if (row.batchTitle && row.batchTitle !== row.title && row.batchTitle !== row.sidebarTitle)
+      secondary(title, `Batch title: ${row.batchTitle}`);
+    if (row.titleError) secondary(title, row.titleError);
     title.title = `Created: ${row.createdAt || 'unknown'}\nConversation ID: ${row.id}`;
     const status = state(row);
     const statusCell = cell(tr, null);
@@ -155,7 +195,7 @@ function render() {
     if (row.local?.lastTurnOutcome && row.local.lastTurnOutcome !== 'completed')
       secondary(statusCell, `Last recorded turn: ${row.local.lastTurnOutcome}`);
     const last = activityTime(row);
-    const idle = cell(tr, status.kind === 'idle' ? age(last) : '—', 'nowrap');
+    const idle = cell(tr, age(last), 'nowrap');
     if (status.kind === 'warning' && last !== null) secondary(idle, `No update for ${age(last)}`);
     const lastCell = cell(tr,
       row.batchError ? 'Batch metadata error' : last === null ? 'No activity reported' : new Date(last).toLocaleString(),
@@ -211,32 +251,60 @@ async function inPage(tabId, func, args = [], ms = 35000) {
 
 async function inspectOpenTabs(tabs, current, stamp) {
   const targetIds = new Set(current.map((row) => row.id));
-  await Promise.all(tabs.filter((tab) => targetIds.has(route(tab.url))).map(async (tab) => {
+  const inspections = await Promise.all(tabs.filter((tab) => targetIds.has(route(tab.url))).map(async (tab) => {
+    const expectedId = route(tab.url);
     try {
-      const observation = await inPage(tab.id, () => {
+      const observation = await inPage(tab.id, (id) => {
+        const match = decodeURIComponent(location.pathname).match(/^\/c\/([a-f\d-]{8,64})\/?$/i);
+        if (match?.[1] !== id) return { error: `Tab navigated away from ${id}` };
         const alert = document.querySelector('aside[role="alert"]');
         const states = document.querySelectorAll('[data-talvt-turn-state]');
-        return { alert: alert?.innerText?.trim().slice(0, 250) || null,
+        return { id, title: document.title, alert: alert?.innerText?.trim().slice(0, 250) || null,
           state: states.length ? states[states.length - 1].getAttribute('data-talvt-turn-state') : null };
-      }, [], 3000);
-      if (stamp !== generation) return;
-      const row = current.find((item) => item.id === route(tab.url));
-      if (row) {
-        row.openTab = true;
-        if (observation?.alert) row.pageAlert = observation.alert;
-        if (observation?.state) row.pageState = observation.state;
-        render();
-      }
+      }, [expectedId], 3000);
+      return { expectedId, tabId: tab.id, observation };
     } catch (error) {
-      if (stamp !== generation) return;
-      const row = current.find((item) => item.id === route(tab.url));
-      if (row) {
-        row.openTab = true;
-        row.pageError = `Open-tab inspection: ${String(error.message || error)}`;
-        render();
-      }
+      return { expectedId, tabId: tab.id, error: String(error.message || error) };
     }
   }));
+  if (stamp !== generation) return;
+  for (const row of current) {
+    const matches = inspections.filter((entry) => entry.expectedId === row.id);
+    if (!matches.length) continue;
+    row.openTab = true;
+    const errors = matches.filter((entry) =>
+      entry.error || entry.observation?.error || entry.observation?.id !== row.id
+    );
+    if (errors.length) {
+      row.pageError = errors.map((entry) =>
+        `Tab ${entry.tabId}: ${entry.error || entry.observation?.error || 'conversation identity mismatch'}`
+      ).join('; ');
+    }
+    const good = matches.filter((entry) => !errors.includes(entry));
+    const signatures = new Set(good.map((entry) =>
+      JSON.stringify([entry.observation.title, entry.observation.state, entry.observation.alert])
+    ));
+    if (signatures.size > 1) {
+      row.pageError = `${row.pageError ? row.pageError + '; ' : ''}Open tabs disagree: ${good.map(
+        (entry) => `tab ${entry.tabId}: ${JSON.stringify({
+          title: entry.observation.title, state: entry.observation.state, alert: entry.observation.alert
+        })}`
+      ).join('; ')}`;
+      continue; // Never choose an arbitrary last-response winner.
+    }
+    const observation = good[0]?.observation;
+    if (!observation) continue;
+    // On a live page the document title can already contain the final
+    // conversation name while both backend list and batch still say New chat.
+    const pageTitle = typeof observation.title === 'string' ? observation.title.trim() : '';
+    if (pageTitle && pageTitle !== 'ChatGPT' && pageTitle !== 'New chat') {
+      row.title = pageTitle.slice(0, 500);
+      row.titleSource = 'open ChatGPT tab';
+    }
+    if (observation.alert) row.pageAlert = observation.alert;
+    if (observation.state) row.pageState = observation.state;
+  }
+  render();
 }
 
 async function refresh() {

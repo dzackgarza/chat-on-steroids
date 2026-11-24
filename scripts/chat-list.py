@@ -157,8 +157,11 @@ def recorded_states(root):
         # its newest turn event, so those two alone report a dead chat as busy forever.
         marks = [row for row in events if row.get("kind") in ("turn_start", "turn_end", "chat_error")]
         last = max(marks, key=order, default=None)
-        if last is None or last["kind"] == "turn_end":
+        if last is None:
             state = "idle"
+        elif last["kind"] == "turn_end":
+            outcome = last.get("outcome")
+            state = outcome if outcome in ("failed", "stalled", "interrupted", "observer_lost") else "idle"
         else:
             state = "busy"
             # A stall report is not an ending: the turn often resumes. Anything recorded after
@@ -186,28 +189,40 @@ TAB_STATE_JS = """(() => {
   // A failed send ("Message delivery timed out") never reaches the server, so only the page
   // knows: it shows an alert banner while the server keeps answering COMPLETE.
   const alert = document.querySelector('aside[role=alert]');
-  if (alert && alert.innerText.trim()) return 'alert:' + alert.innerText.trim();
   const els = [...document.querySelectorAll('[data-talvt-turn-state]')];
-  return els.length ? els[els.length - 1].getAttribute('data-talvt-turn-state') : null;
+  return { href: location.href, title: document.title,
+    state: alert && alert.innerText.trim() ? 'alert:' + alert.innerText.trim()
+      : els.length ? els[els.length - 1].getAttribute('data-talvt-turn-state') : null };
 })()"""
 
 
 def tab_turn_states(endpoint):
-    """Turn state of each open ChatGPT conversation tab: {conversation id: state}.
+    """Turn state and browser title of each open ChatGPT conversation tab.
 
     ChatGPT's own page marks the newest turn `in_progress` while the model works, then
     `complete` or `cancelled`; a tab showing an error banner reports `alert:<banner text>`.
-    A chat with no open tab has no entry."""
+    A chat with no open tab has no entry. Check the page identity independently of the
+    CDP target: the browser can navigate while the evaluation is in flight."""
     states = {}
+    titles = {}
     for target in cdp_targets(endpoint):
         url = target.get("url") or ""
         if target.get("type") != "page" or "chatgpt.com/" not in url or "/c/" not in url:
             continue
         chat = url.split("/c/", 1)[1].split("?")[0].split("/")[0].split("#")[0]
-        state = evaluate(target["webSocketDebuggerUrl"], TAB_STATE_JS, timeout="10")
-        if state:
-            states[chat] = state
-    return states
+        result = evaluate(target["webSocketDebuggerUrl"], TAB_STATE_JS, timeout="10")
+        if not isinstance(result, dict):
+            continue
+        actual = (result.get("href") or "").split("/c/", 1)
+        actual_id = actual[1].split("?")[0].split("/")[0].split("#")[0] if len(actual) == 2 else None
+        if actual_id != chat:
+            continue
+        if result.get("state"):
+            states[chat] = result["state"]
+        title = result.get("title")
+        if isinstance(title, str) and title.strip() not in ("", "ChatGPT", "New chat"):
+            titles[chat] = title.strip()
+    return states, titles
 
 
 def age_text(seconds):
@@ -384,16 +399,14 @@ def fetch_summaries(websocket, ids):
         return {}
 
 
-DELIVERY_TIMEOUT = "Message delivery timed out. Please try again."  # i18n errors.polling.timeout
-
-
 def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
     """One row per chat worth listing, newest first, from the cheap pass (no message bodies).
 
     `activity` is fetch_activity's {id: {update_time, stream}} or {id: {batch_status}} when the
     metadata call failed. A chat is listed when a turn runs (ChatGPT's stream_status, an open tab
-    marked in progress, or the recorder), when its newest message is within `minutes`, or when
-    its metadata could not be read: a chat whose time is unknown cannot be ruled inactive."""
+    marked in progress AND corroborated by recent activity, or the recorder), when its newest
+    message is within `minutes`, or when its metadata could not be read. Never infer a
+    page error from an old backend streaming flag."""
     rows = []
     for chat in candidates:
         seen = activity.get(chat, {})
@@ -402,28 +415,38 @@ def activity_rows(candidates, titles, tabs, states, activity, now, minutes):
         state = recorded
         last_at = max(epoch(seen.get("update_time")), when / 1000)
         fresh = minutes <= 0 or now - last_at <= minutes * 60
+        recent = last_at > 0 and now - last_at <= 10 * 60
         if tabs.get(chat, "").startswith("alert:"):
             # The page shows an error banner (e.g. "Message delivery timed out"); the server
             # still answers COMPLETE because the message never arrived.
             state, action = "alert", tabs[chat].removeprefix("alert:")
-        elif tabs.get(chat) == "in_progress":
-            state = "busy"
+        elif stream == "COMPLETE":
+            if recorded in ("failed", "stalled", "interrupted", "observer_lost", "wedged"):
+                state = recorded
+                action = f"Last recorded turn: {recorded}; backend stream COMPLETE"
+            elif tabs.get(chat) == "in_progress":
+                state, action = "page_stale", "Backend COMPLETE; page still shows in_progress"
+            else:
+                state = "idle"
         elif stream == "IS_STREAMING":
             # ChatGPT keeps IS_STREAMING (batch async_status 3) on some chats for weeks after
-            # their last update. The page resumes the stream when it opens such a chat, polls
-            # for its timeout (10 min, 20 min for pro models), then shows the banner below.
-            # Measured 2026-11-23: a fresh tab on one showed it after about 13 minutes.
-            if fresh or recorded == "busy":
+            # their last update. A stale stream flag plus an in_progress DOM marker is not
+            # evidence of an active turn, and does not authorize inventing an error banner.
+            if recent:
                 state = "busy"
             else:
-                state, action = "alert", DELIVERY_TIMEOUT
+                state = "stalled" if recorded == "stalled" else "unverified"
+                action = "IS_STREAMING without recent activity"
         elif state == "busy":
-            # The recorder keeps "busy" until it sees a turn end; ChatGPT says the stream is over.
-            state = "idle" if stream == "COMPLETE" else state
-        elif state == "-" and (chat in tabs or stream == "COMPLETE"):
-            state = "idle"
+            state, action = "unverified", "Recorder turn open; backend stream state unavailable"
+        elif tabs.get(chat) == "in_progress":
+            state, action = "unverified", "Page in_progress; backend stream state unavailable"
         failed = "batch_status" in seen or not seen
-        if not failed and state not in ("busy", "alert") and not fresh:
+        if failed and state != "alert":
+            state, action = "error", f"Batch metadata unavailable: {seen.get('batch_status')}"
+        if not failed and not fresh and state not in ("busy", "alert") and not (
+            chat in tabs and state in ("page_stale", "unverified", "stalled")
+        ):
             continue
         row = {"id": chat, "title": titles[chat], "state": state, "action": action,
                "last_at": last_at}
@@ -519,8 +542,10 @@ def main():
             + (f" (status {body['error']})" if body.get("error") else "")
         )
     titles = {item["id"]: item.get("title") or "" for item in body["items"]}
-
-    tabs = tab_turn_states(args.devtools)
+    tabs, tab_titles = tab_turn_states(args.devtools)
+    # A live tab can already carry the final title while the sidebar and batch
+    # still report "New chat". The page identity was checked above.
+    titles.update({chat: title for chat, title in tab_titles.items() if chat in titles})
     states = recorded_states(Path(args.sessions).expanduser())
     generating = {
         chat
