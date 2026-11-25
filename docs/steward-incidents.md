@@ -1,18 +1,18 @@
 # Steward incident evidence
 
-The dated failures behind the principles in `AGENTS.md` §19, "Principles learned from observed
+The dated failures behind the principles in [`docs/agents/steward.md`](agents/steward.md#principles-learned-from-observed-failures), "Principles learned from observed
 failures". Each essay is kept verbatim as the evidence its principle was derived from. The
-operative content lives in `AGENTS.md`: each lesson is stated there once, as a principle with its
+operative content lives in [`docs/agents/steward.md`](agents/steward.md): each lesson is stated there once, as a principle with its
 test or as an operational fact, so a steward never has to read this file to act correctly.
 
 Read an essay here when a principle's application is unclear, or when a new failure seems not
 to fit any principle. Before writing a new rule, check whether the failure is a new form of an
-existing principle. If it is, add the incident here and amend that principle in `AGENTS.md` only
+existing principle. If it is, add the incident here and amend that principle in `docs/agents/steward.md` only
 if its test would not have caught it. A new principle is justified only by a failure that no
 existing test would have caught. Never add a rule shaped like the incident's mechanism, because
 the next instance will take a different shape (P1).
 
-| # | Incident | Where the lesson lives in `AGENTS.md` §19 |
+| # | Incident | Where the lesson lives in `docs/agents/steward.md` |
 | --- | --- | --- |
 | 1 | [A chat that stores your message and never starts a turn is dead](#a-chat-that-stores-your-message-and-never-starts-a-turn-is-dead) | P2 · fact |
 | 2 | [`noProgressForMs` equal to `generatingForMs` means unrecorded, not stalled](#noprogressforms-equal-to-generatingforms-means-unrecorded-not-stalled) | P2 · fact |
@@ -124,11 +124,12 @@ specifically about it, because the constraint is not something a chat can check 
 from the inside.
 
 So the steward checks. When a stream goes quiet with a clean tracked tree, ask the host before
-asking anything else; it costs one command and it decides between two opposite actions:
+asking anything else; it costs one command and it decides between two opposite actions. The
+first command is for `lean-categories`; the second is for `sage-categories` and `research`:
 
 ```bash
-pgrep -a -x 'lean|lake'            # lean-categories
-pgrep -af 'sage|mypy|pytest'       # sage-categories, research
+pgrep -a -x 'lean|lake'
+pgrep -af 'sage|mypy|pytest'
 ```
 
 A process there means a long compile and the stream is left alone. Nothing there, with a clean
