@@ -408,6 +408,26 @@ registrar):
   Coverage is per conversation and durable (`rules-coverage` state), so restarts do not force
   re-reads. The notice is imperative ("your next call, now, in this turn") because a chat that
   was told the rule descriptively ended its turn calling it a blocker.
+  It is a gate, not a pointer, because whether a chat reads "read AGENTS.md" is up to the model:
+  replacement chats reached for the TODO first and worked for hours against rules they had never
+  opened. Coverage is durable because forcing every chat to reread a 200 KB file after each app
+  restart was pure load on the account, which ChatGPT flagged as unusual activity. Coverage
+  belongs to the conversation, keyed as described in §11, because a chat that re-attaches after
+  a restart or recovery has the file in its context already and a replacement chat does not.
+  The `orchestrator` workstream (`ORCHESTRATOR_WORKSTREAM_ID`) must also read every line of this
+  repository's [`docs/agents/steward.md`](docs/agents/steward.md), whatever its workspace, before
+  it may act: that file is its whole job, and a pointer to it was ignored exactly as the
+  `AGENTS.md` pointer was. The gate finds the file two directories above the running module, so
+  it is present in a source checkout and in `out/` builds; in a packaged build without `docs/`
+  the orchestrator's first acting call fails with an assertion that names the missing file. The
+  refusal names the file by its native absolute path, which `read` accepts, and the gate resolves
+  it through the same `resolvePath()` call as the workspace, so a file outside every approved
+  root fails loudly instead of being skipped.
+  Calls with no claimed workstream, such as the emergency recovery credential, are exempt; a
+  workstream with no workspace or whose workspace has no `AGENTS.md` needs no `AGENTS.md`
+  coverage. The workspace is resolved with `resolvePath()` on an app-owned, approved path, so a
+  failure there is a broken contract and propagates.
+  Run `npx tsx scripts/test-rules-gate-steward.ts` after changing the gate.
 - **Reuse gate** (`reuse-gate.ts`): a patch that adds a new code file or a definition name that
   no tracked file already defines must carry `reuse_search`. Per name, it gives the searches
   run, what they found, and why none is reused. Each search must match a `find` call or
@@ -1300,6 +1320,7 @@ Each has a different persistence boundary.
 | patch parse/match/write | `apply-patch/*`, `tools-core.ts` | both `codex-apply-patch-*` |
 | shell-intercepted patch behavior | `tools-core.ts`, `apply-patch/invocation.ts` | invocation parity, `mcp` |
 | exec / PTY / stdin / output / session | `unified-exec.ts`, `shell.ts`, `ownership.ts`, `exec-output.ts` | `codex-runtime-parity`, `mcp` |
+| `RULES_UNREAD` refuses a chat that read its rules, or lets one act unread | `rules-gate.ts`, `kernel.ts` `gatedHandler`, `tools-core.ts` `read` | `scripts/test-rules-gate-steward.ts` |
 | one chat touches another's terminal | `ownership.ts`, `kernel.ts`, then §11 chain | `mcp`, `workspace` |
 | **calls land in Unattributed** | **§11 chain in order** — `inbound`→`fiber`→`content`→`background`→`bridge`→`correlation`→`recorder` | `correlation`, `mcp-inbound`, `fiber`, `content-script` |
 | worker identity / inbox / liveness | §11 chain **first**, then `agents.ts`, stale sweep in `bridge.ts` | `agents`, `swarm` |
@@ -1423,7 +1444,8 @@ Read the linked file in full before the task it names.
   refresh, pause, resume, recover, replace or retire of a workstream, or edit to a managed
   repository's DAG or `AGENTS.md`. It holds the steward's job, the tick, the state definitions,
   reporting, the hard constraints, the operational facts and the owner's decisions about which
-  streams run.
+  streams run. The rules gate refuses the `orchestrator` workstream every acting tool until it
+  has read this file in full (§7).
 
 ### Where a regression belongs
 

@@ -29,24 +29,28 @@ void (async () => {
     initDurableStore(path.join(temp, 'state'));
     initSessionStore(temp);
     await restoreWorkstreams();
-    const workspace = path.join(temp, 'work');
-    await mkdir(workspace);
-    execFileSync('git', ['init', '-q', workspace]);
-    await writeFile(path.join(workspace, 'AGENTS.md'), 'rule one\nrule two\nrule three\n');
-    const git = (...args: string[]) =>
-      execFileSync('git', ['-C', workspace, '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=test', '-c', 'user.email=test@invalid', ...args]);
-    git('add', 'AGENTS.md');
-    git('commit', '-q', '-m', 'rules');
+    const repositoryWithRules = async (name: string): Promise<Root> => {
+      const workspace = path.join(temp, name);
+      await mkdir(workspace);
+      await writeFile(path.join(workspace, 'AGENTS.md'), 'rule one\nrule two\nrule three\n');
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-C', workspace, '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=test', '-c', 'user.email=test@invalid', ...args]);
+      git('init', '-q');
+      git('add', 'AGENTS.md');
+      git('commit', '-q', '-m', 'rules');
+      return { name, path: workspace };
+    };
     const roots: Root[] = [
-      { name: 'work', path: workspace },
+      await repositoryWithRules('fleet'),
+      await repositoryWithRules('work'),
       { name: 'app', path: repository },
     ];
     const caps = Object.fromEntries(CAPABILITIES.map((name) => [name, true])) as Capabilities;
     const reg = createRegistrar(null, { roots, caps, readOnly: false }, 'core');
     registerCoreTools(reg);
 
-    const claim = async (id: string, conversation: string, now: number): Promise<CallContext> => {
-      const started = await startWorkstream(id, '/work', now);
+    const claim = async (id: string, workspace: string, conversation: string, now: number): Promise<CallContext> => {
+      const started = await startWorkstream(id, workspace, now);
       assert.equal(started.ok, true, `workstream ${id} could not be started`);
       if (!started.ok) throw new Error('unreachable');
       await bindWorkstreamConversation(started.workstreamId, conversation);
@@ -71,13 +75,13 @@ void (async () => {
       assert.match(reply, /lines 1-3 of 3/, `read of ${file} did not return the whole file`);
     };
 
-    const orchestrator = await claim('orchestrator', 'conversation-orchestrator', Date.now());
-    await readAll(orchestrator, '/work/AGENTS.md');
+    const orchestrator = await claim('orchestrator', '/fleet', 'conversation-orchestrator', Date.now());
+    await readAll(orchestrator, '/fleet/AGENTS.md');
 
     const refused = await act(orchestrator);
     assert.match(
       refused,
-      /^RULES_UNREAD: .*\/app\/docs\/agents\/steward\.md/,
+      /^RULES_UNREAD: .*\/docs\/agents\/steward\.md/,
       `expected: the orchestrator, having read only AGENTS.md, is refused with RULES_UNREAD naming ` +
         `docs/agents/steward.md\nobserved: ${refused}`,
     );
@@ -101,11 +105,12 @@ void (async () => {
     const nextTick = await continueWorkstream('orchestrator', turnEnd + 1);
     assert.equal(nextTick.ok, true, 'the next orchestrator tick could not claim');
     if (!nextTick.ok) throw new Error('unreachable');
+    assert.notEqual(nextTick.workstreamId, orchestrator.workstreamClaimId, 'the next tick reused the old claim');
     const sameConversation = { ...orchestrator, workstreamClaimId: nextTick.workstreamId };
     const again = await act(sameConversation);
     assert.match(again, /acted/, `expected: a new claim in the same conversation acts without rereading\nobserved: ${again}`);
 
-    const worker = await claim('worker-stream', 'conversation-worker', Date.now());
+    const worker = await claim('worker-stream', '/work', 'conversation-worker', Date.now());
     await readAll(worker, '/work/AGENTS.md');
     const workerReply = await act(worker);
     assert.match(workerReply, /acted/, `expected: a non-orchestrator workstream needs only AGENTS.md\nobserved: ${workerReply}`);

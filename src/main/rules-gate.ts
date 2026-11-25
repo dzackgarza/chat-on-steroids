@@ -1,42 +1,29 @@
-/**
- * A workstream's chat must read its repository's AGENTS.md before it may act.
- *
- * Nothing else guarantees that a chat has seen the rules it is working under. A fresh chat is
- * told "read AGENTS.md", and whether it does is up to the model; replacement chats reached for
- * the TODO first and worked for hours against rules they had never opened. So the rules file
- * is a gate. Until every line of `<workspace>/AGENTS.md` has been returned to this conversation
- * by the `read` tool, any tool that can act (exec, patch, agents) is refused with the ranges
- * still unread. Reading tools stay open, since reading is how the gate is passed.
- *
- * Coverage belongs to the conversation, not to the claim. A chat that re-attaches after a
- * restart or recovery has the file in its context already; a replacement chat does not.
- * Coverage is durable (`rules-coverage`): forcing every chat to re-read a 200 KB file after
- * each app restart was pure load on the account, and ChatGPT flagged it as unusual activity.
- */
-
 import assert from "node:assert/strict";
-import { statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import { readDurable, writeDurableSoon } from "./durable.js";
 import { type CallCaller, currentCall } from "./mcp/call-context.js";
-import { workstreamConversation, workstreamWorkspace } from "./workstreams.js";
+import { ORCHESTRATOR_WORKSTREAM_ID, workstreamConversation, workstreamWorkspace } from "./workstreams.js";
 
-/** Tools that only read. They stay available so the rules can be read at all. */
 export const RULES_EXEMPT_TOOLS = new Set(["read", "find", "view_image"]);
 
+export const STEWARD_JOB_FILE = resolve(__dirname, "..", "..", "docs", "agents", "steward.md");
+
+interface GatedFile {
+  real: string;
+  named: string;
+}
+
 interface Coverage {
-  /** Real path of the rules file this coverage is for. */
   path: string;
   totalLines: number | null;
-  /** Disjoint, sorted, inclusive line intervals already returned to this conversation. */
   read: Array<[number, number]>;
 }
 
 const coverage = new Map<string, Coverage>();
 let loaded: Promise<void> | null = null;
 
-/** Loads the durable coverage once per app lifetime. */
 function load(): Promise<void> {
   loaded ??= readDurable<Record<string, Coverage>>("rules-coverage").then((saved) => {
     for (const [key, entry] of Object.entries(saved ?? {})) if (!coverage.has(key)) coverage.set(key, entry);
@@ -48,16 +35,6 @@ function save(): void {
   writeDurableSoon("rules-coverage", Object.fromEntries(coverage));
 }
 
-/**
- * The conversation that has (or has not) seen the rules, by the strongest evidence the call has.
- *
- * Coverage is about what is in one conversation's context. A row with no bound conversation
- * used to fall back to the claim id, which rotates on every reclaim, so the scheduled
- * orchestrator was made to reread the whole file on every tick of one conversation: 432 full
- * rereads of a 3,700-line file by 2026-10-21. The connector session key is measured stable
- * across one chat's calls and distinct across concurrent chats (connector-session.ts), so it
- * names that conversation when nothing exact does; the claim is the last resort.
- */
 function readerKey(workstreamId: string, claimId: string | null, realPath: string, caller: CallCaller): string {
   const reader =
     workstreamConversation(workstreamId) ??
@@ -90,21 +67,19 @@ function unread(entry: Coverage): Array<[number, number]> {
   return gaps;
 }
 
-/** The virtual path of the rules file for a workstream, or null when it has none. */
 function rulesVirtualPath(workstreamId: string): string | null {
   const workspace = workstreamWorkspace(workstreamId);
   return workspace ? `${workspace.replace(/\/+$/, "")}/AGENTS.md` : null;
 }
 
-/**
- * Records lines the `read` tool returned. Called for every text section it produces; only the
- * calling workstream's own rules file counts.
- */
+function isGatedFile(realPath: string): boolean {
+  return realPath.endsWith("/AGENTS.md") || (existsSync(STEWARD_JOB_FILE) && realPath === realpathSync(STEWARD_JOB_FILE));
+}
+
 export async function noteRulesRead(realPath: string, first: number, last: number, totalLines: number | null): Promise<void> {
   const call = currentCall();
-  if (!call?.workstreamId || last < first || !realPath.endsWith("/AGENTS.md")) return;
+  if (!call?.workstreamId || last < first || !isGatedFile(realPath)) return;
   await load();
-  // readOne() hands over resolvePath()'s canonical real path; no further resolution is needed.
   const path = realPath;
   const key = readerKey(call.workstreamId, call.workstreamClaimId, path, call.caller);
   const prior = coverage.get(key) ?? { path, totalLines, read: [] };
@@ -116,65 +91,70 @@ export async function noteRulesRead(realPath: string, first: number, last: numbe
   save();
 }
 
-/** What rules a workstream works under. Each variant is a case observed in the fleet. */
 type RulesFile =
-  | { kind: "no-workspace" } // e.g. the read-size probes: no repository at all
-  | { kind: "no-rules-file"; workspace: string } // an approved root that carries no AGENTS.md
+  | { kind: "no-workspace" }
+  | { kind: "no-rules-file"; workspace: string }
   | { kind: "rules"; virtual: string; path: string };
 
 async function rulesFileFor(
   workstreamId: string,
-  resolveWorkspace: (virtualWorkspace: string) => Promise<string>,
+  resolveReal: (path: string) => Promise<string>,
 ): Promise<RulesFile> {
   const workspace = workstreamWorkspace(workstreamId);
   if (workspace === null) return { kind: "no-workspace" };
-  const path = join(await resolveWorkspace(workspace), "AGENTS.md");
+  const path = join(await resolveReal(workspace), "AGENTS.md");
   const entry = statSync(path, { throwIfNoEntry: false });
   if (entry === undefined) return { kind: "no-rules-file", workspace };
   assert(entry.isFile(), `${path} exists but is not a file`);
   return { kind: "rules", virtual: rulesVirtualPath(workstreamId)!, path };
 }
 
-/**
- * Null when the calling workstream may act; otherwise the refusal text, naming what is unread.
- * `resolveWorkspace` is resolvePath() on an app-owned, approved workspace: its failure is a
- * broken contract and propagates.
- */
+async function requiredFiles(
+  workstreamId: string,
+  resolveReal: (path: string) => Promise<string>,
+): Promise<GatedFile[]> {
+  const required: GatedFile[] = [];
+  const rules = await rulesFileFor(workstreamId, resolveReal);
+  if (rules.kind === "rules") required.push({ real: rules.path, named: rules.virtual });
+  if (workstreamId === ORCHESTRATOR_WORKSTREAM_ID) {
+    assert(existsSync(STEWARD_JOB_FILE), `the orchestrator's job file ${STEWARD_JOB_FILE} is missing`);
+    required.push({ real: await resolveReal(STEWARD_JOB_FILE), named: STEWARD_JOB_FILE });
+  }
+  return required;
+}
+
+function refusal(named: string, entry: Coverage, gaps: Array<[number, number]>): string {
+  const ranges = gaps
+    .map(([a, b]) => (Number.isFinite(b) ? `${a}-${b}` : `${a} to the end`))
+    .join(", ");
+  const size = entry.totalLines ? ` (${entry.totalLines} lines)` : "";
+  return (
+    `RULES_UNREAD: this workstream's rules are in ${named}${size}, and this chat has not read all of them yet, ` +
+    `so nothing was run. Your next call is read with paths=["${named}"] and start_line=${gaps[0]![0]}: make it now, in this ` +
+    `turn, without stopping; each result says where to continue. Still unread: lines ${ranges}. Then repeat this call and carry on. ` +
+    "This is a step to do, not a blocker to report: never end your turn on it. read, find and view_image stay available."
+  );
+}
+
 export async function rulesGateRefusal(
   tool: string,
-  resolveWorkspace: (virtualWorkspace: string) => Promise<string>,
+  resolveReal: (path: string) => Promise<string>,
 ): Promise<string | null> {
   if (RULES_EXEMPT_TOOLS.has(tool)) return null;
   const call = currentCall();
   assert(call, "rulesGateRefusal runs inside a tool call's context");
-  // The emergency recovery credential carries no claimed workstream; it is exempt by design.
   if (call.workstreamId === null) return null;
-  const rules = await rulesFileFor(call.workstreamId, resolveWorkspace);
-  switch (rules.kind) {
-    case "no-workspace":
-    case "no-rules-file":
-      return null;
-    case "rules":
-      break;
-  }
-  const virtual = rules.virtual;
+  const required = await requiredFiles(call.workstreamId, resolveReal);
+  if (required.length === 0) return null;
   await load();
-  const real = rules.path;
-  const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, real, call.caller)) ?? {
-    path: real,
-    totalLines: null,
-    read: [],
-  };
-  const gaps = unread(current);
-  if (gaps.length === 0) return null;
-  const ranges = gaps
-    .map(([a, b]) => (Number.isFinite(b) ? `${a}-${b}` : `${a} to the end`))
-    .join(", ");
-  const size = current.totalLines ? ` (${current.totalLines} lines)` : "";
-  return (
-    `RULES_UNREAD: this workstream's rules are in ${virtual}${size}, and this chat has not read all of them yet, ` +
-    `so nothing was run. Your next call is read with paths=["${virtual}"] and start_line=${gaps[0]![0]}: make it now, in this ` +
-    `turn, without stopping; each result says where to continue. Still unread: lines ${ranges}. Then repeat this call and carry on. ` +
-    "This is a step to do, not a blocker to report: never end your turn on it. read, find and view_image stay available."
-  );
+  for (const file of required) {
+    const current = coverage.get(readerKey(call.workstreamId, call.workstreamClaimId, file.real, call.caller)) ?? {
+      path: file.real,
+      totalLines: null,
+      read: [],
+    };
+    const gaps = unread(current);
+    if (gaps.length > 0) return refusal(file.named, current, gaps);
+  }
+  return null;
 }
