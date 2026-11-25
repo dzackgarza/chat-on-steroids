@@ -765,11 +765,13 @@ The watchdog's decision rules (`action_allowed`, then `run_watchdog`):
   only when the recorder has no evidence at all. A non-polling call is evidence of an action, not
   of progress; the orchestrator judges whether the action was worth taking.
 - The in-flight check runs before the phase, lease and cooldown rules. An overlong tool is an
-  execution defect, not proof of progress. The census is refused when it holds 50 calls, the
+  execution defect, not proof of progress, and no elapsed time lets the watchdog evict a call
+  still in flight. The census is refused when it holds 50 calls, the
   bridge's cap, because a truncated census cannot prove a workstream has no call running.
 - A row whose error is `auto_continue_without_successful_tool:` is left for the steward. The
   controller withheld that send on purpose; reviving it would revive and replace the same chat
-  forever.
+  forever. A later real tool call clears that error in the controller, and ordinary inactivity
+  recovery is then eligible again.
 - After an intervention, only a new substantive tool call proves it worked. A new browser turn,
   a renewed lease or a poll does not. The watchdog records only that the bridge accepted a
   request, not that ChatGPT received it, so an earlier unproven intervention needs diagnosis,
@@ -788,8 +790,9 @@ The watchdog's decision rules (`action_allowed`, then `run_watchdog`):
   about 17 seconds on 2026-10-25, and a 15-second probe misreported that success as a failure).
   Cron has no `XDG_RUNTIME_DIR`, so the watchdog sets it before `systemctl --user`.
 - During a repair, a successor conversation bound by another recovery is never interrupted on
-  the old observation, an owner pause that arrives mid-repair wins, and a conversation that
-  finishes or is replaced between the census and the cancel POST is success. A wedged opening or
+  the old observation, and an owner pause that arrives mid-repair wins. After a refused
+  recovery, a row whose conversation, activity or phase moved, or a worker that began a call
+  while the request was refused, gets no retry and no replacement. A wedged opening or
   archiving transition that survives a daemon restart gets a fresh controller bootstrap with the
   existing durable brief, rather than another half-hour on a dead transition.
 - `scripts/test_workstream_watchdog.py` covers these rules.

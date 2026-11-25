@@ -29,9 +29,6 @@ class FakeBridge:
 
     def post(self, path, body):
         self.posts.append((path, body))
-        if path == "/workstreams/cancel-overlong":
-            self.calls = []
-            return {"requested": 1, "unsupported": [], "remaining": 1}
         if path == "/workstreams/recover":
             return {"recovering": True}
         if path == "/workstreams/replace":
@@ -86,8 +83,6 @@ class WatchdogTest(unittest.TestCase):
             action, why, _ = self.decision(r)
             self.assertIsNone(action)
             self.assertIn("steward diagnosis", why)
-        # A later real tool call clears that diagnostic in the workstream
-        # owner, after which ordinary inactivity recovery is eligible again.
         self.assertEqual(self.decision(row(error=None))[0], "recover")
 
     def test_recent_work_is_not_interrupted(self):
@@ -104,7 +99,6 @@ class WatchdogTest(unittest.TestCase):
 
         self.assertIsNone(decide(4))
         self.assertEqual(decide(6), "recover")
-        # No elapsed-time observation can evict a call still in flight.
         self.assertIsNone(decide(31, calls=[{
             "workstreamId": "research", "ageMs": MINUTE,
             "tool": "exec_command",
@@ -138,8 +132,12 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("steward diagnosis", why)
         bridge = FakeBridge([row(lastActivity=NOW)], calls)
         with patch.object(wd, "restart_controller") as restart:
-            with self.assertRaises(wd.BridgeError):
-                wd.clear_overlong_call(bridge, row(), 5 * MINUTE)
+            outcome = wd.run_watchdog(
+                bridge, {"version": 1, "streams": {}}, sessions_dir=self.sessions, now=NOW,
+                idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+                cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+            )
+        self.assertEqual(outcome, 1)
         self.assertEqual(bridge.posts, [])
         restart.assert_not_called()
 
@@ -151,10 +149,14 @@ class WatchdogTest(unittest.TestCase):
              "tool": "read"},
         ]
         self.assertIsNone(self.decision(calls=calls)[0])
-        bridge = FakeBridge([row()], calls)
+        bridge = FakeBridge([row(lastActivity=NOW)], calls)
         with patch.object(wd, "restart_controller") as restart:
-            with self.assertRaises(wd.BridgeError):
-                wd.clear_overlong_call(bridge, row(), 5 * MINUTE)
+            outcome = wd.run_watchdog(
+                bridge, {"version": 1, "streams": {}}, sessions_dir=self.sessions, now=NOW,
+                idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
+                cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
+            )
+        self.assertEqual(outcome, 1)
         self.assertEqual(bridge.posts, [])
         restart.assert_not_called()
 
@@ -212,9 +214,6 @@ class WatchdogTest(unittest.TestCase):
         )
 
     def test_sage_2026_11_19_missing_binding_does_not_spawn_replacement(self):
-        # Observed 04:30 UTC: the binding was lost on claim rotation and the
-        # newest claimant was already in retiredConversations. The watchdog
-        # issued /replace without a single /recover delivery to this chat.
         state = {"version": 1, "streams": {}}
         old = row(
             id="sage-indefinite-port", conversationId=None,
@@ -227,8 +226,6 @@ class WatchdogTest(unittest.TestCase):
             idle_ms=30 * MINUTE, call_limit_ms=5 * MINUTE,
             cooldown_ms=30 * MINUTE, selected=set(), dry_run=False,
         )
-        # A missing browser identity is a real unresolved incident, not a
-        # successful watchdog pass or proof that replacement is safe.
         self.assertEqual(result, 1)
         self.assertEqual(bridge.posts, [])
 
@@ -283,8 +280,6 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(len(bridge.posts), 1)
         self.assertEqual(bridge.posts[0][0], "/workstreams/recover")
         self.assertEqual(state["streams"]["research"]["lastAction"]["kind"], "recover")
-        # A legitimate 409 (e.g. claimant retired) is not a crashed daemon,
-        # and cannot prove the original chat cannot be continued.
         refusing = FakeBridge([row()])
         original_post = refusing.post
         def refused_recovery(path, body):
@@ -318,23 +313,6 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(bridge.posts, [])
         self.assertNotIn("lastAction", state["streams"]["research"])
 
-    def test_unsettled_tool_forces_controller_restart_then_recovery(self):
-        bridge = FakeBridge([row(lastActivity=NOW)], [
-            {"workstreamId": "research", "ageMs": 8 * MINUTE,
-             "tool": "exec_command"},
-        ])
-        state = {"version": 1, "streams": {}}
-        def still_inflight(path, body):
-            bridge.posts.append((path, body))
-            return {"requested": 0, "unsupported": ["exec_command"], "remaining": 1}
-        bridge.post = still_inflight
-        with patch.object(wd, "restart_controller", return_value={
-            "workstreams": [row(lastActivity=NOW)]
-        }) as restart, patch.object(wd.time, "sleep"):
-            result = wd.clear_overlong_call(bridge, row(), 5 * MINUTE)
-        self.assertEqual(result["id"], "research")
-        restart.assert_called_once()
-
     def test_bridge_outage_is_repaired_not_just_reported(self):
         token = self.sessions / "local-token"
         token.write_text("test-local-credential", encoding="utf-8")
@@ -349,9 +327,6 @@ class WatchdogTest(unittest.TestCase):
             bridge = wd.Bridge(token, port=8765)
         self.assertEqual(bridge.base, "http://127.0.0.1:8765")
         restart.assert_called_once_with()
-        # Real cold start on 2026-10-25 retained sessions for minutes before
-        # exposing the bridge. Never bounce an already-running daemon just
-        # because its listener is not yet ready at the old 15-second boundary.
         with patch.object(
             wd.Bridge, "_request",
             side_effect=[wd.BridgeError("still initializing")] * 36
@@ -365,8 +340,6 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(delayed.base, "http://127.0.0.1:8765")
         self.assertEqual(sleep.call_count, 35)
         restart.assert_not_called()
-        # Run the real subprocess adapter with a cron-like empty environment.
-        # The restart attempt must still receive the user-bus runtime directory.
         with patch.dict(wd.os.environ, {}, clear=True), patch.object(
             wd.subprocess, "run", return_value=wd.subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""
@@ -416,8 +389,6 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(outcome, 0)
         restart.assert_not_called()
 
-        # Admission of a new call can race with a refused recover even if the
-        # row's observed phase and timestamps have not changed yet.
         active = FakeBridge([row()])
         def concurrent_call(path, body):
             active.posts.append((path, body))

@@ -302,7 +302,7 @@ def action_allowed(
 
 
 def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service") -> dict:
-    """Last-resort repair if the daemon cannot settle its own stuck MCP call."""
+    """Last-resort repair for a daemon whose opening or archiving transition is wedged."""
     _restart_daemon(service)
     for _ in range(90):
         try:
@@ -313,56 +313,6 @@ def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service"
             pass
         time.sleep(0.5)
     raise BridgeError("Core2 restart was requested but bridge did not return")
-
-
-def clear_overlong_call(bridge: Bridge, row: dict, minimum_age_ms: int) -> dict:
-    """Cancel owned over-budget tools; verify settlement or restart Core2."""
-    census = bridge.get("/sleep/status").get("inFlightCalls")
-    if not isinstance(census, list):
-        raise BridgeError("In-flight census unavailable before terminal cancellation")
-    owned = [c for c in census if c.get("workstreamId") == row["id"]]
-    if any(c.get("tool") not in TERMINAL_TOOLS for c in owned):
-        raise BridgeError("Nonterminal call now in flight; cannot safely cancel or restart daemon")
-    if not owned:
-        raise BridgeError("The overlong terminal call has settled; reassess live worker state")
-    payload = {
-        "id": row["id"],
-        "conversationId": row.get("conversationId"),
-        "minimumAgeMs": minimum_age_ms,
-    }
-    try:
-        cancelled = bridge.post("/workstreams/cancel-overlong", payload)
-    except BridgeError as exc:
-        current = bridge.get("/workstreams")
-        fresh = next((r for r in current["workstreams"] if r["id"] == row["id"]), {})
-        calls = bridge.get("/sleep/status").get("inFlightCalls", [])
-        if fresh.get("phase") == "paused" or (
-            fresh.get("conversationId") != row.get("conversationId")
-        ) or not any(
-            c.get("workstreamId") == row["id"] and
-            int(c.get("ageMs") or 0) >= minimum_age_ms for c in calls
-        ):
-            return fresh
-        log("warning", row["id"], "native cancellation unavailable; restarting controller",
-            error=str(exc))
-        state = restart_controller(bridge)
-        return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
-
-    if not isinstance(cancelled.get("requested"), int):
-        raise BridgeError("Cancellation endpoint returned no acknowledgement")
-    for _ in range(12):
-        in_flight = bridge.get("/sleep/status").get("inFlightCalls")
-        if not isinstance(in_flight, list):
-            raise BridgeError("In-flight census unavailable during cancellation")
-        if not any(c.get("workstreamId") == row["id"] for c in in_flight):
-            state = bridge.get("/workstreams")
-            return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
-        time.sleep(1)
-
-    log("warning", row["id"], "native cancellation did not settle; restarting controller",
-        requested=cancelled["requested"], unsupported=cancelled.get("unsupported", []))
-    state = restart_controller(bridge)
-    return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
 
 
 def run_watchdog(
@@ -409,19 +359,14 @@ def run_watchdog(
             if severity == "error":
                 problems += 1
             continue
-        if action in {"cancel-overlong", "restart-controller"}:
+        if action == "restart-controller":
             if dry_run:
                 log("info", ident, f"DRY RUN: would {action}: {reason}", **evidence)
                 continue
             try:
-                stuck_transition = action == "restart-controller"
-                fresh = (
-                    clear_overlong_call(bridge, row, call_limit_ms)
-                    if action == "cancel-overlong"
-                    else next(
-                        (r for r in restart_controller(bridge)["workstreams"]
-                         if r["id"] == ident), {}
-                    )
+                fresh = next(
+                    (r for r in restart_controller(bridge)["workstreams"]
+                     if r["id"] == ident), {}
                 )
                 if not fresh:
                     raise BridgeError("Workstream vanished during controller repair")
@@ -439,7 +384,7 @@ def run_watchdog(
                 elif phase == "blocked":
                     action = "replace"
                 elif phase in {"recovering", "archiving", "opening"}:
-                    if stuck_transition and phase in {"archiving", "opening"}:
+                    if phase in {"archiving", "opening"}:
                         bootstrap = bridge.post("/workstreams/start", {
                             "id": ident,
                             "context": str(fresh.get("context") or ""),
@@ -463,7 +408,7 @@ def run_watchdog(
                     continue
                 else:
                     raise BridgeError(f"Workstream now has ineligible phase {phase!r}")
-                reason += "; process settled and controller is resuming execution"
+                reason += "; controller restarted and is resuming execution"
             except BridgeError as exc:
                 problems += 1
                 log("error", ident, f"automatic call/controller repair failed: {exc}", **evidence)
