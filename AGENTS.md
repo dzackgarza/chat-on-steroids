@@ -736,16 +736,63 @@ shell drivers and unbounded pushes outside the app's lease state machine.
 `scripts/workstream_watchdog.py` is a further, narrowly authorized exception. Its cron
 tick inspects the controller's live state and durable recorder evidence, treats prolonged
 in-flight tools as an execution defect rather than healthy work, and can request native
-same-chat recovery or fenced replacement for demonstrated stalls. An authenticated,
-conversation-checked controller route aborts an over-budget terminal call's own process;
-the watchdog waits for real settlement, and restarts the headless daemon if the call
-cannot settle. A restart is a last-resort loss of the daemon's in-memory calls, not
-a routine response to a normal terminal process running in the background. It then
-requests recovery of the unchanged logical workstream. It never claims a
+same-chat recovery or fenced replacement for demonstrated stalls. It reports an over-budget
+call for the model steward to diagnose; elapsed time alone never authorizes it to kill the
+call. It restarts the headless daemon only when the daemon is stopped or an opening or
+archiving transition is wedged. A
+restart is a last-resort loss of the daemon's in-memory calls, not a routine response to a
+normal terminal process running in the background. It never claims a
 worker's workstream, unpauses one, directly edits a managed repository or bypasses the
 bridge's ownership and delivery machinery. An accepted replacement request is not proof
 that a new worker executed; failed recovery must be retried on the next watchdog tick,
 not treated as completed just because a message was logged.
+
+The watchdog's decision rules (`action_allowed`, then `run_watchdog`):
+
+- It is not a workstream participant: it never calls `workstream` start or continue and never
+  invents a replacement chat. Every intervention goes through the controller's fenced
+  recover/replace routes, on recorded evidence, never on lease expiry or a browser heartbeat.
+  Cron supplies the cadence; one run is one finite pass.
+- The idle horizon is five minutes (`DEFAULT_IDLE_MINUTES`): the owner's failure horizon of
+  five minutes with no workstream activity and no call in flight, in
+  [`docs/agents/steward.md`](docs/agents/steward.md#the-managed-workstreams) (2026-10-21) and the
+  Wedged state in [its state definitions](docs/agents/steward.md#state-definitions-and-the-action-for-each).
+  The thirty-minute cron cadence must not add another half-hour before native recovery is
+  eligible.
+- Activity is the recorder's latest non-polling tool call. Polling an unfinished process is not
+  activity; reading a completed process result is. A recorder tail of only polling calls is never
+  forward motion, even though those calls renew the lease. The lease's admitted-call time counts
+  only when the recorder has no evidence at all. A non-polling call is evidence of an action, not
+  of progress; the orchestrator judges whether the action was worth taking.
+- The in-flight check runs before the phase, lease and cooldown rules. An overlong tool is an
+  execution defect, not proof of progress. The census is refused when it holds 50 calls, the
+  bridge's cap, because a truncated census cannot prove a workstream has no call running.
+- A row whose error is `auto_continue_without_successful_tool:` is left for the steward. The
+  controller withheld that send on purpose; reviving it would revive and replace the same chat
+  forever.
+- After an intervention, only a new substantive tool call proves it worked. A new browser turn,
+  a renewed lease or a poll does not. The watchdog records only that the bridge accepted a
+  request, not that ChatGPT received it, so an earlier unproven intervention needs diagnosis,
+  not escalation.
+- A `blocked` row, a refused same-chat recovery (409), a lost binding and a stale retired flag
+  are not proof that the chat is dead: a failed browser binding can leave a usable chat unbound
+  with its claimant marked retired. Each needs exact-chat recovery diagnosis before any
+  replacement. On 2026-11-19 a Sage replacement was requested without one delivery attempt to the
+  still-live chat. These outcomes are logged as errors, not as an idle tick.
+- In `recovering` the controller owns delivery, the response window and exhaustion; an accepted
+  `/recover` POST alone never justifies a replacement.
+- The daemon exposes the bridge only after it restores durable sessions, which can take much
+  longer than the systemd start acknowledgement. The watchdog does not restart a daemon in that
+  state, since that discards the restoration; only a stopped daemon gets native service recovery.
+  After a restart it waits up to 45 seconds for the bridge listener (the real service needed
+  about 17 seconds on 2026-10-25, and a 15-second probe misreported that success as a failure).
+  Cron has no `XDG_RUNTIME_DIR`, so the watchdog sets it before `systemctl --user`.
+- During a repair, a successor conversation bound by another recovery is never interrupted on
+  the old observation, an owner pause that arrives mid-repair wins, and a conversation that
+  finishes or is replaced between the census and the cancel POST is success. A wedged opening or
+  archiving transition that survives a daemon restart gets a fresh controller bootstrap with the
+  existing durable brief, rather than another half-hour on a dead transition.
+- `scripts/test_workstream_watchdog.py` covers these rules.
 
 ### Historical header correlation and browser evidence
 

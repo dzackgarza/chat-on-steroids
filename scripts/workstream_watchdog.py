@@ -32,9 +32,6 @@ ACTIVE_PHASES = {"active", "advancing"}
 NON_PROGRESS_TOOLS = {"write_stdin", "sleep", "session"}
 TERMINAL_TOOLS = {"exec_command", "write_stdin"}
 MAX_EVENT_TAIL_BYTES = 1024 * 1024
-# The cron cadence is thirty minutes, but the owner's §19 failure horizon is
-# five minutes of no workstream activity with no call in flight. Do not add
-# another full half-hour of inactivity before native recovery becomes eligible.
 DEFAULT_IDLE_MINUTES = 5
 
 
@@ -43,8 +40,6 @@ class BridgeError(RuntimeError):
 
 
 def _restart_daemon(service: str = "chat-on-steroids.service") -> None:
-    # Cron normally has no XDG_RUNTIME_DIR, so `systemctl --user` cannot find
-    # the existing user bus even though the service itself is healthy.
     env = os.environ.copy()
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     try:
@@ -119,10 +114,6 @@ class Bridge:
         live = probe()
         if live is not None:
             return live
-        # The daemon exposes the bridge only after restoring durable sessions.
-        # A running daemon may take considerably longer than its systemd start
-        # acknowledgement to finish that restoration. Restarting it in this
-        # state discards its progress and can perpetuate the outage.
         env = os.environ.copy()
         env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
         try:
@@ -133,7 +124,6 @@ class Bridge:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise BridgeError(f"Cannot establish daemon state; refusing blind restart: {exc}") from exc
         if service.returncode != 0:
-            # An actually stopped daemon needs native service recovery.
             _restart_daemon()
         for _ in range(90):
             live = probe()
@@ -191,7 +181,7 @@ def latest_nonpoll_tool(session_id: str | None, sessions_dir: Path) -> int | Non
             start = max(0, end - MAX_EVENT_TAIL_BYTES)
             handle.seek(start)
             if start:
-                handle.readline()  # discard the partial initial JSON line
+                handle.readline()
             data = handle.read()
     except OSError:
         return None
@@ -206,8 +196,6 @@ def latest_nonpoll_tool(session_id: str | None, sessions_dir: Path) -> int | Non
         call = item.get("call") or {}
         tool = call.get("tool")
         if tool in NON_PROGRESS_TOOLS:
-            # Reading the completed result of a process is a meaningful transition;
-            # polling a process which has not finished is not.
             result = str((call.get("result") or {}).get("text") or "")
             if tool != "write_stdin" or not re.search(
                 r"Process exited with code -?\d+", result
@@ -248,14 +236,10 @@ def action_allowed(
     recorded = max(prior_recorded, fresh_recorded or 0) or None
     if recorded is not None:
         state["lastNonpollSeenAt"] = recorded
-    # A recent polling call is deliberately NOT a substitute for a non-polling
-    # action. Use admitted-call activity only when the recorder has no such evidence.
     activity = recorded if recorded is not None else last_activity
     if recorded is None and row.get("sessionId"):
         event_file = sessions_dir / str(row["sessionId"]) / "events.jsonl"
         if event_file.is_file():
-            # The recorder exists but the visible tail has only polling calls.
-            # Never interpret those calls' refreshed lease as forward motion.
             first_poll_only = int(state.setdefault("firstPollOnlyAt", now))
             activity = min(activity or first_poll_only, first_poll_only)
     activity_age = max(0, now - activity) if activity else 0
@@ -269,28 +253,16 @@ def action_allowed(
         "activityAgeMs": activity_age,
     }
 
-    # This is evaluated BEFORE the lease/phase/cooldown rules. An overlong
-    # tool is a serious execution/workflow defect, not proof of progress.
-    # The scheduled watchdog reports it to the model steward; elapsed time
-    # does not authorize the watchdog to kill the call or restart the daemon.
     if n_calls:
         if long_call:
             return None, "overlong worker-blocking tool requires steward diagnosis", evidence
         return None, "in-flight call inside its execution budget", evidence
 
-    # The controller deliberately withheld the next automatic send after a
-    # completed turn with no successful ordinary tool result. Treating the
-    # resulting idle time as a stalled page would undo that decision: the
-    # watchdog would revive and eventually replace the same chat forever.
-    # Preserve tool access and exact conversation ownership; a model steward
-    # can diagnose the missing work and explicitly choose a correction.
     if str(row.get("error") or "").startswith("auto_continue_without_successful_tool:"):
         return None, "no-work continuation requires steward diagnosis, not automatic replacement", evidence
 
     previous = state.get("lastAction")
     if isinstance(previous, dict):
-        # A new substantive tool call proves the last intervention achieved activity.
-        # A new browser turn, renewed lease or poll alone does not.
         previous_activity = int(previous.get("baselineActivity") or 0)
         if activity > previous_activity and (
             recorded is not None or last_activity > previous_activity
@@ -306,18 +278,11 @@ def action_allowed(
         return None, "controller is already opening or archiving a conversation", evidence
 
     if phase == "blocked":
-        # A blocked row is not evidence that its ChatGPT conversation is dead.
-        # In particular, a failed browser binding can leave a still-usable chat
-        # unbound while the old claimant is marked retired. A new chat would
-        # merely displace it. The bridge/owner must diagnose that exact route.
         return None, "blocked workstream requires exact-chat recovery diagnosis", evidence
 
     if phase == "recovering":
         if int(row.get("nextCheck") or 0) > now:
             return None, "controller recovery response window remains open", evidence
-        # The bridge tracks delivery, the model-response window and exhaustion.
-        # The watchdog has no evidence that a revive was actually delivered:
-        # an accepted /recover POST alone cannot justify a replacement.
         return None, "controller owns recovery delivery and exhaustion", evidence
 
     if phase not in ACTIVE_PHASES:
@@ -326,9 +291,6 @@ def action_allowed(
         return None, "recent tool activity", evidence
 
     if previous:
-        # The watchdog records only that the bridge accepted its request, not
-        # that ChatGPT received it. Never promote elapsed time or missing tools
-        # into a proof that the old conversation cannot be continued.
         return None, "earlier intervention needs delivery/outcome diagnosis", evidence
     if row.get("conversationId"):
         return "recover", "no non-polling tool activity within inactivity horizon", evidence
@@ -336,20 +298,12 @@ def action_allowed(
     last_claimant = claimants[-1] if claimants else None
     if last_claimant and last_claimant not in (row.get("retiredConversations") or []):
         return "recover", "unbound idle workstream has a nonretired claimant to revive", evidence
-    # A lost binding or stale retired flag does not prove that the last chat
-    # cannot be continued. This was the Nov-19 Sage failure: replacement was
-    # requested without one attempted delivery to that still-live chat.
     return None, "unbound workstream needs verified original-chat recovery before replacement", evidence
 
 
 def restart_controller(bridge: Bridge, service: str = "chat-on-steroids.service") -> dict:
     """Last-resort repair if the daemon cannot settle its own stuck MCP call."""
     _restart_daemon(service)
-    # On 2026-10-25 the real service needed about 17 seconds from the
-    # restart request to the bridge listener. The former 15-second probe
-    # exhausted just as the bridge opened, misclassifying a successful
-    # restart as a failed recovery. Allow a bounded 45-second readiness
-    # window; a restart ACK alone is never treated as a live bridge.
     for _ in range(90):
         try:
             state = bridge.get("/workstreams")
@@ -379,9 +333,6 @@ def clear_overlong_call(bridge: Bridge, row: dict, minimum_age_ms: int) -> dict:
     try:
         cancelled = bridge.post("/workstreams/cancel-overlong", payload)
     except BridgeError as exc:
-        # The original conversation can legitimately finish or be replaced
-        # between our GET and POST. That race is success, not a reason to
-        # restart the daemon and disrupt unrelated work.
         current = bridge.get("/workstreams")
         fresh = next((r for r in current["workstreams"] if r["id"] == row["id"]), {})
         calls = bridge.get("/sleep/status").get("inFlightCalls", [])
@@ -392,7 +343,6 @@ def clear_overlong_call(bridge: Bridge, row: dict, minimum_age_ms: int) -> dict:
             int(c.get("ageMs") or 0) >= minimum_age_ms for c in calls
         ):
             return fresh
-        # The installed watchdog may precede its daemon's updated HTTP route.
         log("warning", row["id"], "native cancellation unavailable; restarting controller",
             error=str(exc))
         state = restart_controller(bridge)
@@ -409,8 +359,6 @@ def clear_overlong_call(bridge: Bridge, row: dict, minimum_age_ms: int) -> dict:
             return next((r for r in state["workstreams"] if r["id"] == row["id"]), {})
         time.sleep(1)
 
-    # A daemon still blocked after cancellation must be restarted, rather
-    # than merely logging a permanent wedge for an absent human reader.
     log("warning", row["id"], "native cancellation did not settle; restarting controller",
         requested=cancelled["requested"], unsupported=cancelled.get("unsupported", []))
     state = restart_controller(bridge)
@@ -433,8 +381,6 @@ def run_watchdog(
     if not isinstance(calls, list):
         raise BridgeError("In-flight tool census unavailable; refusing unsafe intervention")
     if len(calls) >= 50:
-        # The bridge intentionally returns at most 50. A truncated census
-        # cannot prove that any particular workstream has no running calls.
         raise BridgeError("In-flight tool census may be truncated; refusing unsafe intervention")
 
     total, acted, problems = 0, 0, 0
@@ -451,10 +397,6 @@ def run_watchdog(
             cooldown_ms=cooldown_ms, calls=calls, sessions_dir=sessions_dir,
         )
         if action is None:
-            # No automatic replacement does not mean recovery is complete.
-            # An unbound/retired claimant or a rejected recovery needs an
-            # externally verified browser identity before any next action.
-            # Surface that as an actionable failure, not a successful idle tick.
             needs_recovery_diagnosis = any(text in reason for text in (
                 "exact-chat recovery diagnosis",
                 "verified original-chat recovery",
@@ -484,16 +426,12 @@ def run_watchdog(
                 if not fresh:
                     raise BridgeError("Workstream vanished during controller repair")
                 if fresh.get("conversationId") != row.get("conversationId"):
-                    # Another recovery bound a successor while cancellation
-                    # was running. Never interrupt that new chat on stale facts.
                     log("info", ident, "new conversation already attached; repair completed")
                     acted += 1
                     continue
                 row = fresh
                 phase = row.get("phase")
                 if phase == "paused":
-                    # Owner decisions override an external watchdog tick even
-                    # when they arrive during its bounded cancellation.
                     continue
                 if phase in ACTIVE_PHASES:
                     previous = stored.get("lastAction") or {}
@@ -502,11 +440,6 @@ def run_watchdog(
                     action = "replace"
                 elif phase in {"recovering", "archiving", "opening"}:
                     if stuck_transition and phase in {"archiving", "opening"}:
-                        # The daemon was restarted yet the existing handoff
-                        # remained stranded. This phase already fences the
-                        # previous worker. Open a fresh controller bootstrap
-                        # with the existing durable brief instead of waiting
-                        # another thirty minutes on a dead transition.
                         bootstrap = bridge.post("/workstreams/start", {
                             "id": ident,
                             "context": str(fresh.get("context") or ""),
@@ -564,7 +497,6 @@ def run_watchdog(
                 fresh = next(
                     (r for r in latest["workstreams"] if r["id"] == ident), {}
                 )
-                # Concurrent progress invalidates the old observation.
                 if not fresh or any(
                     fresh.get(k) != row.get(k)
                     for k in ("conversationId", "lastActivity", "phase")
@@ -577,10 +509,6 @@ def run_watchdog(
                 if any(c.get("workstreamId") == ident for c in pending):
                     log("info", ident, "worker began a call during recovery; no replacement")
                     continue
-                # Refusing same-chat recovery is not proof the conversation
-                # is unrevivable. In particular, the caller may have lost
-                # its browser binding or been marked retired prematurely.
-                # Do not convert a 409 into an unconditional /replace.
             except BridgeError as exc:
                 failure = f"{failure}; restart/retry failed: {exc}"
         if accepted is not True:
