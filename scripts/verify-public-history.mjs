@@ -4,7 +4,6 @@ import { spawnSync } from 'node:child_process';
 const maintainerLogin = 'totec448-spec';
 const safeMaintainerEmail = /^(?:\d+\+)?totec448-spec@users\.noreply\.github\.com$/i;
 
-// Keep the blocked values split so this guard does not contain the data it rejects.
 const blockedText = [
   { label: 'private maintainer email', value: ['totec448', 'gmail.com'].join('@') },
   { label: 'Claude session trailer', value: ['Claude', 'Session:'].join('-') },
@@ -12,21 +11,6 @@ const blockedText = [
   { label: 'private Windows user path', value: ['C:', 'Users', 'totec'].join('\\') },
 ];
 
-/**
- * Maintainer-identity findings that already exist in published history.
- *
- * Both are GitHub web-UI merge commits: GitHub stamped the author identity, they live on
- * `origin/main` and are not ancestors of local `HEAD`, and this checkout never pushes — so
- * nothing done here can change them. Without this list every run exited 1, which meant the
- * check could no longer say anything: an operator had to diff two failure lines by eye to
- * see whether a change had added a third, and a permanently red gate is not a gate.
- *
- * The list can only ever excuse the *maintainer-identity* finding on these exact commits.
- * Blocked text in a message or a tree still fails on them like anywhere else, and an entry
- * that stops matching is itself a failure (see `staleAcceptances`) so this cannot rot into
- * a place where findings go to be forgotten. Only a SHA and a reason are stored: writing
- * the address here is the thing the check exists to prevent.
- */
 const acceptedIdentityFindings = new Map([
   [
     '9e27c0fafc20bf2c81509844d5f92868678b4168',
@@ -105,13 +89,10 @@ function checkMessageFile(messagePath) {
 
 function checkHistory() {
   const failures = [];
-  /** Allowlist entries this run actually used, so an entry that no longer applies is caught. */
   const usedAcceptances = new Set();
   const commits = String(runGit(['rev-list', '--all']).stdout)
     .split(/\r?\n/)
     .filter(Boolean);
-  // pull_request jobs default to a GitHub-generated merge object that can never enter
-  // public history. Its identity belongs to GitHub's test ref, not to the proposed tree.
   const syntheticPullRequestCommit =
     process.env.GITHUB_EVENT_NAME === 'pull_request' ? process.env.GITHUB_SHA?.trim() : '';
 
@@ -127,8 +108,6 @@ function checkHistory() {
       ...checkMaintainerIdentity(authorName, authorEmail, `${location} author`),
       ...checkMaintainerIdentity(committerName, committerEmail, `${location} committer`),
     ];
-    // Only the identity findings are excusable, and only on a listed commit. Blocked text in
-    // the message is a different fact and is never waived.
     if (identity.length > 0 && acceptedIdentityFindings.has(commit)) usedAcceptances.add(commit);
     else failures.push(...identity);
     failures.push(...findBlockedText(body.join('\0'), `${location} message`));
@@ -157,11 +136,6 @@ function checkHistory() {
   const head = runGit(['rev-parse', '--verify', 'HEAD'], { allowFailure: true });
   if (head.status === 0) failures.push(...checkIndexedOrCommittedFiles('HEAD'));
 
-  // An acceptance for a commit that is present and *clean* is excusing nothing, and leaving
-  // it would let the list grow into cover for findings nobody has checked. A commit this
-  // repository does not contain is a different case — a fresh clone without the origin refs,
-  // or the scratch repositories the gate's own tests run it in — and the entry simply does
-  // not apply there.
   const present = new Set(commits);
   for (const commit of acceptedIdentityFindings.keys()) {
     if (present.has(commit) && !usedAcceptances.has(commit)) {

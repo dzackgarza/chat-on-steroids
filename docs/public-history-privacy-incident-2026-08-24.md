@@ -48,3 +48,25 @@ publish workflow; old candidate artifacts must not be reused.
 
 The rule is intentionally redundant: agent instructions prevent the mistake, Git hooks stop it at
 authoring time, CI stops it at integration time, and the publish workflow stops it at release time.
+
+## How `scripts/verify-public-history.mjs` decides
+
+- The blocked values are stored split into parts, so the guard does not contain the data it
+  rejects.
+- `acceptedIdentityFindings` lists maintainer-identity findings that already exist in published
+  history. Both entries are GitHub web-UI merge commits: GitHub stamped the author identity, they
+  live on `origin/main` and are not ancestors of local `HEAD`, and rewriting published history is
+  not an option, so nothing done in a checkout can change them. Without this list every run exited
+  1, and the check could no longer say anything: an operator had to diff two failure lines by eye
+  to see whether a change had added a third. A permanently red gate is not a gate.
+- The list excuses only the maintainer-identity finding on those exact commits. Blocked text in a
+  message or a tree still fails on them like anywhere else. Only a SHA and a reason are stored:
+  writing the address there is the thing the check exists to prevent.
+- Each run records which entries it used. An entry for a commit that is present and clean excuses
+  nothing and fails the run (`staleAcceptances`), so the list cannot grow into cover for findings
+  nobody has checked. An entry for a commit the repository does not contain (a fresh clone
+  without the origin refs, or the scratch repositories the gate's own tests run in) simply does
+  not apply.
+- A `pull_request` job checks out a GitHub-generated merge object by default. That object can never
+  enter public history, and its identity belongs to GitHub's test ref, not to the proposed tree,
+  so the check skips it.
