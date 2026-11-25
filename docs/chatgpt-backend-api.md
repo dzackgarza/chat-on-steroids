@@ -315,6 +315,29 @@ Shapes list keys and types only.
 - **Archive:** `PATCH /backend-api/conversation/{id}` with JSON `{"is_archived": true}`. A
   following `GET` shows `is_archived: true`. A `404` on `GET` or `PATCH` means the chat is gone.
   (`scripts/live-chatgpt-workstream.mjs`)
+- **Chat and project management (PAGE, 2026-11-25).** Each row is the request the page sent when
+  a menu action was clicked in a signed-in tab. A fetch wrapper in the tab recorded each request
+  and answered it with a fake `200`, so the server never received it. A later `GET` showed every
+  chat and project unchanged. Response bodies are therefore not observed.
+
+  | Menu action | Request | Body |
+  | --- | --- | --- |
+  | Delete (chat) | `DELETE /backend-api/conversation/id/{id}?delete_generated_artifacts=true&delete_uploaded_artifacts=true` | none |
+  | Archive | `PATCH /backend-api/conversation/{id}` | `{"is_archived": true}` |
+  | Pin | `PATCH /backend-api/conversation/{id}` | `{"is_starred": true}` |
+  | Rename (chat) | `POST /backend-api/conversation/id/{id}/rename` | `{"title": "…"}` |
+  | Move to project | `PATCH /backend-api/conversation/{id}` | `{"gizmo_id": "g-p-…"}` |
+  | Remove from project | `PATCH /backend-api/conversation/{id}` | `{"gizmo_id": ""}` |
+  | New project | `POST /backend-api/projects` | `{"name", "instructions": "", "emoji": null, "theme": null, "memory_scope": "unset"}` |
+  | Delete project | `DELETE /backend-api/gizmos/{project id}` | none |
+
+  - Delete chat cannot be undone. Its dialog says "This will permanently delete … This can't be
+    undone."
+  - Delete project also deletes **every chat in the project**. Its dialog says so. Move the chats
+    out first to keep them.
+  - The Move to project menu does not list the chat's current project.
+  - Pinning is `is_starred` on the conversation, and `GET /backend-api/pins?item_type=conversation`
+    lists pinned chats with `pinned_at`. (LIVE)
 - **Page-side file reads:** the page calls `files/download/{file id}?download_intent=false&inline=true`
   and `estuary/content?id={file id}&…` for attached files. (PAGE)
 
