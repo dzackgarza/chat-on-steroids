@@ -26,7 +26,7 @@ repeated here: **this tree is usually dirty and shared with the user and other a
 never `reset`, `checkout`, `clean`, reformat, or overwrite work you did not do.**
 
 The second rule whose violation destroys the product is repeated here for the same reason:
-**never neuter this app to restrict or control agent behaviour automatically.** It is an
+do not neuter this app to restrict or control agent behaviour automatically. It is an
 instrument that extends what agents can do, not a policy engine that decides for them. Any
 change that reduces what connected models can do, or makes the app act on agent behaviour
 without an owner or model judgment, needs an explicit owner instruction, whatever mechanism it
@@ -368,7 +368,7 @@ exposure leaves the schema registered and its handler returns `TOOL_DISABLED`. T
 
 **Must hold.** Two separate concepts, never collapsed: *exposed* (a schema may exist
 because it was visible earlier) and *live* (the operation is allowed now).
-**Schema visibility is never the security boundary** — `config.ts::effectiveCapabilities()`
+Schema visibility is not the security boundary: `config.ts::effectiveCapabilities()`
 and the live guards are. A server registers only tools its surface declares and answers
 anything else with a protocol-level unknown-tool error; there is no merged list and no
 hidden acceptance. A deliberate reconnect is the clean boundary for changing the shape.
@@ -961,7 +961,7 @@ chat from the overview cannot prove.
 **`fiber.js` is intentionally least trusted.** It emits a strict **allowlist** (not copied
 props minus a denylist), never tool argument values, validates the exact CLF connector
 names, and fails closed on unfamiliar React shapes. Its `postMessage` output is
-page-controlled evidence useful for joining page to local truth — **never a credential**.
+page-controlled evidence useful for joining page to local truth — not a credential.
 Its protocol version and the content-side expectations move together.
 
 **Must hold.** ChatGPT is an SPA: every async result proves it still belongs to its
@@ -1237,8 +1237,8 @@ the slot, leaves the message queued, and tells the prime.
 
 **The ceiling is the only ending.** A worker becomes terminally `finished` when its chat
 reaches `WORKER_CONTEXT_CEILING_TOKENS` (400k), measured from the app's own durable session
-summary — never from a model-carried counter. Crossing it does **not** interrupt work in
-flight; it makes the *next* stop permanent. Workers **never Compact & Resume themselves**,
+summary — never from a model-carried counter. Crossing it does not interrupt work in
+flight; it makes the *next* stop permanent. Workers do not Compact & Resume themselves,
 automatically or manually: their reusable browser conversation is deliberately kept stable
 for revival even though agent/tool identity is the worker workstream. Because workers outlive their tabs and their
 prime's tab, closing the prime chat pauses the run instead of ending it: the user comes back,
@@ -1314,7 +1314,7 @@ that said work was unfinished, none of which drew anything at all.
 **Renderer/IPC.** `renderer/main.ts` is setup/permissions/connection/activity;
 `renderer/chat.ts` is session timeline, handoff, swarm. To add a capability: narrow
 main-process action → validate in `ipc.ts` → expose exactly that method in
-`preload/index.ts` → call it. **Never add a generic `invoke(method, args)` escape hatch.**
+`preload/index.ts` → call it. Do not add a generic `invoke(method, args)` escape hatch; each capability gets its own narrow, validated method.
 Async loads use generation counters so a slow load for session A cannot paint over the B the
 user selected, and unsolicited state pushes must not clobber a focused unsaved form field.
 Captured ChatGPT HTML is untrusted: `chat.ts::renderedMessage()` allowlists semantic tags,
@@ -1405,8 +1405,9 @@ git diff -- <files you plan to touch>
 
 This repository is an approved sandbox root, which is not an invitation to work other projects inside it: clone another repository to `~/gitclones/<name>` and work there. On 2026-10-09 a full `zettlr-pandoc` clone (1.6 GB, 24 commits never pushed anywhere else), three upstream source copies and a stray `sage-mypy-plugin` patch were found here and moved out.
 
-Assume unrelated changes belong to someone else. **Never** `reset`, `checkout`, `clean`,
-broad-format, or overwrite unrelated work to simplify your patch. If the exact lines you
+Assume unrelated changes belong to someone else. Do not `reset`, `checkout`, `clean`,
+broad-format, or overwrite unrelated work to simplify your patch. `~/.cc-safety-net` blocks the
+destructive git forms. If the exact lines you
 planned to edit changed underneath you, reread and integrate — do not replay an old patch.
 
 ### The fix loop
@@ -1512,7 +1513,7 @@ conversation. Each assignment states: project path, concrete objective, relevant
 and likely files, evidence or reproduced symptoms it should inherit, constraints and
 ownership boundaries, what it may edit, validation to run, and the expected handoff.
 
-Start with the actual task. **Do not** open with canned text like "you have zero prior
+Start with the actual task. Do not open with canned text like "you have zero prior
 context" — prefer `Fix the renderer state-clobber bug in C:\…; the confirmed symptom is …`.
 Workers are already bound to their slot when launched, so nothing is asked of them about
 identity. Put what every worker in the batch needs — project path, conventions file,
@@ -1576,7 +1577,7 @@ fail-closed behavior, and verify neighboring negative/security cases with an ind
 For ChatGPT/Chrome boundaries that means a live repro, not a mock. Suspected security issues and reproduction details belong through the
 private process in `SECURITY.md`, not in public issues, comments, or fixtures.
 
-**Do not scatter fixes across symptoms before proving the shared root.**
+Prove the shared root before you fix symptoms in several places.
 
 ## 22. Definition of done
 

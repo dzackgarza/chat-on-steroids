@@ -8,7 +8,7 @@ a GitHub noreply address; never use a personal mailbox or a private local path. 
 commit, push, tag, or release, run `npm run verify:privacy`. The versioned Git hooks installed by
 `npm run hooks:install` enforce the same policy for Claude-created commits.
 
-Do not bypass these guards with `--no-verify`. If a privacy check blocks a change, remove the
+Do not bypass these guards with `--no-verify`; `~/.cc-safety-net` blocks it. If a privacy check blocks a change, remove the
 private value at its source and create a new clean commit instead.
 
 All work lands directly on `main`: commit, run `npm run verify:privacy`, and push to
