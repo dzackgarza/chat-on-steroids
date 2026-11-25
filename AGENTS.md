@@ -1366,20 +1366,19 @@ over internal fields and branch counters.
 
 ### Commands
 
-```sh
-npm install
-npm run dev                              # electron-vite dev
-npm run typecheck
-npm run verify:privacy                   # public Git identity/session/path gate
-npm run verify                           # CI local checks only; not ChatGPT integration proof
-COS_LIVE_PLUGIN_NAME="..." npm run verify:live  # real daemon + extension + authenticated ChatGPT acceptance
-npm run build                            # electron-vite bundles
-npm run dist                             # this host OS, x64 + arm64 artifacts → release/
-npm run dist:mac / dist:linux            # explicit platform families on matching hosts
-npm run dist:dir:<platform>:<arch>        # one unpacked package for smoke/debug
-
-just install                             # build, replace the installed app, restart it
-```
+| Command | Effect |
+| --- | --- |
+| `npm install` | install dependencies |
+| `npm run dev` | electron-vite dev |
+| `npm run typecheck` | type check |
+| `npm run verify:privacy` | public Git identity/session/path gate |
+| `npm run verify` | CI local checks only; not ChatGPT integration proof |
+| `COS_LIVE_PLUGIN_NAME="..." npm run verify:live` | real daemon + extension + authenticated ChatGPT acceptance |
+| `npm run build` | electron-vite bundles |
+| `npm run dist` | this host OS, x64 + arm64 artifacts → `release/` |
+| `npm run dist:mac / dist:linux` | explicit platform families on matching hosts |
+| `npm run dist:dir:<platform>:<arch>` | one unpacked package for smoke/debug |
+| `just install` | build, replace the installed app, restart it |
 
 `npm run dist:*` leaves its artifact in `release/`. `just install` is the step after it:
 it follows the launcher on PATH to whatever this machine installed, replaces that file,
@@ -1395,20 +1394,39 @@ The app records every chat it bridges, and it can type into one for you. Both ar
 recipes in this repository, so an agent on this computer can watch a ChatGPT conversation
 and keep it moving without a browser.
 
-```sh
-just sessions                    # recorded chats, newest first
-just transcript <part-of-an-id>  # print one chat; defaults to the newest
-just search <term>               # which chats mention a term
+| Command | Effect |
+| --- | --- |
+| `just sessions` | recorded chats, newest first |
+| `just transcript <part-of-an-id>` | print one chat; defaults to the newest |
+| `just search <term>` | which chats mention a term |
+| `just chats [minutes]` | ACTIVE chats (generating, or a message in the last 10 min): id, state, model, ~tokens |
+| `just chats 0` | every chat it reads, active or not (see `candidates`) |
+| `just state <conversation-id>` | what that one chat's turn is doing, from the live recorder |
+| `just say <conversation-id> "..."` | send that message to that chat |
+| `just new "..."` | open a new chat with that opening message |
+| `just interrupt <conversation-id> "..."` | stop the turn it is running, then send |
+| `just revive <conversation-id> "..."` | reload its page, then send |
 
-just chats [minutes]             # ACTIVE chats (generating, or a message in the last 10 min): id, state, model, ~tokens
-just chats 0                     # every chat it reads, active or not (see `candidates`)
-just state <conversation-id>     # what that one chat's turn is doing, from the live recorder
-just say <conversation-id> "..."  # send that message to that chat
-just new "..."                    # open a new chat with that opening message
+These recipes change chats and projects. They need only a signed-in ChatGPT tab on port 9222,
+not the app. `scripts/chat-manage.py` sends the request that the page sends for the same menu
+action (`docs/chatgpt-backend-api.md`, "Chat and project management").
 
-just interrupt <conversation-id> "..."  # stop the turn it is running, then send
-just revive <conversation-id> "..."     # reload its page, then send
-```
+| Command | Effect |
+| --- | --- |
+| `just archive <id>...` | archive chats |
+| `just unarchive <id>...` | unarchive chats |
+| `just pin <id>...` | pin chats; ChatGPT allows at most 10 pinned chats |
+| `just unpin <id>...` | unpin chats |
+| `just rename <id> "title"` | rename one chat |
+| `just projects` | project id and name |
+| `just move <project> <id>...` | move chats into a project; `<project>` is an id (`g-p-…`) or the exact name |
+| `just unmove <id>...` | take chats out of their project, back to the chat list |
+| `just project-new "name"` | create a project and print its id |
+| `just delete <id>...` | delete chats permanently |
+| `just project-delete <project> [--with-chats]` | delete a project |
+
+Deleting a project deletes every chat in it, so `project-delete` refuses a project that holds
+chats unless `--with-chats` is given.
 
 `just chats` is the one that gives you the id `say` needs. `busy` requires a
 recently updated backend streaming indication; a stale page marker or recorder turn

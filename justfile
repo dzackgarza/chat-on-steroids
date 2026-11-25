@@ -1,31 +1,16 @@
-# Chat On Steroids — repo task surface.
-#
-# Build, packaging and the QC gate stay on the npm scripts in package.json;
-# AGENTS.md §19 documents that workflow.
-#
-# The recipes below read the app's durable recordings. They live outside the repo,
-# in the Electron userData directory, and are written by src/main/session/store.ts:
-# tool activity appends to events.jsonl, each user/assistant message is one shard
-# under messages/ rewritten in place while it streams, and oversized text spills to
-# assets/. A transcript is those producers merged and ordered by `origin ?? seq`.
-#
-# Tool rows print as headlines. For the exact arguments and result of one call, read
-# its record straight out of the log:
-#   jq 'select(.call.callId == "<id>")' <session>/events.jsonl
-
 sessions_dir := if os() == "macos" {
     home_directory() / "Library/Application Support/chat-on-steroids/sessions"
 } else {
     env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/sessions"
 }
 
-# Show available recipes
+[doc("Show available recipes")]
 default:
     @just --list
 
-# List recorded chats, newest first: updated, id, counts, title
+[doc("List recorded chats, newest first: updated, id, counts, title")]
+[script("bash")]
 sessions:
-    #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
     for meta in "{{sessions_dir}}"/*/meta.json; do
@@ -33,15 +18,9 @@ sessions:
                 .id, "\(.userMessages)msg \(.toolCalls)tool", .title] | @tsv' "$meta"
     done | sort -rn | cut -f2-
 
-# A readable, live workstream monitor: chronological meaningful actions above
-# continuously refreshed workstream/turn/tool state and inactivity evidence.
-# Repeated source inspections and auto-continuation turns are summarized, while
-# edits, tests, failures and process completions retain their recorded times.
-# Examples: just journal; just journal 3 50 sage-indefinite-port
-#           just journal 3 50 sage-indefinite-port verbose
-# Uses Python Rich for the live status panel (apt install python3-rich).
+[doc("Live workstream monitor: meaningful actions above refreshed turn and tool state")]
+[script("bash")]
 journal $hours="3" $lines="50" $chat="" $detail="":
-    #!/usr/bin/env bash
     set -euo pipefail
     extra=()
     case "$detail" in
@@ -54,11 +33,9 @@ journal $hours="3" $lines="50" $chat="" $detail="":
     exec python3 -u "{{justfile_directory()}}/scripts/activity-journal.py" \
         --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat" "${extra[@]}"
 
-# Full-screen searchable lnav alternative. Press G to move to the end and
-# automatically follow new events; scrolling up pauses the displayed position.
-# Install lnav first (sudo apt install lnav / brew install lnav).
+[doc("Full-screen searchable lnav view of the journal")]
+[script("bash")]
 journal-ui $hours="3" $lines="100" $chat="":
-    #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v lnav >/dev/null 2>&1; then
         echo 'lnav is required (sudo apt install lnav / brew install lnav)' >&2
@@ -68,9 +45,9 @@ journal-ui $hours="3" $lines="100" $chat="":
         --root "{{sessions_dir}}" --hours "$hours" --lines "$lines" --chat "$chat" \
         | lnav -N -c ':goto 100%'
 
-# Print a chat transcript; ID may be any substring, default is the newest chat
+[doc("Print a chat transcript; ID may be any substring, default is the newest chat")]
+[script("python3")]
 transcript $id="":
-    #!/usr/bin/env python3
     import json, os, pathlib, sys, time
 
     root = pathlib.Path("{{sessions_dir}}")
@@ -95,16 +72,10 @@ transcript $id="":
         if line.strip():
             rows.append(json.loads(line))
     rows += [json.loads(shard.read_text()) for shard in (session / "messages").glob("*.json")]
-    # Pre-migration sessions keep their messages in one legacy map instead of shards.
     legacy = session / "messages.json"
     if legacy.exists():
         rows += list(json.loads(legacy.read_text() or "{}").values())
     def position(row):
-        # A message shard is rewritten in place as it streams, and a reloaded page reports
-        # old messages again, so `seq` is append order, not conversation order. `origin`
-        # holds the first position of a rewritten item; src/shared/chronology.ts orders by
-        # the same key. ponytail: tool rows still sit where seq put them, which draws a slow
-        # call after the turn it ran under; port chronology.ts grouping if that starts to bite.
         origin = row.get("origin")
         return (origin if isinstance(origin, int) else row.get("seq", 0), row.get("seq", 0))
 
@@ -130,11 +101,11 @@ transcript $id="":
                 headline = " · ".join(part for part in parts if part)
                 print(f"\n[{call['tool']} {call['outcome']} {call['callId']}] {headline}")
     except BrokenPipeError:
-        os._exit(0)  # a transcript is long and gets piped into head; leave quietly
+        os._exit(0)
 
-# Find which recorded chats mention a term
+[doc("Find which recorded chats mention a term")]
+[script("bash")]
 search $term:
-    #!/usr/bin/env bash
     set -euo pipefail
     grep -rlisF -e "$term" "{{sessions_dir}}" \
         | sed "s|^{{sessions_dir}}/||; s|/.*||" | sort -u \
@@ -142,48 +113,15 @@ search $term:
             printf '%s\t%s\n' "$id" "$(jq -r .title "{{sessions_dir}}/$id/meta.json")"
         done
 
-# ---------------------------------------------------------------------------
-# Driving chats from here.
-#
-# The app's bridge has one route for local callers: POST /send types a message into a
-# ChatGPT chat, or opens a fresh one. It is the same transport the app uses to open a
-# worker chat, with the agent half removed — what these recipes open is an ordinary chat
-# that shows up in `just sessions` like any other. Chat On Steroids must be running, and
-# the browser must be paired; the app opens the tab itself.
-#
-# The credential is minted at bridge startup and lives in state/local-token, mode 0600.
-
 state_dir := if os() == "macos" {
     home_directory() / "Library/Application Support/chat-on-steroids/state"
 } else {
     env_var_or_default("XDG_CONFIG_HOME", home_directory() / ".config") / "chat-on-steroids/state"
 }
 
-# The ACTIVE ChatGPT chats: generating now, or a message in the last `minutes` (default 10)
-#
-# Covers every chat on the account, whether or not it ever used the connector. Columns:
-# `last msg` is the age of the newest message in the conversation itself. `state` is `busy`
-# when the chat's open tab marks its turn in progress or this app's recorder says so;
-# otherwise the recorder's idle/stalled/wedged, `idle` for an open tab with no running turn,
-# and `-` for a chat with no open tab and no recording, whose running state this does not
-# know (read `last msg` for those). `model` is the model that answered last, `msgs` and
-# `tools` count messages, `~tok` sizes the chat, and the last column is the newest action
-# this app recorded. The id is what `say` wants.
-#
-# The sidebar list's times are not trusted: they freeze while a long turn runs. So this reads
-# the `candidates` newest chats by list time (default 20), plus every open tab and every
-# recorder-busy chat, are checked with ChatGPT's cheap metadata and stream_status calls; only
-# the ones that pass the `minutes` window are read in full. A chat outside those that is
-# generating with no tab and no recording is missed; raise `candidates` to cover more.
-# `minutes=0` lists every chat read, active or not. `match` filters on the title.
-#
-# `~tok` counts user, assistant and tool text at four characters per token. Hidden reasoning,
-# system prompts and tool schemas are invisible from here, so it sizes a chat rather than
-# reproducing ChatGPT's context counter.
-#
-# Needs Chromium started with --remote-debugging-port=9222 and signed in to ChatGPT.
+[doc("The ACTIVE ChatGPT chats: generating now, or a message in the last `minutes` (default 10)")]
+[script("bash")]
 chats minutes="10" match="" candidates="20" archived="false" json="false":
-    #!/usr/bin/env bash
     set -euo pipefail
     extra=()
     case "{{json}}" in
@@ -199,87 +137,57 @@ chats minutes="10" match="" candidates="20" archived="false" json="false":
     exec python3 "{{justfile_directory()}}/scripts/chat-list.py" --sessions "{{sessions_dir}}" \
         --minutes "{{minutes}}" --match "{{match}}" --candidates "{{candidates}}" "${extra[@]}"
 
-# ---------------------------------------------------------------------------
-# The browser's actual tabs.
-#
-# `chats` reports what this app recorded; it cannot see a tab. Chromium's DevTools endpoint
-# can, and it is the only thing that knows a conversation is open twice. Every tab the app
-# opens carries a `clf` marker and nothing closes it when the command ends, so tabs pile up:
-# duplicates of live chats, and chats whose work finished hours ago.
-#
-# Needs Chromium started with --remote-debugging-port=9222.
-
 devtools := "http://127.0.0.1:9222"
 
-# Archive one conversation in ChatGPT, whether or not it has a tab open
-archive chat:
-    @just _set-archived {{chat}} true archived
+manage := 'python3 "' + justfile_directory() / "scripts/chat-manage.py" + '" --devtools "' + devtools + '"'
 
-# Archiving is how a chat leaves management, and a chat archived on a wrong call is still a
-# live worker: it keeps executing, it just stops being reachable.
-#
-# Bring an archived conversation back into the managed set, so it can be pushed again
-unarchive chat:
-    @just _set-archived {{chat}} false unarchived
+[doc("Archive conversations in ChatGPT, whether or not they have a tab open")]
+archive +chats:
+    @{{manage}} archive {{chats}}
 
-[private]
-_set-archived chat flag verb:
-    #!/usr/bin/env python3
-    import json, subprocess
+[doc("Bring archived conversations back into the managed set, so they can be pushed again")]
+unarchive +chats:
+    @{{manage}} unarchive {{chats}}
 
-    targets = json.loads(subprocess.run(
-        ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
-    # Any ChatGPT tab will do — it is only the execution context that holds the credentials, and
-    # the conversation is named explicitly rather than taken from what is on screen. But it has
-    # to be a tab that can still run JavaScript: a wedged page accepts the connection and then
-    # answers nothing, which is indistinguishable from a refusal until you probe it.
-    ws = None
-    for target in targets:
-        if target.get("type") != "page" or "chatgpt.com" not in (target.get("url") or ""):
-            continue
-        probe = subprocess.run(
-            ["timeout", "10", "websocat", "-n1", "-B", "16777216", target["webSocketDebuggerUrl"]],
-            input=json.dumps({"id": 1, "method": "Runtime.evaluate",
-                              "params": {"expression": "1+1", "returnByValue": True}}),
-            capture_output=True, text=True).stdout
-        if '"value":2' in probe:
-            ws = target["webSocketDebuggerUrl"]
-            break
-    if not ws:
-        raise SystemExit("no ChatGPT tab that can still run a request — open one and retry")
+[doc("Delete conversations permanently")]
+delete +chats:
+    @{{manage}} delete {{chats}}
 
-    expr = (
-        "(async () => {"
-        ' const s = await (await fetch("/api/auth/session", {credentials:"include"})).json();'
-        ' const r = await fetch("/backend-api/conversation/' + "{{chat}}" + '", {'
-        '   method: "PATCH",'
-        '   headers: {"Content-Type":"application/json", "Authorization":"Bearer " + s.accessToken},'
-        '   credentials: "include",'
-        '   body: JSON.stringify({is_archived: {{flag}}})'
-        " });"
-        " return r.status;"
-        "})()"
-    )
-    payload = json.dumps({"id": 1, "method": "Runtime.evaluate",
-                          "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
-    raw = subprocess.run(["timeout", "15", "websocat", "-n1", "-B", "16777216", ws],
-                         input=payload, capture_output=True, text=True).stdout
-    # A page that cannot answer returns nothing at all, and crashing on that reads as a broken
-    # tool rather than as the page being wedged.
-    try:
-        status = json.loads(raw)["result"]["result"].get("value")
-    except Exception:
-        status = None
-    if status == 200:
-        print("{{verb}} {{chat}}")
-    elif status is None:
-        raise SystemExit("the tab this ran through did not answer — try again, or open another ChatGPT tab")
-    else:
-        raise SystemExit(f"ChatGPT refused the change with status {status}")
+[doc("Pin conversations in the sidebar (ChatGPT allows at most 10)")]
+pin +chats:
+    @{{manage}} pin {{chats}}
 
-# Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping
+[doc("Unpin conversations")]
+unpin +chats:
+    @{{manage}} unpin {{chats}}
+
+[doc("Rename one conversation")]
+rename chat $title:
+    @{{manage}} rename {{chat}} "$title"
+
+[doc("Move conversations into a project")]
+move $project +chats:
+    @{{manage}} move "$project" {{chats}}
+
+[doc("Take conversations out of their project, back to the chat list")]
+unmove +chats:
+    @{{manage}} remove-from-project {{chats}}
+
+[doc("The account's projects: id and name")]
+projects:
+    @{{manage}} projects
+
+[doc("Create a project and print its id")]
+project-new $name:
+    @{{manage}} project-new "$name"
+
+[doc("Delete a project; it refuses while the project holds chats unless --with-chats is given")]
+project-delete $project *flags:
+    @{{manage}} project-delete "$project" {{flags}}
+
+[doc("Every open ChatGPT tab, what its chat last did, and whether the tab is worth keeping")]
+[script("python3")]
 tabs quiet="30":
-    #!/usr/bin/env python3
     import json, subprocess, pathlib, sys, time, glob
 
     def load_jsonl(path):
@@ -329,8 +237,6 @@ tabs quiet="30":
             continue
         chat = target["url"].split("/c/")[1].split("?")[0].split("#")[0]
         idle = now - last[chat] if chat in last else None
-        # One conversation, two tabs: the second is a tab a later command opened rather than
-        # reusing the one already showing that chat. Only the first is worth keeping.
         if chat in seen:
             verdict = "duplicate"
         elif idle is None:
@@ -343,12 +249,9 @@ tabs quiet="30":
         age = f"{idle/60:5.0f}m" if idle is not None else "    ?"
         print(f"{verdict:<10} {age}  {chat}  {titles.get(chat, '')}")
 
-# Archive the finished chats in ChatGPT and close their tabs, plus any duplicate tabs
-#
-# `keep` is a comma-separated list of conversation ids never to archive, whatever their idle
-# time — a chat under active management is quiet between pushes, and quiet is not finished.
+[doc("Archive the finished chats in ChatGPT and close their tabs, plus any duplicate tabs")]
+[script("python3")]
 tidy quiet="30" keep="":
-    #!/usr/bin/env python3
     import json, subprocess, pathlib, sys, time, glob
 
     def load_jsonl(path):
@@ -383,10 +286,6 @@ tidy quiet="30" keep="":
         if rows:
             last[chat] = max(rows, key=lambda r: (r.get("time", 0), r.get("seq", 0))).get("time", 0) / 1000
 
-    # Archive calls run in a tab opened for the purpose, not in an existing one. Two reasons:
-    # a page wedged enough to be worth archiving cannot run the request, and Chromium freezes
-    # the renderer of a tab left in the background long enough, so an idle tab stops answering
-    # CDP entirely — which is every tab, by the time a sweep is worth running.
     scratch = subprocess.run(
         ["curl", "-s", "-m", "10", "-X", "PUT", "{{devtools}}/json/new?https://chatgpt.com/"],
         capture_output=True, text=True).stdout
@@ -394,15 +293,13 @@ tidy quiet="30" keep="":
     if scratch.strip().startswith("{"):
         opened = json.loads(scratch)
         scratch_id, healthy = opened.get("id"), opened.get("webSocketDebuggerUrl")
-        time.sleep(6)  # the page has to reach a state where it can run a request at all
+        time.sleep(6)
     keep = {c.strip() for c in "{{keep}}".split(",") if c.strip()}
 
     def archive(chat, ws):
         """Archive through the page's own session, which is the only thing holding the
         credentials. The conversation and the operation are both named explicitly, so this
         cannot land on delete the way driving the chat's menu could."""
-        # Built by concatenation rather than an f-string: a literal doubled brace is how just
-        # opens an interpolation, and this recipe is read by just before Python ever sees it.
         expr = (
             "(async () => {"
             ' const s = await (await fetch("/api/auth/session", {credentials:"include"})).json();'
@@ -440,7 +337,6 @@ tidy quiet="30" keep="":
         idle = now - last[chat] if chat in last else None
 
         if chat in seen:
-            # A second tab on a conversation that is still live: close the tab, keep the chat.
             dt("/json/close/" + target["id"])
             print(f"closed duplicate tab   {chat}")
             continue
@@ -464,15 +360,6 @@ tidy quiet="30" keep="":
     if scratch_id:
         dt("/json/close/" + scratch_id)
 
-    # Every send opens a command tab on bare chatgpt.com, and a send that never redeems leaves
-    # its tab behind. They carry no conversation id, so the loop above never sees them, and they
-    # accumulate one renderer at a time until the host is swapping — which is what kills the
-    # workers' own exec sessions.
-    #
-    # A managed chat's own tab is momentarily bare too, between opening and navigating to the
-    # conversation, and closing one of those takes a live worker off the air. The two look
-    # identical in a single snapshot, so look twice: a tab still bare several seconds later is
-    # not on its way anywhere. Keep the newest survivor as the app's spare.
     def bare_ids():
         listing = json.loads(subprocess.run(
             ["curl", "-s", "-m", "5", "{{devtools}}/json"], capture_output=True, text=True).stdout or "[]")
@@ -490,12 +377,9 @@ tidy quiet="30" keep="":
         if len(orphans) > 1:
             print(f"closed {len(orphans) - 1} orphaned command tab(s)")
 
-# What a chat is: driven prime, swarm worker, or nothing the app is still using
-#
-# Paste the id from a tab's URL. Answers the only question a pile of open tabs raises —
-# whether this one is still someone's live work, or a leftover the app has finished with.
+[doc("What a chat is: driven prime, swarm worker, or nothing the app is still using")]
+[script("python3")]
 who chat:
-    #!/usr/bin/env python3
     import json, pathlib, sys, time, glob
 
     def load_jsonl(path):
@@ -519,7 +403,6 @@ who chat:
             entry = entry[1]
         return entry.get("info") if isinstance(entry, dict) else None
 
-    # When it last actually did something, from its own recording.
     when, title = None, ""
     for meta_file in sessions.glob("*/meta.json"):
         meta = json.loads(meta_file.read_text())
@@ -557,41 +440,28 @@ who chat:
     else:
         print("active  never recorded by this app")
 
-# Send a message to an open chat, by conversation id (see `just chats`)
+[doc("Send a message to an open chat, by conversation id (see `just chats`)")]
 say $chat $text:
     @just -f {{justfile()}} _send "$chat" "$text" refuse false
 
-# Start a new chat with this opening message
+[doc("Start a new chat with this opening message")]
 new $text:
     @just -f {{justfile()}} _send "" "$text" refuse false
 
-# The composer refuses while a turn is in flight, so a turn that will never finish makes the
-# chat unreachable by anything; this is the one thing that gets past it. It also destroys
-# whatever that turn was producing, which is why it is its own verb and never something `say`
-# decides to do — a chat that is merely working is a chat to leave alone. Read
-# `just state <chat>` first: it says how long the turn has been open, and when the recording
-# last actually changed.
-
-# Stop the turn that chat is running, then send this message — for a turn that will not end
+[doc("Stop the turn that chat is running, then send this message — for a turn that will not end")]
 interrupt $chat $text:
     @just -f {{justfile()}} _send "$chat" "$text" stop_first false
 
-# For a document alive enough to poll but stuck behind a turn its renderer will never resolve:
-# the state where a person would press reload. The reload is offered once, before the message
-# is typed, and only while nothing has claimed the send yet. A renderer frozen hard enough not
-# to poll at all is not reachable this way; the extension recycles those tabs itself.
-
-# Reload that chat's page, then send this message — for a tab that is stuck rather than busy
+[doc("Reload that chat's page, then send this message — for a tab that is stuck rather than busy")]
 revive $chat $text:
     @just -f {{justfile()}} _send "$chat" "$text" refuse true
 
-# What that chat's turn is doing right now, from the live recorder rather than from disk
+[doc("What that chat's turn is doing right now, from the live recorder rather than from disk")]
+[script("bash")]
 state chat:
-    #!/usr/bin/env bash
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
     for port in 8765 8766 8767 8768 8769; do
-        # A stalled bridge is not an absent one; see the note in `_send`.
         if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
             curl -fsS --connect-timeout 5 -m 45 -G "http://127.0.0.1:$port/conversation/status" \
                 --data-urlencode "conversationId={{chat}}" \
@@ -602,9 +472,9 @@ state chat:
     echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
     exit 1
 
-# Read the controller's live workstream phases and schema gate before any managed dispatch.
+[doc("Read the controller's live workstream phases and schema gate before any managed dispatch")]
+[script("bash")]
 workstreams:
-    #!/usr/bin/env bash
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
     for port in 8765 8766 8767 8768 8769; do
@@ -617,50 +487,17 @@ workstreams:
     echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
     exit 1
 
-# POST one message to the running app's bridge. Empty chat means a fresh one.
-#
-# `mode` is what the send may do to a turn already running: `refuse` never interrupts one and
-# refuses immediately when the recorder already knows that chat is generating; it is what every
-# ordinary push uses. `stop_first` presses Stop first. `reload` reloads the page holding the
-# chat once before typing. Both extras need a named chat.
+[doc("POST one message to the running app's bridge; an empty chat means a new one")]
+[script("bash")]
 _send $chat $text mode="refuse" reload="false":
-    #!/usr/bin/env bash
     set -euo pipefail
     token=$(cat "{{state_dir}}/local-token")
-    # Built by jq, never by string interpolation: a message is arbitrary prose and will
-    # contain the quotes, newlines and backslashes that hand-built JSON gets wrong.
     body=$(jq -nc --arg c "$chat" --arg t "$text" --arg m "{{mode}}" --argjson r {{reload}} \
         'if $c == "" then { text: $t } else { conversationId: $c, text: $t, ifGenerating: $m, reloadFirst: $r } end')
     for port in 8765 8766 8767 8768 8769; do
-        # /hello is unauthenticated and names the app, so it is how a local caller finds
-        # which of the five candidate ports this app actually bound.
-        #
-        # Split into a connect deadline and a response deadline, because the two failures are
-        # nothing alike. A port nothing is listening on refuses the connection in under a
-        # millisecond, so hunting the other four costs nothing. A port this app *is* bound to
-        # can take far longer than a second to answer: sampled 2026-09-10, 60 consecutive
-        # /hello probes against a healthy daemon returned a median of ~100ms, one at 6.3s and
-        # one that never answered inside 30s. Under the old flat `-m 1` those stalls fell out
-        # of the loop as if no app were listening, and `say` reported "is the app running?"
-        # about a running app — four times in five on an idle chat. A false liveness verdict
-        # is worse than a slow one: it is the reading that makes the send path look dead.
         if curl -fsS --connect-timeout 2 -m 45 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
-            # A sleep-managed chat answers 409 with a typed reason, a next-check hint and the
-            # concrete next action. `curl -f` threw all three away and left the caller a bare
-            # `curl: (22)` — indistinguishable from a dead app, a bad token or a wedged
-            # composer, which is exactly the blindness that sent a steward off to drive
-            # composers over CDP. Read the body, relay what it says, and honour the documented
-            # contract by waiting for the wake instead of failing the push.
-            #
-            # Bounded, because waiting forever is its own kind of lie: 25 minutes is longer
-            # than the app's own fallback wake horizon, so a chat still refusing past it is
-            # stuck rather than busy and the steward is told to go look.
             waited=0
             while :; do
-                # Same split, and the transport failure is retried rather than fatal: the app
-                # stalling for longer than this deadline is a slow app, not a refused send, and
-                # aborting the whole push on one slow response threw away a message the bridge
-                # had every intention of accepting.
                 answer=$(curl -sS --connect-timeout 5 -m 60 -w '\n%{http_code}' "http://127.0.0.1:$port/send" \
                     -H "authorization: Bearer $token" \
                     -H 'content-type: application/json' \
@@ -701,24 +538,11 @@ _send $chat $text mode="refuse" reload="false":
             id=$(jq -r '.command.id' <<<"$accepted")
             pending=$(jq -r '.pendingTools' <<<"$accepted")
 
-            # Accepting the message only queues it, and even a page click receipt is not
-            # delivery: in a background tab the send button reports enabled and the click
-            # silently no-ops. The only success is the app confirming a fresh turn_start in
-            # the recording, which is what GET /send/outcome reports — poll it to terminal.
             horizon=$(jq -r '.verifyHorizonMs // 90000' <<<"$accepted")
             if [[ "$pending" != "0" && "$pending" != "null" ]]; then
                 echo "note: $pending local tool call(s) in flight; the page will not type until they settle." >&2
-                # Which calls, and how old. A call a few seconds in is an agent working and the
-                # wait is correct; a call an hour in is a fact only the steward can act on, and
-                # a bare count hides the difference. `unplaced` is the one charged to every chat.
                 jq -r '.inFlightCalls[]? | "      \(.tool) \((.ageMs / 1000) | floor)s \(.attribution) \(.conversationId // "unplaced")"' \
                     <<<"$accepted" >&2 2>/dev/null || true
-                # When _send itself was started through a connector exec_command, that
-                # call is among the pending unattributed calls. Synchronously polling
-                # from inside it deadlocks delivery: the call cannot settle until this
-                # recipe exits, and the browser cannot type until it settles. Leave the
-                # already-queued message intact, then let the caller verify the outcome
-                # separately after its own tool call has returned. Never claim delivery.
                 if jq -e '.inFlightCalls[]? | select(.tool == "exec_command" and .attribution == "unattributed")' \
                     <<<"$accepted" >/dev/null 2>&1; then
                     echo "queued but NOT delivered: command $id; the connector tool must finish before the browser can type." >&2
@@ -731,8 +555,6 @@ _send $chat $text mode="refuse" reload="false":
             if [[ "$probe" == "200" ]]; then
                 deadline=$(( $(date +%s) + 90 + horizon / 1000 + 30 ))
                 while :; do
-                    # A slow answer is not a lost send: an empty reply keeps the poll in its
-                    # current state and tries again, which is what the deadline below is for.
                     out=$(curl -fsS --connect-timeout 5 -m 45 "http://127.0.0.1:$port/send/outcome?id=$id" \
                         -H "authorization: Bearer $token" || echo '{}')
                     state=$(jq -r '.state // empty' <<<"$out")
@@ -745,8 +567,6 @@ _send $chat $text mode="refuse" reload="false":
                         queued|delivering|typed|"")
                             ;;
                         *)
-                            # Terminal without proof of delivery. The app states the cause and
-                            # the concrete next action; relay both instead of a bare failure.
                             echo "$state: $(jq -r '.reason // .message // empty' <<<"$out")" >&2
                             hint=$(jq -r '.message // empty' <<<"$out")
                             [[ -n "$hint" ]] && echo "$hint" >&2
@@ -759,9 +579,6 @@ _send $chat $text mode="refuse" reload="false":
                     sleep 1
                 done
             fi
-            # The running app predates /send/outcome (it activates on its next restart).
-            # Fall back to the receipt the browser writes once it has actually typed — the
-            # old contract: no receipt within the 90s command deadline means it never sent.
             state="{{state_dir}}/bridge-commands.json"
             for _ in $(seq 1 180); do
                 landed=$(jq -r --arg id "$id" '(.receipts[]? | select(.id == $id) | .conversationId) // empty' "$state" 2>/dev/null || true)
@@ -779,20 +596,10 @@ _send $chat $text mode="refuse" reload="false":
     echo "Chat On Steroids is not answering on 8765-8769; is the app running?" >&2
     exit 1
 
-# ---------------------------------------------------------------------------
-# Running your own build.
-#
-# `npm run dist:*` writes an artifact into release/ and stops there, which leaves the
-# last step — putting that artifact where the launcher points and restarting — as
-# something a person does by hand and forgets. `just install` is that step.
-#
-# It follows the launcher on PATH to find what to replace, so it upgrades whatever
-# installation this machine actually has rather than a path written down in here.
-
-# Build this tree, install it over the installed app, and restart it
+[doc("Build this tree, install it over the installed app, and restart it")]
 [linux]
+[script("bash")]
 install:
-    #!/usr/bin/env bash
     set -euo pipefail
 
     launcher=$(command -v chat-on-steroids || true)
@@ -800,8 +607,6 @@ install:
         echo "No chat-on-steroids on PATH: install a release once, then this recipe upgrades it." >&2
         exit 1
     fi
-    # The launcher is normally a symlink into the install directory. Replace what it
-    # resolves to, so the launcher, the .desktop entry and the tray icon all keep working.
     target=$(readlink -f "$launcher")
 
     case "$(uname -m)" in
@@ -812,13 +617,6 @@ install:
     npm run "dist:linux:$arch"
     built="release/Chat-On-Steroids-Linux-$arch.AppImage"
 
-    # An AppImage runs from a mount of its own file, so it is stopped before the file
-    # underneath it changes. SIGTERM is the app's ordinary shutdown; it drains in-flight
-    # MCP work and writes its durable state.
-    #
-    # Matched on the process name rather than on any path: the running app's argv holds the
-    # /tmp mount it unpacked itself into, never the file being replaced here. Linux truncates
-    # a process name to 15 characters, which is where the missing final `s` comes from.
     app=chat-on-steroid
     if pkill -TERM -x "$app" 2>/dev/null; then
         for _ in $(seq 1 40); do
@@ -831,26 +629,18 @@ install:
         was_running=no
     fi
 
-    # Written beside the target and renamed, so a failed copy cannot leave a half-written
-    # AppImage where the launcher points.
     install -m 755 "$built" "$target.incoming"
     mv "$target.incoming" "$target"
     echo "installed $(basename "$target")"
 
-    # The browser runs the extension from wherever it was loaded unpacked, which the AppImage
-    # never touches. Skipping this leaves the browser on an old build while the app reports a
-    # successful install, and every extension-side fix silently does nothing.
     while read -r loaded; do
         [[ -n "$loaded" ]] || continue
-        # Copied into the directory rather than replacing it: the browser holds this exact path,
-        # and a loaded copy can carry files of its own that are not ours to remove.
         command cp -af extension/. "$loaded/"
         echo "extension updated at $loaded — reload it at chrome://extensions"
     done < <(node scripts/extension-load-paths.mjs)
 
     if [[ "$was_running" == yes ]]; then
         setsid "$launcher" >/dev/null 2>&1 < /dev/null &
-        # The bridge answering is the proof it came back on the new build.
         for _ in $(seq 1 60); do
             for port in 8765 8766 8767 8768 8769; do
                 if curl -fsS -m 1 "http://127.0.0.1:$port/hello" 2>/dev/null | grep -q chat-on-steroids; then
@@ -864,19 +654,19 @@ install:
         exit 1
     fi
 
-# Refresh the read-only steward workstream dashboard from live repository state.
+[doc("Refresh the read-only steward workstream dashboard from live repository state")]
 steward-dashboard *args:
     python3 scripts/generate-steward-dashboard.py {{args}}
 
-# Python tests for the scripts/ CLIs (chat-list.py, chatgpt-openapi.py).
+[doc("Python tests for the scripts/ CLIs (chat-list.py, chatgpt-openapi.py)")]
 [private]
 _test-scripts:
     uvx --with openapi-spec-validator --with tree-sitter --with tree-sitter-javascript pytest -q scripts/tests
 
-# Run the fast commit check; the commit hook runs this
+[doc("Run the fast commit check; the commit hook runs this")]
 test-commit: _test-scripts
     @just -f ~/ai-review-ci/justfiles/bun.just -d . test-commit
 
-# Run the fast push check; the push hook runs this
+[doc("Run the fast push check; the push hook runs this")]
 test-push:
     @just -f ~/ai-review-ci/justfiles/bun.just -d . test-push
